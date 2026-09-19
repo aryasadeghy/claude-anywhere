@@ -77,6 +77,21 @@ crossed a project boundary without saying so.
   this one up to just before that message, with the message back in the
   composer to change and send again. The original is untouched.
 
+## When Claude asks you something
+
+Some tools ask rather than act. `AskUserQuestion` is one, and it arrives through the
+same channel as a permission request, so it used to appear as "Claude wants to use
+AskUserQuestion" with nothing to read and an Allow button.
+
+It is now shown as what it is: the question, each option with its description as a
+button, and a box underneath for an answer that is not on the list. Several questions
+at once and multi-select both work. **Skip** declines the question. What you choose
+travels back on the tool’s own `answers` field, so Claude receives the answer rather
+than mere permission to ask.
+
+Once you answer, the card collapses to the question and your answer. Leaving the
+options up invites a second answer that nothing is listening for.
+
 ## While Claude works
 
 - A status line under the last message says what is happening ("Thinking…",

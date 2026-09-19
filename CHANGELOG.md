@@ -9,6 +9,22 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- **An answered question stops being a form.** The options stayed on screen and
+  stayed clickable after you had answered, so the card looked like it had not
+  taken. It collapses now: the question, what you chose underneath it, and nothing
+  left to press. Answering from another device collapses it here too.
+- **Opening a session lands at the end of the chat, not in the middle of it.** The
+  bars under the thread arrive after it is drawn — the branch, a running task, the
+  update banner — and each one shrinks the window without moving the scroll, which
+  on a phone left the last messages 180 to 240 pixels below the fold. The view now
+  stays pinned while the page settles, and lets go the moment you scroll away.
+- **A question from Claude is a question, not a permission.** `AskUserQuestion`
+  arrived as a bare "Claude wants to use AskUserQuestion" with "(no summary)" and
+  an Allow button, which meant answering something you were never shown. The card
+  now carries the question, its options with their descriptions, and a box for an
+  answer that is not on the list; what you pick rides back on the tool’s own
+  `answers` field. Multiple questions and multi-select are handled, and the same
+  request arriving twice after a reconnect no longer draws two cards.
 - **A transcript reads the same here as it does in Claude Desktop.** A file path
   written as inline code is now a link you can click, and a bare file name stays
   plain code: Desktop links `out/clip.mp4` and leaves `check.py` alone, and the

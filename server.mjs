@@ -922,8 +922,8 @@ app.get('/api/sessions/:id/events', (req, res) => {
 });
 
 app.post('/api/permissions/:reqId', (req, res) => {
-  const { behavior, always } = req.body || {};
-  if (!answerPermission(req.params.reqId, behavior, !!always)) return res.status(404).json({ error: 'No such request (it may have expired).' });
+  const { behavior, always, updatedInput } = req.body || {};
+  if (!answerPermission(req.params.reqId, behavior, !!always, updatedInput)) return res.status(404).json({ error: 'No such request (it may have expired).' });
   res.json({ ok: true });
 });
 
