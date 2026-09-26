@@ -12,7 +12,6 @@
 
 import express from 'express';
 import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -32,6 +31,7 @@ import * as pr from './lib/pr.mjs';
 import * as awake from './lib/awake.mjs';
 import * as update from './lib/update.mjs';
 import * as models from './lib/models.mjs';
+import * as access from './lib/access.mjs';
 import { getAuth, activeAccount, setActive, setToken, clearToken, setProvider, clearProvider, classifyToken, envFor, localSource, verifyEnv, candidateEnv, candidateProviderEnv } from './lib/auth.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -53,21 +53,26 @@ loadDotEnv();
 
 const PORT = Number(process.env.PORT || 7777);
 const HOST = process.env.HOST || '127.0.0.1';
-// An app password is optional (REMOTE_PASSWORD in .env). Without one, anybody who
-// can reach the port can use Claude on this PC, so keep the server on localhost,
-// Tailscale, or a network you trust.
-const PASSWORD = (process.env.REMOTE_PASSWORD || '').trim() === 'change-me' ? '' : (process.env.REMOTE_PASSWORD || '').trim();
-const PASSWORD_REQUIRED = PASSWORD.length > 0;
+// An app password is optional (REMOTE_PASSWORD in .env, or set in the app). Without
+// one, anybody who can reach the port can use Claude on this PC, so keep the server on
+// localhost, Tailscale, or a network you trust. lib/access.mjs keeps the password, the
+// per-device tokens and the sign-in limits.
 const USER_NAME = process.env.USER_NAME || 'there';
-const TOKEN = createHash('sha256').update('claude-anywhere:' + (PASSWORD || 'open')).digest('hex');
-// The salt carried the old project name until 0.3.0. Accepting the token it
-// produced keeps every already-signed-in phone and browser signed in.
-const LEGACY_TOKEN = createHash('sha256').update('claude-remote:' + (PASSWORD || 'open')).digest('hex');
-const knownToken = (t) => t === TOKEN || t === LEGACY_TOKEN;
+const knownToken = (t) => access.knownToken(t);
+const bearer = (req) => String(req.get('authorization') || '').replace(/^Bearer /, '');
 
 // ---------- http ----------
 const app = express();
 app.disable('x-powered-by');
+// Remote access off (the default, and always without a password): only this computer may use it. Everything else -
+// another device on the network, a tunnel, a proxy - is turned away with the reason,
+// before the page or any API answers. Setting a password opens it again.
+const CLOSED = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Remote access is off</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;font:15px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif;background:#1a1a1a;color:#eee}main{max-width:420px;padding:24px;text-align:center}h1{font-size:20px;margin:0 0 8px}p{color:#bbb;margin:0}</style></head><body><main><h1>Remote access is off</h1><p>Only the computer itself can use it. Turn remote access on there, in Settings → Remote access, to use it from here.</p></main></body></html>`;
+app.use((req, res, next) => {
+  if (access.remoteAllowed() || access.isLocal(req)) return next();
+  if (req.path.startsWith('/api/')) return res.status(403).json({ error: 'Remote access is off on that computer. Turn it on there, in Settings → Remote access.', remoteClosed: true });
+  res.status(403).type('html').send(CLOSED);
+});
 app.use(express.json({ limit: '60mb' })); // attachments travel as base64
 
 // Attachments: images are sent to Claude as image blocks; any other file is saved on
@@ -125,12 +130,26 @@ app.use('/vendor/purify.js', express.static(path.join(here, 'node_modules/dompur
 // `no-cache` still allows 304s - it only forces a revalidation.
 app.use(express.static(path.join(here, 'public'), { extensions: ['html'], setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache') }));
 
-app.get('/api/config', (_req, res) => res.json({ passwordRequired: PASSWORD_REQUIRED, userName: USER_NAME }));
+app.get('/api/config', (_req, res) => res.json({ passwordRequired: access.passwordRequired(), userName: USER_NAME }));
 
-// Sign in. With no app password configured this simply hands out the session token.
+// Sign in. With no app password configured this simply hands out the open token; with
+// one, each sign-in gets a token of its own, and wrong guesses are slowed down.
+// "Chrome on Mac", from the user agent: enough to tell one's own devices apart in the list.
+function deviceName(req) {
+  const given = String(req.body?.device || '').trim(); if (given) return given;
+  const ua = String(req.get('user-agent') || '');
+  const browser = /Edg\//.test(ua) ? 'Edge' : /Firefox\//.test(ua) ? 'Firefox' : /Chrome\//.test(ua) ? 'Chrome' : /Safari\//.test(ua) ? 'Safari' : /curl\//.test(ua) ? 'curl' : 'Browser';
+  const os = /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : /Android/.test(ua) ? 'Android' : /Windows/.test(ua) ? 'Windows' : /Mac OS X/.test(ua) ? 'Mac' : /Linux/.test(ua) ? 'Linux' : '';
+  return os ? browser + ' on ' + os : browser;
+}
+const waitWords = (s) => (s >= 90 ? Math.ceil(s / 60) + ' minutes' : s + ' seconds');
 app.post('/api/login', (req, res) => {
-  if (PASSWORD_REQUIRED && (typeof req.body?.password !== 'string' || req.body.password !== PASSWORD)) return res.status(401).json({ error: 'Wrong password' });
-  res.json({ token: TOKEN, userName: USER_NAME });
+  const ip = access.clientIp(req);
+  const wait = access.locked(ip);
+  if (wait) return res.status(429).json({ error: 'Too many wrong passwords. Try again in ' + waitWords(wait) + '.' });
+  if (!access.checkPassword(typeof req.body?.password === 'string' ? req.body.password : '')) { access.failed(ip); return res.status(401).json({ error: 'Wrong password' }); }
+  access.succeeded(ip);
+  res.json({ token: access.issue({ name: deviceName(req), ip }), userName: USER_NAME });
 });
 
 app.use('/api', (req, res, next) => {
@@ -145,13 +164,14 @@ app.use('/api', (req, res, next) => {
 app.get('/api/preview/grant', (req, res) => {
   // Lax, not None: the frame is same-origin, so this is enough, and it never
   // travels to anyone else's site.
-  res.setHeader('Set-Cookie', `${PREVIEW_COOKIE}=${TOKEN}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400`);
+  res.setHeader('Set-Cookie', `${PREVIEW_COOKIE}=${bearer(req)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400`);
   res.json({ ok: true });
 });
 app.get('/api/preview/ports', async (_req, res) => res.json({ ports: await listLocalPorts({ self: PORT }) }));
 
 // ---------- small preferences file: pinned sessions (shared by every device) ----------
 const DATA_DIR = envOf('DATA_DIR') || path.join(here, 'data');
+access.init(DATA_DIR, process.env.REMOTE_PASSWORD);
 const PREFS_PATH = path.join(DATA_DIR, 'prefs.json');
 function readPrefs() {
   try { return { pinned: [], ...JSON.parse(fs.readFileSync(PREFS_PATH, 'utf8')) }; } catch { return { pinned: [] }; }
@@ -702,7 +722,25 @@ function reachableAt() {
   const rank = (k) => (k === 'tailscale' ? 0 : k === 'lan' ? 1 : 2);
   return out.sort((a, b) => rank(a.kind) - rank(b.kind));
 }
-app.get('/api/me', (_req, res) => res.json({ version: appVersion, userName: USER_NAME, host: process.env.COMPUTERNAME || process.env.HOSTNAME || 'this machine', account: whoAmI(), active: activeAccount(), hasToken: getAuth().hasToken, port: PORT, listensEverywhere: HOST === '0.0.0.0' || HOST === '::', passwordRequired: PASSWORD_REQUIRED, addresses: reachableAt() }));
+app.get('/api/me', (_req, res) => res.json({ version: appVersion, userName: USER_NAME, host: process.env.COMPUTERNAME || process.env.HOSTNAME || 'this machine', account: whoAmI(), active: activeAccount(), hasToken: getAuth().hasToken, port: PORT, listensEverywhere: HOST === '0.0.0.0' || HOST === '::', passwordRequired: access.passwordRequired(), passwordSource: access.source(), addresses: reachableAt() }));
+
+// ---------- remote access: the password, the signed-in devices, the failed attempts ----------
+app.get('/api/access', (req, res) => res.json({ source: access.source(), minLength: access.MIN_PASSWORD, listensEverywhere: HOST === '0.0.0.0' || HOST === '::', remoteOpen: access.remoteAllowed(), fromApp: access.isAppKey(bearer(req)), devices: access.devices(bearer(req)), failures: access.failures() }));
+// From a browser, changing it asks for the current one: a stolen device token must not be
+// enough to take the computer over. The desktop app's own window is the person at this
+// computer, and is not asked. The device doing it stays signed in with a new token.
+app.post('/api/access/password', (req, res) => {
+  const ip = access.clientIp(req);
+  const wait = access.locked(ip);
+  if (wait) return res.status(429).json({ error: 'Too many wrong passwords. Try again in ' + waitWords(wait) + '.' });
+  if (access.passwordRequired() && !access.isAppKey(bearer(req)) && !access.checkPassword(String(req.body?.current || ''))) { access.failed(ip); return res.status(401).json({ error: 'The current password is not right.' }); }
+  try { res.json({ token: access.setPassword(String(req.body?.password || ''), { name: deviceName(req), ip, fromApp: access.isAppKey(bearer(req)) }), source: access.source() }); }
+  catch (e) { res.status(400).json({ error: e.message }); }
+});
+// The switch. Turning it on needs a password to be set; turning it off from another
+// device is allowed, and closes that device out with everything else.
+app.post('/api/access/remote', (req, res) => { try { res.json({ remoteOpen: access.setRemote(!!req.body?.on) }); } catch (e) { res.status(400).json({ error: e.message }); } });
+app.delete('/api/access/devices/:id', (req, res) => res.json({ revoked: access.revoke(req.params.id), devices: access.devices(bearer(req)) }));
 
 // ---------- accounts: this computer's login, and an optional token; switch any time ----------
 app.get('/api/accounts', (_req, res) => {
@@ -1217,7 +1255,7 @@ app.post('/api/rebuild', (_req, res) => {
   // So: a short-lived attached PowerShell whose only job is to Start-Process the
   // real script, which then belongs to nobody and survives the window closing.
   const q = (v) => "'" + String(v).replace(/'/g, "''") + "'";
-  const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Repo', here, '-Port', String(PORT), '-Token', TOKEN, '-Log', REBUILD_LOG];
+  const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Repo', here, '-Port', String(PORT), '-Token', access.getLocalKey(), '-Log', REBUILD_LOG];
   const launcher = `Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList ${args.map(q).join(',')}`;
   const child = spawn('powershell.exe', ['-NoProfile', '-Command', launcher], { stdio: 'ignore', windowsHide: true });
   child.on('error', (e) => { try { fs.appendFileSync(REBUILD_LOG, stamp() + 'could not start PowerShell: ' + e.message + '\n' + stamp() + 'done\n'); } catch {} });
@@ -1243,7 +1281,7 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ error: String(err?.message || err) });
 });
 
-export { TOKEN, PASSWORD, PASSWORD_REQUIRED, HOST, PORT, bus };
+export { HOST, PORT, bus };
 export function startServer({ host = HOST, port = PORT } = {}) {
   return new Promise((resolve) => {
     const server = app.listen(port, host, () => {
@@ -1251,7 +1289,7 @@ export function startServer({ host = HOST, port = PORT } = {}) {
       server.on('upgrade', (req, socket, head) => {
         const hit = parsePreviewUrl((req.url || '').split('?')[0]);
         if (!hit) return;
-        if (!knownToken(cookieOf(req, PREVIEW_COOKIE) || '')) return socket.destroy();
+        if (!knownToken(cookieOf(req, PREVIEW_COOKIE) || '') || (!access.remoteAllowed() && !access.isLocal(req))) return socket.destroy();
         const qs = (req.url || '').includes('?') ? '?' + req.url.split('?').slice(1).join('?') : '';
         proxyUpgrade(req, socket, head, hit.port, hit.rest + qs);
       });

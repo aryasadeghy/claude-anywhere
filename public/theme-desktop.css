@@ -914,3 +914,11 @@ audio.lb-media { width: min(520px, 90vw); height: auto; }
 
 /* ---------- v47: a discounted model says so in the menu ---------- */
 .menu-item .tag.discount { background: rgba(239, 68, 68, .14); color: #ef4444; font-weight: 600; cursor: help; }
+
+/* ---------- v48: remote access — the app password and the devices signed in with it ---------- */
+.ra-section { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+.ra-pw { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.ra-pw > input, .ra-pw .token-row input { font: inherit; font-size: 13px; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line-2); background: var(--bg); color: var(--ink); outline: none; min-width: 0; }
+.ra-pw .token-row input { font-family: var(--mono); }
+.ra-warn { margin: 10px 0 0; padding: 8px 10px; border-radius: 8px; background: rgba(217, 164, 65, .12); color: #d9a441; font-size: 13px; }
+.ra-failures { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }

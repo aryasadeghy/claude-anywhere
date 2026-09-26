@@ -25,7 +25,7 @@
   <section id="login" class="login hidden">
     <form id="login-form" class="login-card">
       <div class="wordmark">Claude</div>
-      <p class="login-hint">This page controls Claude Code on your computer. Enter the app password from <code>.env</code>.</p>
+      <p class="login-hint">This page controls Claude Code on your computer. Enter its app password.</p>
       <input id="login-password" type="password" placeholder="Password" autocomplete="current-password" required />
       <button type="submit" class="btn btn-primary" id="login-submit">Continue</button>
       <p id="login-error" class="login-error" hidden></p>
@@ -383,6 +383,7 @@
         <div class="set-nav-title">Settings</div>
         <button class="set-tab" type="button" data-pane="general">General</button>
         <button class="set-tab" type="button" data-pane="account">Account</button>
+        <button class="set-tab" type="button" data-pane="remote">Remote access</button>
         <button class="set-tab" type="button" data-pane="computers">Computers</button>
         <button class="set-tab" type="button" data-pane="connectors">Connectors</button>
         <button class="set-tab" type="button" data-pane="about">About</button>
@@ -487,6 +488,41 @@
         </div>
         <p id="acct-error" class="login-error" hidden></p>
       </div>
+        </section>
+
+        <section class="set-pane" data-pane="remote">
+          <h3 class="set-title">Remote access</h3>
+          <div class="set-row">
+            <div class="set-info"><div class="set-name">Remote access</div><div class="set-desc" id="ra-switch-desc">…</div></div>
+            <div id="ra-switch"></div>
+          </div>
+          <p class="modal-hint" id="ra-reach">…</p>
+          <div id="ra-addresses"></div>
+          <p id="ra-warn" class="ra-warn" hidden>Set an app password below to turn remote access on.</p>
+          <div class="ra-section">
+            <div class="set-name">App password</div>
+            <p class="modal-hint small" id="ra-pw-state">…</p>
+            <div id="ra-pw-form" class="ra-pw">
+              <input id="ra-current" type="password" placeholder="Current password" autocomplete="current-password" />
+              <div class="token-row">
+                <input id="ra-new" type="password" placeholder="New password" autocomplete="new-password" />
+                <button id="ra-generate" class="btn btn-ghost" type="button">Generate</button>
+              </div>
+              <div class="token-actions">
+                <button id="ra-save" class="btn btn-primary" type="button">Save password</button>
+                <button id="ra-remove" class="link-btn small" type="button">Remove password</button>
+              </div>
+            </div>
+            <p id="ra-error" class="login-error" hidden></p>
+          </div>
+          <div class="ra-section">
+            <div class="set-name">Signed-in devices</div>
+            <div id="ra-devices" class="ct-list"></div>
+          </div>
+          <div class="ra-section" id="ra-failures-box" hidden>
+            <div class="set-name">Recent wrong passwords</div>
+            <div id="ra-failures" class="ra-failures"></div>
+          </div>
         </section>
 
         <section class="set-pane" data-pane="computers">

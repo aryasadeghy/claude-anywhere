@@ -955,6 +955,13 @@ fn tidy(path: PathBuf) -> PathBuf {
     PathBuf::from(path.to_string_lossy().trim_start_matches(r"\\?\"))
 }
 
+fn local_key(data_dir: &Path) -> Option<String> {
+    fs::read_to_string(data_dir.join("data").join("local.key"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 fn start_server(app: &AppHandle) -> Result<ServerState, Box<dyn std::error::Error>> {
     let data_dir = app.path().app_data_dir()?;
     fs::create_dir_all(&data_dir)?;
@@ -976,6 +983,11 @@ fn start_server(app: &AppHandle) -> Result<ServerState, Box<dyn std::error::Erro
             &password
         }
     )));
+    // The server's own key for this computer's window (data/local.key, written by
+    // lib/access.mjs) opens it whatever the password is: one set from inside the app is
+    // not in .env, and the token derived from .env would be refused. There is none
+    // before a server has ever run here; the derived token stands in until then.
+    let token = local_key(&data_dir).unwrap_or(token);
 
     // Already running with our password (the server of a previous app instance that is
     // still finishing a turn, another copy, or `npm start`)? Adopt it and carry on.
@@ -1028,6 +1040,8 @@ fn start_server(app: &AppHandle) -> Result<ServerState, Box<dyn std::error::Erro
     };
     let child = spawn_server(&cfg)?;
     let _ = fs::remove_file(data_dir.join("startup-error.txt"));
+    // A first run: the server has just written its key.
+    let token = local_key(&data_dir).unwrap_or(token);
     Ok(ServerState {
         child: Mutex::new(Some(child)),
         port,

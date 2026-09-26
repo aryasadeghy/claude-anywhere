@@ -7,6 +7,22 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Remote access has a proper lock.** *Settings → Remote access* sets the app password
+  from the app (kept as an scrypt hash; `REMOTE_PASSWORD` in `.env` still works and wins),
+  lists every device signed in with it — each with a token of its own, revocable on its
+  own — and shows recent wrong guesses. Five wrong passwords lock that address out for a
+  minute, then longer, with a ceiling across all addresses for a guesser behind a proxy.
+  Changing the password from a browser signs every other device out and needs the current
+  one; the desktop app itself never asks for it, and sets or removes it directly (it opens
+  its own server with a local key, `data/local.key`). The token phones and the shell
+  derive from a saved password keeps working.
+- **Remote access is a switch, and it starts off.** Until it is turned on — which needs an
+  app password — only this computer can use the app: another device, a tunnel or a proxy
+  gets a page saying remote access is off. Removing the password turns it off. A password
+  already in `.env` keeps it on, so nobody is cut off by the update.
+
 ## [0.9.5] — 2026-09-25
 
 ### Changed

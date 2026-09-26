@@ -126,6 +126,7 @@
     if (pane === 'about') paintAbout();
     if (pane === 'account') loadAccountPane();
     if (pane === 'computers') openComputers();
+    if (pane === 'remote') paintRemote();
     if (pane === 'connectors') { openConnectors(); paintVersion(); }
   }
   settingsModal.querySelectorAll('.set-tab').forEach((t) => t.addEventListener('click', () => openSettings(t.dataset.pane)));
@@ -299,9 +300,76 @@
       b.addEventListener('click', async () => { try { await navigator.clipboard.writeText(a.url); b.textContent = 'Copied'; setTimeout(() => { b.textContent = a.url; }, 1200); } catch {} });
       box.appendChild(b);
     }
-    if (!me.passwordRequired) box.appendChild(el('span', 'muted warn-plain', 'No app password: anyone who can reach that address can use Claude here.'));
+    if (!me.passwordRequired) {
+      const w = el('span', 'muted warn-plain', 'No app password, so remote access is off: only this computer can use it. ');
+      const set = el('button', 'link-btn small', 'Set a password'); set.type = 'button'; set.onclick = () => openSettings('remote');
+      w.appendChild(set); box.appendChild(w);
+    }
     return box;
   }
+
+  // ---------- remote access: the password, the devices signed in with it ----------
+  async function paintRemote() {
+    $('#ra-error').hidden = true;
+    let a, me;
+    try { [a, me] = await Promise.all([api('/access'), api('/me')]); } catch (e) { $('#ra-error').hidden = false; $('#ra-error').textContent = e.message; return; }
+    $('#ra-reach').hidden = a.listensEverywhere; // the address block says it then
+    $('#ra-reach').textContent = 'Only ' + (state.host || 'this computer') + ' itself can reach it (HOST is 127.0.0.1 in .env), unless something like Tailscale forwards to it.';
+    const ab = $('#ra-addresses'); ab.innerHTML = '';
+    if (a.listensEverywhere) { const blk = addressBlock({ ...me, passwordRequired: true }); if (!a.remoteOpen && blk.firstChild) blk.firstChild.textContent = 'With a password set, other devices reach it at'; ab.appendChild(blk); }
+    // The switch: off until it is turned on, and never on without a password. Turning it
+    // on with none set asks for one first, and the save turns it on.
+    $('#ra-switch-desc').textContent = a.remoteOpen ? 'On: your phone and other computers can use this app after signing in with the app password.' : 'Off: only this computer can use the app.';
+    $('#ra-switch').innerHTML = '';
+    $('#ra-switch').appendChild(toggleEl(a.remoteOpen, async (on) => {
+      if (on && a.source === 'none') { enableAfterSave = true; $('#ra-warn').hidden = false; $('#ra-new').focus(); throw new Error('password first'); }
+      await api('/access/remote', { method: 'POST', body: JSON.stringify({ on }) }); paintRemote(); refreshMe().catch(() => {});
+    }));
+    $('#ra-warn').hidden = !enableAfterSave;
+    const env = a.source === 'env';
+    $('#ra-pw-state').textContent = env ? 'Set in .env (REMOTE_PASSWORD) on this computer — change it there.' : a.source === 'app' ? 'Set. Other devices sign in with it; changing it signs them all out.' : 'Not set. At least ' + a.minLength + ' characters; setting one opens remote access, and every other device signs in once.';
+    $('#ra-pw-form').hidden = env;
+    // The desktop app is the person at this computer: it is never asked for the old one.
+    $('#ra-current').hidden = a.source !== 'app' || a.fromApp;
+    $('#ra-remove').hidden = a.source !== 'app';
+    $('#ra-save').textContent = a.source === 'app' ? 'Change password' : 'Set password';
+    $('#ra-new').placeholder = 'New password (' + a.minLength + '+ characters)';
+    const list = $('#ra-devices'); list.innerHTML = '';
+    if (!a.devices.length) list.appendChild(el('div', 'muted small pad', a.source === 'none' ? 'No password, so no other device can connect.' : 'No devices signed in with the password yet.'));
+    for (const d of a.devices) {
+      const r = el('div', 'ct-row'); const info = el('div', 'ct-info');
+      const n = el('div', 'ct-name'); n.appendChild(document.createTextNode(d.name)); if (d.current) n.appendChild(el('span', 'tag', 'This device')); info.appendChild(n);
+      info.appendChild(el('div', 'ct-desc', [d.ip, 'signed in ' + ago(d.createdAt), 'last seen ' + ago(d.lastSeen)].filter(Boolean).join(' · ')));
+      r.appendChild(info);
+      const b = el('button', 'btn btn-ghost small', d.current ? 'Sign out' : 'Revoke'); b.type = 'button';
+      b.onclick = async () => { await api('/access/devices/' + d.id, { method: 'DELETE' }); if (d.current) return logout(); paintRemote(); };
+      r.appendChild(b); list.appendChild(r);
+    }
+    $('#ra-failures-box').hidden = !a.failures.length;
+    $('#ra-failures').innerHTML = ''; for (const f of a.failures) $('#ra-failures').appendChild(el('div', 'ct-desc', f.ip + ' · ' + ago(f.at)));
+  }
+  let enableAfterSave = false; // the switch was turned on before there was a password
+  async function savePassword(password) {
+    $('#ra-error').hidden = true;
+    try {
+      const r = await api('/access/password', { method: 'POST', body: JSON.stringify({ current: $('#ra-current').value, password }) });
+      // The server signed every device out and gave this one a new token.
+      state.token = r.token; try { localStorage.setItem('cr.token', r.token); } catch {}
+      if (password && enableAfterSave) await api('/access/remote', { method: 'POST', body: JSON.stringify({ on: true }) });
+      enableAfterSave = false;
+      $('#ra-current').value = ''; $('#ra-new').value = ''; $('#ra-new').type = 'password';
+      paintRemote(); refreshMe().catch(() => {});
+    } catch (e) { $('#ra-error').hidden = false; $('#ra-error').textContent = e.message; }
+  }
+  $('#ra-save').addEventListener('click', () => { const p = $('#ra-new').value; if (!p) return $('#ra-new').focus(); savePassword(p); });
+  $('#ra-remove').addEventListener('click', () => { if (confirm('Remove the app password?\n\nRemote access closes: only this computer will be able to use the app. Every other device — phones, browsers, other computers, a tunnel — is disconnected until a password is set again.')) savePassword(''); });
+  // Readable, long, and shown once so it can be written down or saved in a password manager.
+  $('#ra-generate').addEventListener('click', () => {
+    const words = 'amber,birch,cobalt,delta,ember,fjord,garnet,harbor,indigo,juniper,krypton,lagoon,meadow,nectar,onyx,prairie,quartz,raven,sierra,tundra,umber,velvet,willow,xenon,yonder,zephyr'.split(',');
+    const pick = () => words[crypto.getRandomValues(new Uint32Array(1))[0] % words.length];
+    const n = crypto.getRandomValues(new Uint32Array(1))[0] % 900 + 100;
+    $('#ra-new').value = [pick(), pick(), pick(), pick()].join('-') + '-' + n; $('#ra-new').type = 'text'; $('#ra-new').select();
+  });
 
   async function openComputers() {
     if (settingsModal.classList.contains('hidden') || !$('.set-pane[data-pane="computers"]').classList.contains('on')) return openSettings('computers');
