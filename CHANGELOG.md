@@ -7,6 +7,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **A "No folder" chat has a folder of its own.** It ran from the home directory, as
+  Desktop's do, and everything Claude made there - a page, a CSV, a script - was left in
+  the home folder with no way to tell which chat it came from. Each one now works in
+  `~/.claude-anywhere/chats/<session id>/` (`CLAUDE_ANYWHERE_CHATS_DIR` moves it): the id
+  is chosen before the session starts and handed to the SDK, so folder and session share a
+  name. In the sidebar they are one group, *Chats*; the folder chip says *Chats* inside one,
+  and New goes back to the folder that was picked rather than into that chat's.
+
 ## [0.10.3] — 2026-09-30
 
 ## [0.10.2] — 2026-09-29

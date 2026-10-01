@@ -26,7 +26,7 @@ import * as runsMod from './lib/runs.mjs';
 const execFileP = promisify(execFile);
 import { tailSession, isWorkingElsewhere, WORKING_WINDOW_MS, sessionFile } from './lib/tail.mjs';
 import { parsePreviewUrl, portFromReferer, proxyRequest, proxyUpgrade, listLocalPorts, proxyAtRoot, upgradeAtRoot, listenOn, injectBridge } from './lib/preview.mjs';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { searchTranscripts } from './lib/search.mjs';
 import * as worktrees from './lib/worktrees.mjs';
 import * as pr from './lib/pr.mjs';
@@ -346,6 +346,9 @@ bus.on('permission_resolved', ({ sessionId }) => { if (sessionId && attention[se
 bus.on('turn_done', ({ sessionId, isError }) => { if (!sessionId) return; const a = attn(sessionId); a.unread = true; a.failed = !!isError; delete a.needsInput; a.at = Date.now(); saveAttention(); });
 const isWaiting = (id) => [...pendingPermissions.values()].some((p) => p.run.sessionId === id);
 
+// Where "No folder" chats keep what they make: ~/.claude-anywhere/chats/<session id>/.
+const CHATS_DIR = path.resolve(envOf('CHATS_DIR') || path.join(os.homedir(), '.claude-anywhere', 'chats'));
+const isChat = (cwd) => !!cwd && path.dirname(path.resolve(cwd)).toLowerCase() === CHATS_DIR.toLowerCase();
 const shape = (s, pinned) => ({
   id: s.sessionId,
   needsInput: isWaiting(s.sessionId) || (isLive(s.sessionId) && !!attention[s.sessionId]?.needsInput),
@@ -353,7 +356,9 @@ const shape = (s, pinned) => ({
   unread: !!attention[s.sessionId]?.unread,
   title: s.customTitle || s.summary || s.firstPrompt || 'Untitled',
   cwd: s.cwd || '',
-  project: s.cwd ? path.basename(s.cwd) : '',
+  // A chat's folder is named by its id, which is no name to show: they are "Chats", together.
+  project: isChat(s.cwd) ? 'Chats' : s.cwd ? path.basename(s.cwd) : '',
+  chat: isChat(s.cwd),
   branch: s.gitBranch || '',
   lastModified: s.lastModified,
   createdAt: s.createdAt,
@@ -952,7 +957,8 @@ app.get('/api/sessions', async (req, res, next) => {
 app.get('/api/projects', async (_req, res, next) => {
   try {
     const seen = new Map();
-    for (const s of await listSessions({ limit: 500 })) { const k = s.cwd && path.normalize(s.cwd).toLowerCase(); if (k && !seen.has(k)) seen.set(k, { cwd: s.cwd, name: path.basename(s.cwd), lastModified: s.lastModified }); }
+    // Each chat's own folder is not a project to start another session in.
+    for (const s of await listSessions({ limit: 500 })) { const k = s.cwd && !isChat(s.cwd) && path.normalize(s.cwd).toLowerCase(); if (k && !seen.has(k)) seen.set(k, { cwd: s.cwd, name: path.basename(s.cwd), lastModified: s.lastModified }); }
     res.json([...seen.values()].sort((a, b) => b.lastModified - a.lastModified));
   } catch (e) { next(e); }
 });
@@ -1122,11 +1128,17 @@ app.post('/api/sessions/:id/controls', async (req, res, next) => {
 app.post('/api/sessions', async (req, res) => {
   const { text: prompt, images } = parseAttachments(req.body);
   let cwd = String(req.body?.cwd || '').trim();
-  if (!cwd || cwd === '~') cwd = os.homedir(); // "No folder": Desktop runs those from the home directory
+  // "No folder": a folder of the chat's own, named after its session id, in the app's chats
+  // folder. Desktop runs these from the home directory, and everything Claude made there was
+  // left lying in it - a page, a CSV, a script - mixed with the person's own files and with
+  // no way to tell which chat it came from. The id is chosen here and handed to the SDK, so
+  // the folder and the session are the same name.
+  let newId;
+  if (!cwd || cwd === '~') { newId = randomUUID(); cwd = path.join(CHATS_DIR, newId); fs.mkdirSync(cwd, { recursive: true }); }
   if (!prompt && !images.length) return res.status(400).json({ error: 'Empty message' });
   if (!fs.existsSync(cwd)) return res.status(400).json({ error: 'That folder does not exist on this machine.' });
   const { model, permissionMode, effort } = req.body || {};
-  const { run, ready } = startRun({ cwd, prompt, images, model, permissionMode, effort, disabledMcp: readPrefs().disabledMcp || [] });
+  const { run, ready } = startRun({ newId, cwd, prompt, images, model, permissionMode, effort, disabledMcp: readPrefs().disabledMcp || [] });
   try {
     const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('Claude Code did not start in time')), 60000));
     const sessionId = await Promise.race([ready, timeout]);

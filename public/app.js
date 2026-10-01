@@ -759,7 +759,8 @@
   // new sessions to the top of their project, once; after that only drag-and-drop
   // (or Move up / Move down on the phone) changes the order. Saved on the server.
   state.order = { projects: [], sessions: {}, pinned: [] };
-  const groupKey = (s) => (s.cwd || s.project || 'Other').replace(/[\\/]+$/, '').toLowerCase();
+  // "No folder" chats each have a folder of their own (named by id); they group as one, Chats.
+  const groupKey = (s) => (s.chat ? '__chats' : (s.cwd || s.project || 'Other').replace(/[\\/]+$/, '').toLowerCase());
   function applyOrder() {
     const o = state.order; let changed = false;
     const groups = new Map();
@@ -853,7 +854,8 @@
         // "+" on the project row: a new session in that folder, like Desktop
         const add = el('button', 'proj-add'); add.type = 'button'; add.title = 'New session in ' + name;
         add.innerHTML = '<svg viewBox="0 0 20 20" width="14" height="14"><path d="M10 4v12M4 10h12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
-        add.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); state.cwd = items[0].cwd; localStorage.setItem('cr.cwd', state.cwd); location.hash = '#/'; renderProjectChip(); });
+        // On Chats, "+" is a new chat of its own - not one more in an earlier chat's folder.
+        add.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); state.cwd = items[0].chat ? '' : items[0].cwd; if (state.cwd) localStorage.setItem('cr.cwd', state.cwd); else localStorage.removeItem('cr.cwd'); location.hash = '#/'; renderProjectChip(); });
         sm.appendChild(add);
         sm.title = items[0].cwd + (manual ? '\nDrag to reorder projects' : '');
       }
@@ -961,7 +963,7 @@
   const folderName = (p) => (p || '').replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p;
   async function renderProjectChip() {
     const p = state.projects.find((x) => x.cwd === state.cwd);
-    const name = state.cwd ? (p ? p.name : folderName(state.cwd)) : 'No folder';
+    const name = state.cwdIsChat ? 'Chats' : state.cwd ? (p ? p.name : folderName(state.cwd)) : 'No folder';
     $('#project-name').textContent = name;
     $('#nb-folder-name').textContent = name;
     // branch of the chosen folder, for the chip next to it
@@ -3825,7 +3827,9 @@
       applySessionSettings(info.settings);
       $('#chat-meta').textContent = info.project || '';
       $('#chat-meta').title = [info.cwd, info.branch && 'Branch: ' + info.branch].filter(Boolean).join('\n');
-      state.cwd = info.cwd || state.cwd; renderProjectChip(); pvFollow(); $('#project-btn').classList.add('locked');
+      // A chat's own folder is where it works (the Files panel, the Browser, relative paths), but
+      // it is not a folder to start the next session in: New goes back to what was picked.
+      state.cwd = info.cwd || state.cwd; state.cwdIsChat = !!info.chat; renderProjectChip(); pvFollow(); $('#project-btn').classList.add('locked');
       renderHistory(messages);
       paintHistoryTop();
       // The last turn never finished (the app or the PC restarted mid-work): say so, offer to go on.
@@ -3850,6 +3854,7 @@
   }
   function openNew() {
     openSeq++; // a session still loading must not paint over the new-chat screen
+    if (state.cwdIsChat) { state.cwdIsChat = false; state.cwd = localStorage.getItem('cr.cwd') || ''; renderProjectChip(); }
     hist.id = null; hist.more = false;
     state.current = null; state.live = null; state.tasks = []; hiddenTasks.clear(); paintTasks(); if (changesOpen) closeChanges(); if (filesOpen) closeFiles(); stopPrWatch(); $("#sb-pr-state").classList.add("hidden");
     if (state.es) { state.es.close(); state.es = null; }
