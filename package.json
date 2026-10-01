@@ -31,7 +31,7 @@
     "release": "node scripts/release.mjs",
     "check": "node --check server.mjs && node --check lib/runs.mjs && node --check lib/tail.mjs && node --check lib/auth.mjs && node --check public/app.js",
     "test": "node --test test/browser.test.mjs test/history.test.mjs",
-    "test:ui": "node test/ui/browser.cjs && node test/ui/queue.cjs && node test/ui/history.cjs",
+    "test:ui": "node test/ui/browser.cjs && node test/ui/queue.cjs && node test/ui/history.cjs && node test/ui/files.cjs",
     "mobile": "node scripts/mobile.mjs",
     "tauri": "npx -y @tauri-apps/cli@^2"
   },

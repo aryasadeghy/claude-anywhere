@@ -7,6 +7,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **A file Claude sends opens, whatever it is.** Anything that was not a picture or a
+  recording linked to `/api/file`, which serves pictures only, so a sent `.html` opened to
+  "Not an image on this PC". Each is now a card saying what it is, and a click opens it the
+  way it reads: a page or a PDF in the Browser, Markdown rendered (with *Source*), CSV as a
+  table, JSON indented, code as code, a recording playing - and *Download* for all of it,
+  including what cannot be shown. `/api/file` hands those out as downloads only, so a page
+  never runs on the app's own origin.
+
 ## [0.10.3] — 2026-09-30
 
 ## [0.10.2] — 2026-09-29

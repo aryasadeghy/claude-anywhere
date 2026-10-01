@@ -1253,9 +1253,16 @@ app.get('/api/file', async (req, res) => {
     let p = path.isAbsolute(raw) ? raw : (cwd ? path.resolve(cwd, raw) : '');
     if (!p) return res.status(400).json({ error: 'No path' });
     p = path.normalize(p);
-    if (!IMAGE_EXT.test(p) || !fs.existsSync(p) || !fs.statSync(p).isFile()) return res.status(404).json({ error: 'Not an image on this PC' });
+    if (!fs.existsSync(p) || !fs.statSync(p).isFile()) return res.status(404).json({ error: 'Not on this PC' });
     if (!(await insideProjectRoots(p))) return res.status(403).json({ error: 'Outside the project folders' });
-    res.sendFile(p, { headers: { 'Cache-Control': 'private, max-age=60' }, acceptRanges: true });
+    // Pictures, video and sound play inline. Anything else - a file Claude sent, the
+    // Download button in the Files panel - is handed over as a download only: served
+    // inline from the app's own origin, an HTML page would run as the app. (Pages render
+    // in the Browser, on an origin of their own.) Before, every other file was a 404
+    // reading "Not an image on this PC", which is what a sent .html opened to.
+    if (IMAGE_EXT.test(p) && !req.query.download) return res.sendFile(p, { headers: { 'Cache-Control': 'private, max-age=60' }, acceptRanges: true });
+    res.attachment(path.basename(p));
+    res.sendFile(p, { headers: { 'Cache-Control': 'private, max-age=60', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': 'sandbox' }, acceptRanges: true });
   } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
 });
 

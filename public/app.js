@@ -1848,6 +1848,37 @@
     const d = groupDiff(g._names, g._inputs);
     if (d.add || d.del) { const st = el('span', 'group-diff'); st.innerHTML = `<span class="add">+${d.add.toLocaleString()}</span> <span class="del">−${d.del.toLocaleString()}</span>`; s.appendChild(st); }
   }
+  // A file Claude sent that is not a picture or a recording: a card, as Claude shows one -
+  // what it is, and a click that opens it in the side panel, rendered the way it reads.
+  // (It was a link to /api/file, which serves pictures only: a sent .html opened to
+  // "Not an image on this PC".)
+  const FILE_KINDS = [
+    [/\.(html?)$/i, 'Web page'], [/\.pdf$/i, 'PDF'], [/\.svg$/i, 'Image'], [/\.(md|markdown|mdx)$/i, 'Document'],
+    [/\.(csv|tsv)$/i, 'Table'], [/\.(json|jsonl|ya?ml|toml|xml)$/i, 'Data'], [/\.(txt|log|rtf)$/i, 'Text'],
+    [/\.(docx?|odt|pages)$/i, 'Word document'], [/\.(xlsx?|ods|numbers)$/i, 'Spreadsheet'], [/\.(pptx?|odp|key)$/i, 'Presentation'],
+    [/\.(zip|tar|gz|tgz|7z|rar)$/i, 'Archive'],
+    [/\.(m?[jt]sx?|py|rb|go|rs|java|kt|swift|c|h|cc|cpp|hpp|cs|php|sh|ps1|sql|css|scss|lua|r|dart|vue|svelte)$/i, 'Code'],
+  ];
+  const fileKind = (p) => (FILE_KINDS.find(([re]) => re.test(p)) || [null, 'File'])[1];
+  const fileExt = (p) => (String(p).match(/\.([A-Za-z0-9]{1,8})$/) || [, ''])[1].toUpperCase();
+  function fileCard(p) {
+    const b = el('button', 'sent-file'); b.type = 'button'; b.title = p;
+    const ic = el('span', 'sent-file-ic'); ic.innerHTML = FX_FILE; b.appendChild(ic);
+    const tx = el('span', 'sent-file-text');
+    tx.appendChild(el('span', 'sent-file-name', baseName(p)));
+    tx.appendChild(el('span', 'sent-file-kind', fileKind(p) + (fileExt(p) ? ' · ' + fileExt(p) : '')));
+    b.appendChild(tx);
+    b.addEventListener('click', () => openSentFile(p));
+    return b;
+  }
+  function openSentFile(p) {
+    const sep = String(state.cwd || '').includes('\\') ? '\\' : '/';
+    const abs = /^([A-Za-z]:[\\/]|\/)/.test(p) || !state.cwd ? p : state.cwd.replace(/[\\/]+$/, '') + sep + p;
+    if (/\.(html?|pdf|svg)$/i.test(abs)) return openFileInBrowser(abs);
+    if (!filesOpen) openFiles();
+    openFileAt(abs, baseName(p));
+  }
+
   // What SendUserFile delivered, shown the way Desktop shows it: caption, then the files inline.
   function sentCard(input) {
     const card = el('div', 'sent-card');
@@ -1859,7 +1890,7 @@
       if (isVideo(p)) media.appendChild(videoEl(src));
       else if (isAudio(p)) { const a = el('audio', 'md-audio'); a.controls = true; a.src = src; media.appendChild(a); }
       else if (/\.(png|jpe?g|gif|webp|svg|bmp|avif)$/i.test(p)) { const im = el('img', 'md-img sent-img'); im.src = src; im.alt = baseName(p); im.loading = 'lazy'; im.addEventListener('click', () => openImage(src, baseName(p))); media.appendChild(im); }
-      else { const chip = el('a', 'sent-file'); chip.textContent = baseName(p); chip.title = p; chip.href = src; chip.target = '_blank'; media.appendChild(chip); }
+      else media.appendChild(fileCard(p));
     }
     if (files.length) card.appendChild(media);
     return card;
@@ -2917,13 +2948,13 @@
   $('#fx-close').addEventListener('click', closeFiles);
   $('#fx-home').addEventListener('click', () => loadDir(fxHome || state.cwd || ''));
   $('#fx-up').addEventListener('click', () => { if (!fxView.classList.contains('hidden')) return showDir(); const up = fxDir.replace(/[\\/]+$/, '').replace(/[\\/][^\\/]+$/, ''); if (up) loadDir(up); });
-  const showDir = () => { fxView.classList.add('hidden'); fxView.textContent = ''; fxList.classList.remove('hidden'); $('#fx-path').textContent = fxDir; };
+  const showDir = () => { fxView.classList.add('hidden'); fxView.classList.remove('fx-rich'); fxView.textContent = ''; fxList.classList.remove('hidden'); $('#fx-path').textContent = fxDir; };
   async function loadDir(dir) {
     if (!dir) { fxList.innerHTML = ''; fxList.appendChild(el('div', 'muted small pad', 'This session has no folder.')); return; }
     showDir();
     try {
       const d = await api('/browse?files=1&path=' + encodeURIComponent(dir));
-      fxDir = d.path; $('#fx-path').textContent = d.path;
+      fxDir = d.path; if (fxView.classList.contains('hidden')) $('#fx-path').textContent = d.path; // a file opened over the list keeps its own path
       fxList.innerHTML = '';
       for (const x of d.dirs) {
         const b = el('button', 'fx-row'); b.type = 'button';
@@ -2948,14 +2979,11 @@
     // than being printed as text here. (Clicking one used to show its markup, which read as
     // the file failing to open.)
     if (/\.(html?|pdf|svg)$/i.test(p)) return openFileInBrowser(p);
-    fxList.classList.add('hidden'); fxView.classList.remove('hidden'); fxView.textContent = 'Opening…'; $('#fx-path').textContent = p;
+    fxList.classList.add('hidden'); fxView.classList.remove('hidden', 'fx-rich'); fxView.textContent = 'Opening…'; $('#fx-path').textContent = p;
     try {
       const r = await api('/fs/read?path=' + encodeURIComponent(p));
       fxView.textContent = '';
-      // An image is shown, not printed: the same route the chat uses for local pictures.
-      if (r.image) { const img = el('img'); img.src = localFileUrl(p); img.alt = name; img.addEventListener('click', () => openImage(img.src, name)); fxView.appendChild(img); return; }
-      if (r.binary) { fxView.textContent = name + ' is not text (' + fxSize(r.size) + ').'; return; }
-      fxView.textContent = r.text + (r.truncated ? '\n\n… the first 512 KB of ' + fxSize(r.size) + '.' : '');
+      renderFile(p, name, r);
     } catch (e) {
       // The server's machine does not have this file. In the app it may sit on the machine
       // this window is on instead (a file you have locally while the session runs on another
@@ -2964,6 +2992,69 @@
       fxView.textContent = notThere(e.message);
     }
   }
+  // A file in the side panel the way Claude shows one: a document rendered, a table as a
+  // table, data indented, code as code, a recording playing - with Source to see the text
+  // behind a rendered one, and Download for anything, including what cannot be shown.
+  function renderFile(p, name, r) {
+    fxView.classList.add('fx-rich');
+    const bar = el('div', 'fx-bar');
+    bar.appendChild(el('span', 'fx-kind', fileKind(p) + (r.size != null ? ' · ' + fxSize(r.size) : '')));
+    bar.appendChild(el('span', 'fx-spacer'));
+    const dl = el('button', 'link-btn small', 'Download'); dl.type = 'button'; dl.addEventListener('click', () => downloadFile(p)); 
+    fxView.appendChild(bar);
+    const body = el('div', 'fx-body'); fxView.appendChild(body);
+    const src = localFileUrl(p);
+    const code = (text) => { const pre = el('pre', 'fx-code'); pre.textContent = text; return pre; };
+    if (r.image) {
+      if (isVideo(p)) body.appendChild(videoEl(src));
+      else if (isAudio(p)) { const a = el('audio', 'md-audio'); a.controls = true; a.src = src; body.appendChild(a); }
+      else { const img = el('img'); img.src = src; img.alt = name; img.addEventListener('click', () => openImage(src, name)); body.appendChild(img); }
+      bar.appendChild(dl); return;
+    }
+    if (r.binary) {
+      body.appendChild(el('div', 'fx-note', name + ' can\u2019t be shown here' + (/Word|Spreadsheet|Presentation/.test(fileKind(p)) ? ' yet' : '') + '. Download it to open it with its own app.'));
+      bar.appendChild(dl); return;
+    }
+    const text = r.text + (r.truncated ? '\n\n… the first 512 KB of ' + fxSize(r.size) + '.' : '');
+    let rendered = null;
+    if (/\.(md|markdown|mdx)$/i.test(p)) { rendered = el('div', 'prose fx-md'); rendered.dir = 'auto'; rendered.innerHTML = md(r.text); }
+    else if (/\.(csv|tsv)$/i.test(p)) rendered = csvTable(r.text, /\.tsv$/i.test(p) ? '\t' : ',');
+    else if (/\.json$/i.test(p)) { try { rendered = code(JSON.stringify(JSON.parse(r.text), null, 2)); } catch {} }
+    if (rendered && !/\.json$/i.test(p)) {
+      const raw = code(text); raw.classList.add('hidden');
+      const tog = el('button', 'link-btn small', 'Source'); tog.type = 'button';
+      tog.addEventListener('click', () => { const showRaw = raw.classList.toggle('hidden') === false; rendered.classList.toggle('hidden', showRaw); tog.textContent = showRaw ? 'Preview' : 'Source'; });
+      bar.appendChild(tog); body.appendChild(rendered); body.appendChild(raw);
+    } else body.appendChild(rendered || code(text));
+    bar.appendChild(dl);
+  }
+  // CSV as a table: quoted fields, doubled quotes and line breaks inside quotes, as
+  // spreadsheets write them. The first 500 rows; the rest is in Source and Download.
+  function csvTable(text, sep) {
+    const rows = []; let row = [], f = '', q = false;
+    for (let i = 0; i < text.length && rows.length < 501; i++) {
+      const c = text[i];
+      if (q) { if (c === '"') { if (text[i + 1] === '"') { f += '"'; i++; } else q = false; } else f += c; }
+      else if (c === '"') q = true;
+      else if (c === sep) { row.push(f); f = ''; }
+      else if (c === '\n' || c === '\r') { if (c === '\r' && text[i + 1] === '\n') i++; row.push(f); rows.push(row); row = []; f = ''; }
+      else f += c;
+    }
+    if (f || row.length) { row.push(f); rows.push(row); }
+    const wrap = el('div', 'fx-table-wrap'), t = el('table', 'fx-table');
+    rows.slice(0, 501).forEach((cells, i) => { const tr = el('tr'); for (const v of cells) tr.appendChild(el(i ? 'td' : 'th', null, v)); t.appendChild(tr); });
+    wrap.appendChild(t);
+    if (rows.length > 500) wrap.appendChild(el('div', 'fx-note', 'The first 500 rows.'));
+    return wrap;
+  }
+  // Download by the server's /api/file?download: in the app, the system browser saves it
+  // (a webview does not always save a download); in a browser, an ordinary download.
+  function downloadFile(p) {
+    const url = localFileUrl(p) + '&download=1';
+    if (window.__TAURI__?.opener?.openUrl) return openExternal(location.origin + url);
+    const a = el('a'); a.href = url; a.download = baseName(p); document.body.appendChild(a); a.click(); a.remove();
+  }
+
   // A file the server's machine cannot see, read from the window's machine through the shell.
   // Only in the app (a plain browser has no shell) and only as a fallback, so the ordinary
   // path is untouched.
