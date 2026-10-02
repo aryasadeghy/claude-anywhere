@@ -28,7 +28,10 @@ before(async () => {
 });
 after(async () => {
   await app?.stop(); await dev?.close();
-  fs.rmSync(tmp, { recursive: true, force: true });
+  // The Claude Code the app starts for its model list outlives a killed app by a moment and
+  // is still writing into the config folder (ENOTEMPTY on Linux CI, as in history.test.mjs):
+  // retry, and never fail a run over a temp folder.
+  try { fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); } catch {}
 });
 
 test('the frames ride on a preview key of their own, never the sign-in token', () => {
