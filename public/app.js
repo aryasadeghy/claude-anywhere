@@ -2279,7 +2279,11 @@
       return pick;
     };
     const remember = () => { anchor = stickToBottom ? null : atTop(); if (anchor) anchorTop = anchor.getBoundingClientRect().top; };
-    scroll.addEventListener('scroll', remember, { passive: true });
+    // Only the reader's own scrolling picks a new anchor. The page's own scroll (past an older
+    // page, or a correction below) already measured from where it landed, and its event comes a
+    // frame later - after a picture that settled in between has moved everything, so measuring
+    // then took the moved view as the right one. CI's slow WebKit drifted 217 px exactly so.
+    scroll.addEventListener('scroll', () => { if (!(Math.abs(scroll.scrollTop - ownTop) < 2)) remember(); }, { passive: true });
     reanchor = remember; // an older page, placed and scrolled for: measure from here, not from before it
     new ResizeObserver(() => {
       if (anchor?.isConnected && !stickToBottom && !holdScroll) { const d = anchor.getBoundingClientRect().top - anchorTop; if (Math.abs(d) >= 1) scrollThreadTo(scroll.scrollTop + d); }
