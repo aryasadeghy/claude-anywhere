@@ -33,6 +33,7 @@ import * as pr from './lib/pr.mjs';
 import * as awake from './lib/awake.mjs';
 import * as update from './lib/update.mjs';
 import * as models from './lib/models.mjs';
+import * as claudeCode from './lib/claude-code.mjs';
 import * as access from './lib/access.mjs';
 import { getAuth, activeAccount, setActive, setToken, clearToken, setProvider, clearProvider, classifyToken, envFor, localSource, verifyEnv, candidateEnv, candidateProviderEnv } from './lib/auth.mjs';
 
@@ -798,6 +799,7 @@ function listPlugins() {
 // The model menu, straight from the CLI: same names, same descriptions, same effort
 // levels per model as Claude Code and Claude Desktop show. Cached on disk, so the
 // menu is right on the first paint and a refresh happens behind it.
+claudeCode.useDir(path.join(DATA_DIR, 'claude-code')); // first: asking for the menu starts Claude Code
 models.useCache(DATA_DIR);
 models.warm().catch(() => {});
 // Refresh waits: a background refresh would answer with the very list it was asked to
@@ -1348,8 +1350,19 @@ app.get('/api/version', (_req, res) => {
   const changed = newerThan(serverFiles, SERVER_STARTED_AT);
   const shellChanged = exeAt ? newerThan(shellFiles, exeAt) : [];
   const git = gitInfo();
-  res.json({ ...git, commit: git.commit || appCommit.slice(0, 7), version: appVersion, repo: REPO, platform: process.platform, host: process.env.COMPUTERNAME || process.env.HOSTNAME || 'this computer', serverDir: here, serverStartedAt: SERVER_STARTED_AT, appExe: envOf('APP_EXE') || null, appBuiltAt: exeAt, devBuild: devBuild(), liveRuns: liveCount(), inApp: !!envOf('PARENT_PID'), restartQueued, stale: changed.length > 0, changed, shellStale: shellChanged.length > 0, shellChanged, update: update.status({ repo: REPO, version: appVersion, platform: process.platform }) });
+  res.json({ ...git, commit: git.commit || appCommit.slice(0, 7), version: appVersion, repo: REPO, platform: process.platform, host: process.env.COMPUTERNAME || process.env.HOSTNAME || 'this computer', serverDir: here, serverStartedAt: SERVER_STARTED_AT, appExe: envOf('APP_EXE') || null, appBuiltAt: exeAt, devBuild: devBuild(), liveRuns: liveCount(), inApp: !!envOf('PARENT_PID'), restartQueued, stale: changed.length > 0, changed, shellStale: shellChanged.length > 0, shellChanged, update: update.status({ repo: REPO, version: appVersion, platform: process.platform }), claudeCode: { version: claudeCode.version(), using: claudeCode.status().using } });
 });
+
+// Claude Code on this computer: Settings › General shows the version, asks npm for a newer one,
+// and takes it on request - from any device, since the binary belongs to the machine that runs it.
+app.get('/api/claude-code', (_req, res) => res.json(claudeCode.status()));
+// Check now asks npm; opening Settings sends force: false and takes an answer up to five minutes old.
+app.post('/api/claude-code/check', async (req, res) => res.json(await claudeCode.check({ force: req.body?.force !== false })));
+app.post('/api/claude-code/update', (_req, res) => {
+  try { res.json(claudeCode.update()); } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+});
+app.post('/api/claude-code/bundled', (_req, res) => res.json(claudeCode.useBundled()));
+
 // "Check again" in the App panel: the hourly cache is fine for a banner, less so for
 // someone standing there having just merged a pull request.
 app.post('/api/update/check', async (_req, res) => {

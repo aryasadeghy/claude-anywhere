@@ -6,6 +6,9 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
+import os from 'node:os';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
@@ -251,6 +254,68 @@ export async function startFakeApi({ delay = 15 } = {}) {
 // What the app needs to run Claude Code against the fake API: its address, a key it will accept,
 // and none of the CLI's own traffic elsewhere.
 export const fakeApiEnv = (api) => ({ ANTHROPIC_BASE_URL: api.url, ANTHROPIC_API_KEY: 'sk-ant-test-fake', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', DISABLE_TELEMETRY: '1', DISABLE_ERROR_REPORTING: '1', DISABLE_AUTOUPDATER: '1' });
+
+// A stand-in for the npm registry, for Settings' Claude Code update. The newest SDK says which
+// Claude Code it carries, and this platform's package is a real tarball holding `binary` - the
+// Claude Code the app came with, under a newer number. Set `state.integrity` to break the checksum,
+// `state.rate` to slow the download down.
+export async function startFakeRegistry({ binary, key, sdk = '0.3.999', cli = '2.1.999' }) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ca-registry-'));
+  const tgz = path.join(dir, 'package.tgz');
+  const pkg = `@anthropic-ai/claude-agent-sdk-${key}`;
+  await writeTarball(tgz, [['package/package.json', Buffer.from(JSON.stringify({ name: pkg, version: sdk }))], ['package/' + path.basename(binary), binary, 0o755]]);
+  const hash = crypto.createHash('sha512'); for await (const c of fs.createReadStream(tgz)) hash.update(c);
+  const state = { integrity: 'sha512-' + hash.digest('base64'), requests: [] };
+  const server = http.createServer((req, res) => {
+    const u = decodeURIComponent(req.url); // npm writes a scoped name @scope%2fname
+    state.requests.push(u);
+    const json = (o) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(o)); };
+    if (u === '/@anthropic-ai/claude-agent-sdk/latest') return json({ name: '@anthropic-ai/claude-agent-sdk', version: sdk, claudeCodeVersion: cli });
+    if (u === `/${pkg}/${sdk}`) return json({ name: pkg, version: sdk, dist: { tarball: url + '/tarballs/package.tgz', integrity: state.integrity } });
+    if (u === '/tarballs/package.tgz') {
+      res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': fs.statSync(tgz).size });
+      if (!state.rate) return fs.createReadStream(tgz).pipe(res);
+      // `state.rate` bytes a second, for a page to show the download as it goes.
+      return void (async () => {
+        for await (const c of fs.createReadStream(tgz, { highWaterMark: 1 << 20 })) {
+          if (res.destroyed) return;
+          if (!res.write(c)) await new Promise((r) => res.once('drain', r));
+          await new Promise((r) => setTimeout(r, (1000 * c.length) / state.rate));
+        }
+        res.end();
+      })();
+    }
+    res.writeHead(404, { 'content-type': 'application/json' }); res.end('{"error":"Not found"}');
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const url = `http://127.0.0.1:${server.address().port}`;
+  return { url, sdk, cli, state, close: () => new Promise((r) => { server.closeAllConnections?.(); server.close(() => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} r(); }); }) };
+}
+// A gzipped ustar archive, the way npm packs one: a 512-byte header per file, its bytes padded to 512.
+async function writeTarball(file, entries) {
+  const header = (name, size, mode) => {
+    const h = Buffer.alloc(512);
+    h.write(name, 0, 100, 'utf8');
+    h.write(mode.toString(8).padStart(7, '0') + '\0', 100, 'latin1');
+    h.write('0000000\0', 108, 'latin1'); h.write('0000000\0', 116, 'latin1');
+    h.write(size.toString(8).padStart(11, '0') + '\0', 124, 'latin1');
+    h.write(Math.floor(Date.now() / 1000).toString(8).padStart(11, '0') + '\0', 136, 'latin1');
+    h.write('        ', 148, 'latin1'); h[156] = 0x30; h.write('ustar\x0000', 257, 'latin1');
+    let sum = 0; for (const b of h) sum += b;
+    h.write(sum.toString(8).padStart(6, '0') + '\0 ', 148, 'latin1');
+    return h;
+  };
+  async function* tar() {
+    for (const [name, src, mode = 0o644] of entries) {
+      const size = Buffer.isBuffer(src) ? src.length : fs.statSync(src).size;
+      yield header(name, size, mode);
+      if (Buffer.isBuffer(src)) yield src; else for await (const c of fs.createReadStream(src)) yield c;
+      if (size % 512) yield Buffer.alloc(512 - (size % 512));
+    }
+    yield Buffer.alloc(1024);
+  }
+  await pipeline(Readable.from(tar()), zlib.createGzip({ level: 1 }), fs.createWriteStream(file));
+}
 
 // The app, on its own port and data, with no app password: this computer only, and the
 // open token for whoever signs in from it.

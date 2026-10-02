@@ -82,9 +82,14 @@ await page.goto('http://127.0.0.1:7779/');
 - **A new model needs a newer CLI, not a refresh.** Claude's catalog gives each model a
   `min_claude_code_version` (`~/.claude/cache/model-catalog/*-cc.json`), and a CLI below
   it hides the model — so `supportedModels()` answers correctly and still comes back
-  short. The version that decides is the one in
-  `node_modules/@anthropic-ai/claude-agent-sdk/manifest.json`, which `lib/models.mjs`
-  keeps beside the cached list and treats as its expiry.
+  short. The version that decides is the Claude Code that runs — `claudeCode.version()`,
+  which `lib/models.mjs` keeps beside the cached list and treats as its expiry.
+- **Claude Code can be newer than the SDK.** The SDK carries Claude Code as a native binary
+  in a per-platform package (`@anthropic-ai/claude-agent-sdk-win32-x64/claude.exe`), and
+  Settings › General › Claude Code fetches that package from npm at its newest version into
+  `DATA_DIR/claude-code/` (`lib/claude-code.mjs`). Every `query()` spreads
+  `claudeCode.spawnOptions()` — its `pathToClaudeCodeExecutable` — or it quietly runs the
+  app's own, older one. The SDK's JavaScript stays as shipped and drives the newer binary.
 - **A link in the page opens nothing by itself.** `target="_blank"` and `window.open`
   are ignored by the webview, so a link in a message looked broken and the address had
   to be copied. The page has to hand it to the shell — `opener.openUrl` — and that needs

@@ -978,3 +978,9 @@ audio.lb-media { width: min(520px, 90vw); height: auto; }
 .tool-group > summary .task-failed { color: var(--danger); }
 /* The chat keeps its own scroll anchor (app.js), the same in every browser. */
 #scroll { overflow-anchor: none; }
+
+/* ---------- v51: Claude Code in Settings - which one runs, and a newer one from npm ---------- */
+.set-bar { height: 3px; margin-top: 8px; border-radius: 2px; background: var(--line); overflow: hidden; }
+.set-bar > span { display: block; height: 100%; width: 0; background: var(--accent); transition: width .5s ease; }
+#set-cc-more:empty { display: none; }
+#set-cc-more .link-btn { padding: 4px 0 0; text-align: left; color: var(--ink-2); text-decoration: underline; text-underline-offset: 3px; }
