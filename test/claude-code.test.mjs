@@ -21,8 +21,9 @@ const downloaded = () => { try { return JSON.parse(fs.readFileSync(path.join(dat
 // Is a process running this very binary? Asked of the system, not of the app.
 function runningFrom(file) {
   if (process.platform === 'linux') {
-    const real = fs.realpathSync(file);
-    return fs.readdirSync('/proc').filter((d) => /^\d+$/.test(d)).some((pid) => { try { return fs.readlinkSync(`/proc/${pid}/exe`) === real; } catch { return false; } });
+    let real = file; try { real = fs.realpathSync(file); } catch {}
+    // A process keeps running a binary deleted under it, and Linux then names it "<path> (deleted)".
+    return fs.readdirSync('/proc').filter((d) => /^\d+$/.test(d)).some((pid) => { try { return fs.readlinkSync(`/proc/${pid}/exe`).replace(/ \(deleted\)$/, '') === real; } catch { return false; } });
   }
   if (process.platform === 'win32') {
     const out = execFileSync('powershell', ['-NoProfile', '-Command', `Get-CimInstance Win32_Process -Filter "Name='${path.basename(file)}'" | ForEach-Object { $_.ExecutablePath }`], { encoding: 'utf8' });
@@ -103,6 +104,7 @@ test('going back to the one the app came with ends the resting process, and the 
   assert.equal(s.using, 'bundled');
   assert.equal(s.version, cc.bundledVersion());
   assert.ok(!fs.existsSync(path.join(dataDir, 'claude-code', 'current.json')));
+  assert.ok(fs.existsSync(file), 'the download stays while the server runs: a turn could still be running on it');
   assert.ok(await until(() => !runningFrom(file), 30000), 'the process resting on the download went');
 
   const asked = api.requests.length;
@@ -110,4 +112,12 @@ test('going back to the one the app came with ends the resting process, and the 
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.ok(await until(() => api.requests.slice(asked).some((q) => q.path.endsWith('/v1/messages')), 60000), 'Claude Code asked the model');
   assert.ok(await until(() => runningFrom(own.file), 30000), 'the next process is the app\'s own Claude Code');
+});
+
+test('the next start removes the download nothing uses any more', async () => {
+  assert.notEqual(folder().length, 0);
+  await app.stop();
+  app = await startApp({ port: await freePort(), dataDir, configDir: path.join(tmp, 'claude'), env: { ...fakeApiEnv(api), npm_config_registry: registry.url } });
+  assert.deepEqual(folder(), []);
+  assert.equal((await call('/claude-code')).body.using, 'bundled');
 });
