@@ -230,6 +230,58 @@
     $('#set-update-desc').textContent = v
       ? 'You have ' + v.version + (v.commit ? ' · ' + v.commit : '') + (v.update?.newer ? ' — ' + v.update.latest + ' is out' : ' — up to date')
       : 'Claude Anywhere updates itself from GitHub.';
+    claudeCodeRow();
+  }
+  // ---------- Claude Code: the one that computer runs, and a newer one from npm ----------
+  // The app carries a Claude Code of its own, and a model or a fix newer than it used to wait
+  // for a release. The server can take the newest from npm instead (lib/claude-code.mjs); this
+  // row says which one runs, and takes the newer one when asked - from any device, for that
+  // computer.
+  const ccApi = (p = '', opts) => api('/claude-code' + p, opts).catch((e) => { if (e.status === 404) return null; throw e; });
+  let ccTimer = null, ccWasWorking = false;
+  async function claudeCodeRow() {
+    let s;
+    try {
+      paintClaudeCode(s = await ccApi());
+      // npm is asked on opening at most every five minutes; the server keeps the answer.
+      if (s && !(s.job && !['done', 'failed'].includes(s.job.phase))) paintClaudeCode(await ccApi('/check', { method: 'POST', body: JSON.stringify({ force: false }) }));
+    } catch (e) { $('#set-cc-desc').textContent = e.message; }
+  }
+  function paintClaudeCode(s) {
+    const desc = $('#set-cc-desc'), more = $('#set-cc-more'), btn = $('#set-cc-btn'), bar = $('#set-cc-bar');
+    clearTimeout(ccTimer); more.innerHTML = ''; bar.classList.add('hidden'); btn.hidden = false; btn.disabled = false;
+    // A page newer than its server: the checkout's pages change before the server restarts.
+    if (!s) { desc.textContent = 'Restart server to update Claude Code from here.'; btn.hidden = true; return; }
+    const j = s.job;
+    if (j && !['done', 'failed'].includes(j.phase)) {
+      desc.textContent = j.phase === 'download' ? 'Downloading ' + j.version + (j.total ? ' · ' + (mb(j.got) || '0 MB') + ' of ' + mb(j.total) : '…') : j.phase === 'unpack' ? 'Unpacking ' + j.version + '…' : 'Checking that ' + j.version + ' starts…';
+      bar.classList.remove('hidden'); bar.firstElementChild.style.width = (j.phase === 'download' && j.total ? Math.round((j.got / j.total) * 100) : 100) + '%';
+      btn.textContent = 'Updating…'; btn.disabled = true;
+      ccWasWorking = true;
+      // Only while Settings is open; opening it again picks the download up where it is.
+      ccTimer = setTimeout(async () => { if (!settingsModal.classList.contains('hidden')) paintClaudeCode(await ccApi().catch(() => s)); }, 700);
+      return;
+    }
+    // The model menu is that Claude Code's answer, so it can change with it.
+    if (ccWasWorking) { ccWasWorking = false; lastVersion = null; loadModels(true); }
+    const failed = j?.phase === 'failed' && s.newer;
+    desc.textContent = failed ? 'Could not update to ' + j.version + ': ' + j.error + '. ' + s.version + ' is still the one in use.'
+      : s.newer ? s.version + ' · ' + s.latest + ' is out'
+      : s.latest ? s.version + ' · up to date' + (s.checkedAt ? ' · checked ' + ago(s.checkedAt) : '')
+      : s.error ? s.version + ' · npm could not be asked: ' + s.error
+      : s.version;
+    if (j?.phase === 'done' && s.using === 'download' && !s.newer) more.appendChild(el('div', '', 'New messages use it. A turn already running finishes on the one it began with.'));
+    if (s.using === 'download') {
+      const back = el('button', 'link-btn small', 'Go back to ' + s.bundled + ', the one this app came with'); back.type = 'button';
+      back.addEventListener('click', async () => { back.disabled = true; try { paintClaudeCode(await ccApi('/bundled', { method: 'POST', body: '{}' })); lastVersion = null; loadModels(true); } catch (e) { desc.textContent = e.message; } });
+      more.appendChild(back);
+    }
+    btn.textContent = s.newer ? (failed ? 'Try again' : 'Update to ' + s.latest) : 'Check now';
+    btn.onclick = async () => {
+      btn.disabled = true; btn.textContent = s.newer ? 'Updating…' : 'Checking…';
+      try { paintClaudeCode(await ccApi(s.newer ? '/update' : '/check', { method: 'POST', body: '{}' })); }
+      catch (e) { btn.disabled = false; btn.textContent = 'Try again'; desc.textContent = e.message; }
+    };
   }
   async function paintAbout() {
     const box = $('#set-about'); box.innerHTML = '';
@@ -239,6 +291,7 @@
     const line = (k, val) => { const r = el('div', 'set-about-row'); r.appendChild(el('span', 'set-about-k', k)); r.appendChild(el('span', 'set-about-v', val)); box.appendChild(r); };
     line('Version', v ? v.version + (v.devBuild ? ' (checkout build)' : '') : '—');
     line('Commit', v?.commit || '—');
+    line('Claude Code', v?.claudeCode ? v.claudeCode.version + (v.claudeCode.using === 'download' ? ' (taken from npm)' : '') : '—');
     line('Platform', v?.platform || '—');
     line('This computer', me?.host || state.host || '—');
     line('Sessions', me?.account?.projectsDir || '~/.claude/projects');
