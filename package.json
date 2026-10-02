@@ -1,6 +1,6 @@
 {
   "name": "claude-anywhere",
-  "version": "0.10.3",
+  "version": "0.10.4",
   "description": "Your computer's Claude Code sessions, from any device, with any of your Claude accounts - self-hosted, no relay in the middle.",
   "keywords": [
     "claude",
