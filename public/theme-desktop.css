@@ -1052,3 +1052,17 @@ audio.lb-media { width: min(520px, 90vw); height: auto; }
 .plan-card.answered .plan-text { max-height: 160px; }
 .plan-comment-btn { position: fixed; z-index: 60; transform: translate(-50%, -100%); padding: 5px 10px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--bg-000); color: var(--ink); font-size: 12.5px; box-shadow: var(--shadow); cursor: pointer; }
 .plan-comment-btn.hidden { display: none; }
+
+/* The live plan box above the composer: TodoWrite's whole list, or TaskCreate/TaskUpdate's. */
+.plan-box { max-width: 48rem; width: 100%; margin: 0 auto 6px; padding: 7px 12px; border-radius: 12px; background: var(--bg-2); border: 1px solid var(--line); font-size: 13px; color: var(--ink); }
+.plan-box > summary { list-style: none; display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
+.plan-box > summary::-webkit-details-marker { display: none; }
+.plan-box-count, #plan-box-count { margin-inline-start: auto; color: var(--ink-3); font-size: 12.5px; }
+.todo-checklist { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.step-body .todo-checklist { margin-top: 0; }
+.todo-item { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; line-height: 1.4; }
+.todo-check { flex: none; width: 15px; height: 15px; margin-top: 1px; border-radius: 4px; border: 1.4px solid var(--line-2); background: var(--bg-3); }
+.todo-item.status-in_progress .todo-check { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 30%, transparent); }
+.todo-item.status-completed .todo-check { border-color: var(--success); background: var(--success); }
+.todo-item.status-completed .todo-label { color: var(--ink-3); text-decoration: line-through; }
+.todo-item.status-in_progress .todo-label { color: var(--ink); font-weight: 500; }

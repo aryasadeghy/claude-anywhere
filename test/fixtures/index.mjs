@@ -234,7 +234,7 @@ export async function startFakeApi({ delay = 15 } = {}) {
     const asking = /\[ask\]/.test(said);
     // The conversation package's own tags, each asking for one Claude-facing tool call (or
     // ExitPlanMode) instead of a Bash command - a fixed name and input, not the real model's.
-    const toolTag = (said.match(/\[(suggest|chapter|sugtask|status|plan)\]/) || [])[1];
+    const toolTag = (said.match(/\[(suggest|chapter|sugtask|status|plan|todo|tasktool)\]/) || [])[1];
     const words = afterTool ? (askedBefore ? `Noted: ${toolText.replace(/\s+/g, ' ').slice(0, 160)}` : 'Started it in the background.') : /\[background\]/.test(said) || asking || toolTag ? null : `Answer to: ${(said.match(/Q\d+/) || ['it'])[0]}. Done.`;
     if (!j.stream) {
       res.writeHead(200, { 'content-type': 'application/json' });
@@ -256,6 +256,8 @@ export async function startFakeApi({ delay = 15 } = {}) {
         sugtask: ['mcp__claude-anywhere__SuggestTask', { title: 'Write the README', prompt: 'Write a README for this project' }],
         status: ['mcp__claude-anywhere__SetSessionStatus', { status: 'ready_for_review', note: 'Looks good' }],
         plan: ['ExitPlanMode', { plan: '# Plan\n\n1. Do the first thing\n2. Do the second thing' }],
+        todo: ['TodoWrite', { todos: [{ content: 'Set up the database', status: 'completed', activeForm: 'Setting up the database' }, { content: 'Write the tests', status: 'in_progress', activeForm: 'Writing the tests' }, { content: 'Ship it', status: 'pending', activeForm: 'Shipping it' }] }],
+        tasktool: ['TaskCreate', { subject: 'Write the README', description: 'A short one', activeForm: 'Writing the README' }],
       };
       const [tagName, tagInput] = TOOL_TAGS[toolTag] || [];
       const name = asking ? 'AskUserQuestion' : tagName || 'Bash';

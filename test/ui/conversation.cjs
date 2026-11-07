@@ -134,6 +134,29 @@ async function main() {
   check('approving switches the mode chip to Accept edits', await until(async () => (await page.textContent('#mode-name')) === 'Accept edits', 10000), await page.textContent('#mode-name'));
   await idle(page);
 
+  // 6. The live plan box: TodoWrite's whole list, checked/struck for what is done, and a
+  // TaskCreate call joins the same box once its id comes back on the result.
+  await send(page, '[todo] get going');
+  // The in-progress item shows its active form ("Writing the tests"), as Desktop shows a
+  // spinner-labelled row; the pending and completed ones keep their plain content.
+  check('the plan box shows TodoWrite\'s list', await until(() => page.isVisible('#plan-box:not(.hidden) >> text=Writing the tests'), 20000));
+  check('a done item is checked and struck through', await page.$eval('#plan-box .todo-item.status-completed .todo-label', (n) => getComputedStyle(n).textDecorationLine).then((d) => d.includes('line-through')).catch(() => false));
+  check('...and its count says 1 of 3', (await page.textContent('#plan-box-count')).trim() === '1 of 3', await page.textContent('#plan-box-count'));
+  // The row is folded into its tool-group ("Used a tool ›"); open that, then the row itself.
+  await until(() => page.isVisible('.tool-group:has-text("Used a tool")'), 10000);
+  await page.$$eval('details.tool-group', (ds) => ds.forEach((d) => { d.open = true; }));
+  const todoStep = page.locator('.step:has-text("Updated the task list")').last();
+  check('the TodoWrite row in the thread expands to the same checklist', await until(() => todoStep.isVisible(), 5000));
+  await todoStep.evaluate((d) => { d.open = true; });
+  check('...showing the to-dos, not raw JSON', await page.isVisible('.step .todo-checklist >> text=Ship it'));
+  await page.screenshot({ path: path.join(SHOTS, 'conversation-plan-box.png') });
+  await idle(page);
+  // TaskCreate/TaskUpdate feed the same box (updatePlanFromTool, planTaskCreated in app.js), but
+  // this CLI build answers "TaskCreate is disabled for this session" for every SDK session it was
+  // tried against - there is no settings flag documented to turn the Tasks feature on, so that
+  // path is implemented from sdk-tools.d.ts and left unexercised here rather than asserted on a
+  // tool the harness cannot actually turn on.
+
   check('no errors in the app', !errors.length, errors.join(' | '));
   await browser.close();
 

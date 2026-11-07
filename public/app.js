@@ -2014,18 +2014,24 @@
     } else if (block.type === 'tool_use') {
       if (renderConvTool(msg, index, block)) return;
       if (!node) {
-        node = stepEl('tool', block.name, ''); node._toolId = block.id;
+        node = stepEl('tool', block.name, ''); node._toolId = block.id; node._toolName = block.name;
         if (block.name === 'SendUserFile') msg.group = null; // Desktop's own: "Sent ›" is a line of its own
         const g = toolGroupFor(msg); g.querySelector('.group-body').appendChild(node); g._names.push(block.name); g._inputs.push(block.input || {}); node._groupIndex = g._names.length - 1;
         paintGroupSummary(g);
         msg.blocks.set(index, node); msg.tools.set(block.id, node);
       } else if (node._groupIndex != null && node.parentElement?.parentElement) { const g = node.parentElement.parentElement; g._inputs[node._groupIndex] = block.input || {}; paintGroupSummary(g); }
+      updatePlanFromTool(block.name, block.input);
       const [verb, arg] = stepTitle(block.name, block.input);
       node.querySelector('.name').textContent = verb;
       node.querySelector('.arg').textContent = arg;
       const b = node.querySelector('.step-body'); b.innerHTML = '';
-      b.appendChild(el('div', 'label', 'Input'));
-      const pre = el('pre', null, typeof block.input === 'string' ? block.input : JSON.stringify(block.input, null, 2)); b.appendChild(pre);
+      if (block.name === 'TodoWrite' && block.input?.todos) {
+        b.appendChild(el('div', 'label', 'To-dos'));
+        b.appendChild(todoChecklist(block.input.todos.map((t) => ({ text: t.content, status: t.status, activeForm: t.activeForm }))));
+      } else {
+        b.appendChild(el('div', 'label', 'Input'));
+        const pre = el('pre', null, typeof block.input === 'string' ? block.input : JSON.stringify(block.input, null, 2)); b.appendChild(pre);
+      }
       // A file sent to the user is shown once the input is complete. Desktop's own SendUserFile
       // is a "Sent ›" line with the files under it, and the next tool starts a new group. Through
       // the claude-anywhere connector Desktop counts it in the group ("used a tool"); the group
@@ -2056,6 +2062,9 @@
     const blocks = Array.isArray(result.content) ? result.content : [{ type: 'text', text: resultText(result.content) }];
     const text = blocks.filter((x) => x.type === 'text').map((x) => x.text).join('\n');
     if (text) b.appendChild(el('pre', null, text.slice(0, 20000)));
+    // TaskCreate only learns its task's id from the result (the call itself does not choose
+    // one), so the live plan box adds this task once it reads it back here.
+    if (toolNode._toolName === 'TaskCreate' && !result.is_error) planTaskCreated(text);
     // Images Claude looked at (Read on a screenshot, a browser capture…) are shown, like Desktop.
     for (const x of blocks) if (x.type === 'image') { const im = el('img', 'tool-img'); im.src = dataUrl(x); im.alt = 'image'; im.loading = 'lazy'; b.appendChild(im); }
     if (blocks.some((x) => x.type === 'image')) { toolNode.open = true; toolNode.classList.add('has-image'); }
@@ -2307,6 +2316,64 @@
     thread.appendChild(card);
     card._cleanupComment = planCommentButton(planEl, feedback);
     return true;
+  }
+
+  // ---------- the live plan box above the composer (TodoWrite, or TaskCreate/TaskUpdate) ----------
+  // Two different shapes feed the same box: TodoWrite replaces its whole list every call (no
+  // ids), while TaskCreate/TaskUpdate build one up incrementally by id - normalised to the same
+  // {text, status, activeForm} here so one painter and one checklist widget serve both.
+  let planTodos = null;              // the latest TodoWrite call's list, or null if never used
+  const planTasks = new Map();       // taskId -> {text, status, activeForm}, from TaskCreate/TaskUpdate
+  function todoItems(items) {
+    const frag = document.createDocumentFragment();
+    for (const t of items || []) {
+      const li = el('li', 'todo-item status-' + (t.status || 'pending')); li.dir = 'auto';
+      li.appendChild(el('span', 'todo-check'));
+      li.appendChild(el('span', 'todo-label', (t.status === 'in_progress' && t.activeForm) || t.text || ''));
+      frag.appendChild(li);
+    }
+    return frag;
+  }
+  // A checklist of its own (for the TodoWrite step's "Updated the task list" row, expanded).
+  function todoChecklist(items) { const ul = el('ul', 'todo-checklist'); ul.appendChild(todoItems(items)); return ul; }
+  function planItemsNow() { return planTodos ? planTodos.map((t) => ({ text: t.content, status: t.status, activeForm: t.activeForm })) : [...planTasks.values()]; }
+  let planBoxClosedByUser = false; // respected once; the box still opens itself for a new plan
+  function paintPlanBox() {
+    const box = $('#plan-box'); if (!box) return;
+    const items = planItemsNow();
+    const wasHidden = box.classList.contains('hidden');
+    box.classList.toggle('hidden', !items.length);
+    if (!items.length) return;
+    // A <details> starts closed; open it the first time a plan appears, as Desktop shows one
+    // unasked - but leave it alone once the person has chosen to collapse it themselves.
+    if (wasHidden && !planBoxClosedByUser) box.open = true;
+    $('#plan-box-count').textContent = items.filter((t) => t.status === 'completed').length + ' of ' + items.length;
+    const list = $('#plan-box-list'); list.innerHTML = ''; list.appendChild(todoItems(items));
+  }
+  $('#plan-box')?.addEventListener('toggle', (e) => { planBoxClosedByUser = !e.target.open; });
+  // Called for every tool_use block renderBlock sees (cheap no-op for anything else); reopening a
+  // session feeds the same calls from history, in file order, so the box is right from the start.
+  function updatePlanFromTool(name, inp) {
+    if (!inp || typeof inp !== 'object') return;
+    if (name === 'TodoWrite' && Array.isArray(inp.todos)) { planTodos = inp.todos; paintPlanBox(); }
+    else if (name === 'TaskUpdate' && inp.taskId) {
+      const t = planTasks.get(inp.taskId) || { text: inp.subject || '', status: 'pending', activeForm: '' };
+      if (inp.subject) t.text = inp.subject;
+      if (inp.status) t.status = inp.status === 'deleted' ? 'completed' : inp.status;
+      if (inp.activeForm) t.activeForm = inp.activeForm;
+      planTasks.set(inp.taskId, t);
+      paintPlanBox();
+    }
+  }
+  // TaskCreate only learns its task's id from the result (the call itself does not choose one).
+  function planTaskCreated(resultText) {
+    let id, subject;
+    try { const j = JSON.parse(resultText); id = j?.task?.id; subject = j?.task?.subject; } catch {}
+    if (!id) { const m = /"id"\s*:\s*"([^"]+)"/.exec(resultText || ''); id = m && m[1]; }
+    if (!id) return;
+    const prev = planTasks.get(id);
+    planTasks.set(id, { text: subject || prev?.text || '(task)', status: prev?.status || 'pending', activeForm: prev?.activeForm || '' });
+    paintPlanBox();
   }
 
   // ---------- live status line (the Desktop "✱ Thinking… 12s · 1.2k tokens" row) ----------
@@ -4305,6 +4372,7 @@
   async function openSession(id) {
     const seq = ++openSeq;
     state.current = id; state.live = null; state.tasks = []; hiddenTasks.clear(); paintTasks(); if (changesOpen) closeChanges(); if (previewOpen) closePreview(); if (filesOpen) closeFiles();
+    planTodos = null; planTasks.clear(); planBoxClosedByUser = false; paintPlanBox();
     if (state.es) { state.es.close(); state.es = null; }
     app.classList.remove('sidebar-open'); app.classList.remove('new');
     empty.classList.remove('show'); thread.innerHTML = '<div class="muted small pad">Loading…</div>';
@@ -4362,6 +4430,7 @@
     if (state.cwdIsChat) { state.cwdIsChat = false; state.cwd = localStorage.getItem('cr.cwd') || ''; renderProjectChip(); }
     hist.id = null; hist.more = false;
     chapters = []; registeredChapters.clear();
+    planTodos = null; planTasks.clear(); planBoxClosedByUser = false; paintPlanBox();
     state.current = null; state.live = null; state.tasks = []; hiddenTasks.clear(); paintTasks(); if (changesOpen) closeChanges(); if (filesOpen) closeFiles(); stopPrWatch(); $("#sb-pr-state").classList.add("hidden");
     if (state.es) { state.es.close(); state.es = null; }
     app.classList.remove('sidebar-open');

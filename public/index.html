@@ -169,6 +169,11 @@
           <span class="sb-spacer"></span>
           <span class="tb-open">Show</span>
         </button>
+        <!-- Claude's plan while it works (TodoWrite, or TaskCreate/TaskUpdate), above the composer. -->
+        <details id="plan-box" class="plan-box hidden">
+          <summary><span class="spark">✱</span><span id="plan-box-title">Claude's plan</span><span id="plan-box-count" class="muted"></span></summary>
+          <ul id="plan-box-list" class="todo-checklist"></ul>
+        </details>
         <div id="update-banner" class="limit-banner update-banner hidden">
           <svg viewBox="0 0 20 20" width="15" height="15"><path d="M10 3v9M6 8l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 15h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
           <span id="ub-text">A new version is ready</span>
