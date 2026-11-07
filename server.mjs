@@ -41,6 +41,7 @@ import * as shell from './lib/shell.mjs';
 import * as claudeCode from './lib/claude-code.mjs';
 import * as access from './lib/access.mjs';
 import { getAuth, activeAccount, setActive, setToken, clearToken, setProvider, clearProvider, classifyToken, envFor, localSource, verifyEnv, candidateEnv, candidateProviderEnv } from './lib/auth.mjs';
+import { findByName, searchContents, officePreview, writeFileChecked } from './lib/files.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -688,8 +689,11 @@ app.post('/api/sessions/:id/rewind/redo', (req, res) => { res.json({ ok: rewindS
 // Folder browser for "Open folder…" (the browser has no native folder dialog).
 app.get('/api/browse', (req, res) => {
   const raw = String(req.query.path || '');
-  // The folder picker wants directories only; the file browser asks for both.
+  // The folder picker wants directories only; the file browser asks for both. The Files
+  // pane also wants dotfiles (Desktop shows them); the folder picker never asked for those,
+  // so an existing caller's view of the world does not change underneath it.
   const withFiles = req.query.files === '1';
+  const showHidden = req.query.all === '1';
   const drives = [];
   for (const L of 'CDEFGHIJKLMNOPQRSTUVWXYZ') { try { if (fs.existsSync(L + ':\\')) drives.push(L + ':\\'); } catch {} }
   if (!drives.length) drives.push('/'); // no lettered drives: macOS or Linux, where the root is the only one
@@ -697,7 +701,7 @@ app.get('/api/browse', (req, res) => {
   const p = path.resolve(raw);
   let entries = [];
   try { entries = fs.readdirSync(p, { withFileTypes: true }); } catch (e) { return res.status(400).json({ error: 'Cannot open ' + p }); }
-  const hidden = (n) => n.startsWith('.') || n.startsWith('$');
+  const hidden = (n) => (!showHidden && (n.startsWith('.') || n.startsWith('$')));
   const dirs = entries.filter((e) => e.isDirectory() && !hidden(e.name) && e.name !== 'node_modules').map((e) => ({ name: e.name, path: path.join(p, e.name) })).sort((a, b) => a.name.localeCompare(b.name));
   const files = withFiles ? entries.filter((e) => e.isFile() && !hidden(e.name)).map((e) => { let size = 0; try { size = fs.statSync(path.join(p, e.name)).size; } catch {} return { name: e.name, path: path.join(p, e.name), size }; }).sort((a, b) => a.name.localeCompare(b.name)) : [];
   const parent = path.dirname(p) === p ? '' : path.dirname(p);
@@ -740,13 +744,15 @@ app.get('/api/fs/read', async (req, res) => {
     let st;
     try { st = fs.statSync(p); } catch { return res.status(404).json({ error: 'Not on this PC' }); }
     if (!st.isFile()) return res.status(400).json({ error: 'Not a file' });
-    if (IMAGE_EXT.test(p)) return res.json({ path: p, size: st.size, image: true });
+    // mtimeMs travels with every read so the editor can refuse to overwrite a file that
+    // changed on disk since it was loaded (lib/files.mjs#writeFileChecked checks it back).
+    if (IMAGE_EXT.test(p)) return res.json({ path: p, size: st.size, mtimeMs: st.mtimeMs, image: true });
     const MAX = 512 * 1024;
     const fd = fs.openSync(p, 'r');
     const buf = Buffer.alloc(Math.min(st.size, MAX));
     fs.readSync(fd, buf, 0, buf.length, 0); fs.closeSync(fd);
-    if (buf.includes(0)) return res.json({ path: p, size: st.size, binary: true });
-    res.json({ path: p, size: st.size, truncated: st.size > MAX, text: buf.toString('utf8') });
+    if (buf.includes(0)) return res.json({ path: p, size: st.size, mtimeMs: st.mtimeMs, binary: true });
+    res.json({ path: p, size: st.size, mtimeMs: st.mtimeMs, truncated: st.size > MAX, text: buf.toString('utf8') });
   } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
 });
 
@@ -857,6 +863,70 @@ app.post('/api/sessions/:id/pr/auto-merge', async (req, res) => {
     pr.forget(cwd);
     res.json(await pr.cached(cwd));
   } catch (e) { res.status(500).json({ error: worktrees.cliError(e) }); }
+});
+
+// ---------- Files pane: fuzzy find, content search, write, Office previews, live refresh ----------
+// Every route here takes a path inside a folder some session has worked in (insideProjectRoots),
+// the same rule /api/fs/read already follows.
+app.get('/api/fs/find', async (req, res) => {
+  try {
+    const root = path.normalize(String(req.query.root || ''));
+    if (!root || !(await insideProjectRoots(root))) return res.status(403).json({ error: 'Outside the project folders' });
+    res.json(findByName(root, String(req.query.q || ''), { limit: 200 }));
+  } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+});
+app.get('/api/fs/search', async (req, res) => {
+  try {
+    const root = path.normalize(String(req.query.root || ''));
+    if (!root || !(await insideProjectRoots(root))) return res.status(403).json({ error: 'Outside the project folders' });
+    res.json(await searchContents(root, String(req.query.q || ''), { limit: 200, budgetMs: Math.min(Number(req.query.budget) || 8000, 20000) }));
+  } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+});
+// A lightweight poll for "has this changed since I loaded it" — the editor and an open
+// preview both use it, so Claude editing a file while it is open shows up without a
+// websocket or a per-file fs.watch (unreliable on a network drive, and one more thing to
+// clean up on every tab close).
+app.get('/api/fs/stat', async (req, res) => {
+  try {
+    const p = path.normalize(String(req.query.path || ''));
+    if (!p || !(await insideProjectRoots(p))) return res.status(403).json({ error: 'Outside the project folders' });
+    let st; try { st = fs.statSync(p); } catch { return res.status(404).json({ error: 'Not on this PC' }); }
+    res.json({ mtimeMs: st.mtimeMs, size: st.size });
+  } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+});
+app.post('/api/fs/write', async (req, res) => {
+  try {
+    const p = path.normalize(String(req.body?.path || ''));
+    if (!p || !path.isAbsolute(p)) return res.status(400).json({ error: 'No path' });
+    if (!(await insideProjectRoots(p))) return res.status(403).json({ error: 'Outside the project folders' });
+    const text = String(req.body?.text ?? '');
+    if (Buffer.byteLength(text, 'utf8') > 5 * 1024 * 1024) return res.status(413).json({ error: 'That file is larger than this editor saves (5 MB).' });
+    if (!fs.existsSync(p)) return res.status(404).json({ error: 'Not on this PC' });
+    const r = writeFileChecked(p, text, req.body?.mtimeMs);
+    if (!r.ok) return res.status(409).json({ error: 'The file changed on disk.', ...r });
+    res.json(r);
+  } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+});
+app.get('/api/fs/office', async (req, res) => {
+  try {
+    const p = path.normalize(String(req.query.path || ''));
+    if (!p || !(await insideProjectRoots(p))) return res.status(403).json({ error: 'Outside the project folders' });
+    res.json(officePreview(p));
+  } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+});
+// "Open in editor": VS Code's CLI if it is on PATH (so the file opens in the window
+// already there), else a vscode:// URL the page opens with its own external-link helper.
+app.post('/api/fs/open-editor', async (req, res) => {
+  const p = String(req.body?.path || '');
+  const line = Number(req.body?.line) || null;
+  if (!p) return res.status(400).json({ error: 'No path' });
+  const target = line ? `${p}:${line}` : p;
+  try {
+    await execFileP(process.platform === 'win32' ? 'code.cmd' : 'code', ['-g', target], { timeout: 4000, windowsHide: true });
+    res.json({ opened: true });
+  } catch {
+    res.json({ opened: false, url: 'vscode://file/' + p.replace(/\\/g, '/') + (line ? ':' + line : '') });
+  }
 });
 
 // ---------- keep this computer awake ----------

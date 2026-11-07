@@ -1089,3 +1089,76 @@ audio.lb-media { width: min(520px, 90vw); height: auto; }
 .rewind-choices { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
 .rewind-choices .btn { width: 100%; }
 .redo-toast { display: flex; align-items: center; gap: 4px; }
+
+/* ---------- v57: the Files pane — a tree beside tabs, edit in place, comments, Office previews ---------- */
+#fx-back { display: none; } /* only the phone's single-pane view needs a way back to the tree */
+.fx-split { flex: 1; min-height: 0; display: flex; }
+.fx-side { width: var(--fx-side-w, 230px); flex: none; display: flex; flex-direction: column; min-height: 0; border-inline-end: 1px solid var(--line); }
+.fx-search-wrap { padding: 8px 10px 4px; }
+.fx-search { width: 100%; box-sizing: border-box; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line-2); background: var(--bg-2); color: var(--ink); font-size: 13px; }
+.fx-main { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; position: relative; }
+.fx-side-resizer { flex: none; width: 6px; cursor: col-resize; touch-action: none; }
+.fx-side-resizer:hover, .fx-side-resizer:active { background: var(--line-2); }
+.fx-row .fx-chev { flex: none; width: 12px; color: var(--ink-3); font-size: 10px; text-align: center; }
+.fx-row.sel { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.fx-row.active .nm { font-weight: 600; }
+.fx-snippet { display: block; width: 100%; margin-inline-start: 23px; color: var(--ink-3); font-family: var(--mono); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#fx-results .fx-row { flex-wrap: wrap; }
+.fx-tabs { display: flex; gap: 2px; overflow-x: auto; padding: 6px 8px 0; flex: none; border-bottom: 1px solid var(--line); }
+.fx-tab { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-radius: 8px 8px 0 0; font-size: 12.5px; color: var(--ink-2); background: var(--bg-2); white-space: nowrap; flex: none; max-width: 180px; }
+.fx-tab.active { background: var(--bg-000); color: var(--ink); border: 1px solid var(--line); border-bottom-color: var(--bg-000); margin-bottom: -1px; }
+.fx-tab.preview .fx-tab-name { font-style: italic; }
+.fx-tab-name { overflow: hidden; text-overflow: ellipsis; }
+.fx-tab-dot { color: var(--accent); font-size: 8px; }
+.fx-tab-x { color: var(--ink-3); padding: 0 2px; border-radius: 4px; line-height: 1; }
+.fx-tab-x:hover { background: var(--bg-3); color: var(--ink); }
+.fx-findbar { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-bottom: 1px solid var(--line); flex: none; }
+.fx-findbar input { flex: 1; min-width: 0; padding: 5px 8px; border-radius: 7px; border: 1px solid var(--line-2); background: var(--bg-2); color: var(--ink); font-size: 12.5px; }
+.fx-dirty { color: var(--accent); font-size: 9px; }
+.fx-dirty.hidden { display: none; }
+.fx-bar button[disabled] { opacity: .4; pointer-events: none; }
+.fx-conflict { margin: 10px 12px 0; }
+.fx-office { padding: 14px 18px; }
+.fx-office h1, .fx-office h2, .fx-office h3, .fx-office h4 { margin-top: 1.2em; }
+.fx-slide { border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; margin: 10px 0; }
+.fx-slide-n { font-size: 11px; color: var(--ink-3); text-transform: uppercase; letter-spacing: .02em; }
+.fx-slide-text { margin-top: 4px; }
+/* the editor: a gutter of fixed-height rows, mirrored to the textarea's own scroll */
+.fx-editor { flex: 1; min-height: 0; display: flex; }
+.fx-editor-gutter { position: relative; overflow: hidden; width: 46px; flex: none; background: var(--bg-2); border-inline-end: 1px solid var(--line); }
+.fx-gutter-inner { position: absolute; top: 10px; left: 0; right: 0; }
+.fx-gline { position: relative; display: flex; align-items: center; justify-content: flex-end; padding-inline-end: 8px; font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
+.fx-gline:hover .fx-gadd { opacity: 1; }
+.fx-gline.commented .fx-gnum { color: var(--accent); font-weight: 600; }
+.fx-gadd { position: absolute; left: 2px; top: 1px; width: 16px; height: 16px; border-radius: 4px; background: var(--bg-3); color: var(--ink-2); font-size: 12px; line-height: 1; opacity: 0; transition: opacity .1s; }
+.fx-gadd:hover { background: var(--accent); color: var(--accent-ink); }
+.fx-editor-ta { flex: 1; min-width: 0; border: 0; outline: 0; resize: none; background: var(--bg-000); color: var(--ink); font-family: var(--mono); font-size: 11px; line-height: 18px; padding: 10px 12px; white-space: pre; }
+.fx-sel-comment, .fx-comment-pop { position: fixed; z-index: 55; }
+.fx-sel-comment { padding: 5px 10px; border-radius: 7px; background: var(--ink); color: var(--bg-000); font-size: 12px; box-shadow: 0 4px 16px rgba(0, 0, 0, .3); }
+.fx-comment-pop { width: 280px; padding: 10px; border-radius: 10px; background: var(--bg-000); border: 1px solid var(--line-2); box-shadow: 0 8px 30px rgba(0, 0, 0, .35); }
+.fx-comment-ta { width: 100%; box-sizing: border-box; border: 1px solid var(--line-2); border-radius: 7px; background: var(--bg-2); color: var(--ink); font: inherit; font-size: 13px; padding: 7px 9px; resize: vertical; }
+.fx-comment-row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+/* review comments in the Changes diff */
+.dl { position: relative; }
+.dl:not(.hunk):hover .dl-add { opacity: 1; }
+.dl-add { position: absolute; inset-inline-start: -2px; top: 1px; width: 16px; height: 16px; border-radius: 4px; background: var(--bg-3); color: var(--ink-2); font-size: 12px; line-height: 1; opacity: 0; transition: opacity .1s; z-index: 1; }
+.dl-add:hover { background: var(--accent); color: var(--accent-ink); }
+.dl-comment { padding: 8px 14px 8px 54px; font-size: 12.5px; background: var(--bg-2); border-bottom: 1px solid var(--line); }
+.dl-comment-head { color: var(--ink-3); font-size: 11px; margin-bottom: 2px; }
+.dl-comment-text { white-space: pre-wrap; }
+.dl-comment .link-btn { margin-top: 4px; }
+.dl-comment.resolved { padding-block: 4px; }
+.dl-comment.resolved .dl-comment-head, .dl-comment.resolved .dl-comment-text { display: none; }
+.dl-comment.resolved::before { content: "Comment resolved"; color: var(--ink-3); font-size: 11.5px; }
+.ch-file { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+@media (max-width: 860px) {
+  /* A phone shows the tree or the open file, one at a time, like every other full-screen pane here. */
+  .fx-split { display: block; }
+  .fx-side { width: auto; border-inline-end: 0; }
+  .fx-main { display: none; }
+  #fx-back { display: none; }
+  .files-panel.fx-file-open .fx-side { display: none; }
+  .files-panel.fx-file-open .fx-main { display: flex; }
+  .files-panel.fx-file-open #fx-back { display: inline-flex; }
+  .fx-tab { max-width: 120px; }
+}

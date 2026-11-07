@@ -2609,13 +2609,17 @@
     const a = e.target.closest('a.file-link');
     if (!a) return;
     e.preventDefault();
-    const p = a.dataset.path || '';
+    let p = a.dataset.path || '';
+    // A `#L5-L20` (or `#L5`) suffix highlights those lines once the file opens in the Files
+    // panel, the way Desktop points at a range without pasting the lines into the message.
+    const lineM = p.match(/#L(\d+)(?:-L?(\d+))?$/i);
+    const lines = lineM ? { startLine: Number(lineM[1]), endLine: Number(lineM[2] || lineM[1]) } : {};
+    if (lineM) p = p.slice(0, lineM.index);
     const name = p.split(/[\\/]/).filter(Boolean).pop() || p;
     if (isImage(p)) return openImage(localFileUrl(p), name);
     if (isVideo(p) || isAudio(p)) return openPlayer(p, name);
     if (/\.(html?|pdf)(\?|#|$)/i.test(p)) return openFileInBrowser(absPath(p).replace(/[?#].*$/, ''));
-    openFiles();
-    openFileAt(absPath(p), name);
+    openFileAt(absPath(p), name, lines);
   });
   lbImg.addEventListener('load', fitImage);
   window.addEventListener('resize', () => { if (!lb.classList.contains('hidden')) fitImage(); });
@@ -3016,106 +3020,336 @@
     activate(t);
   }
 
-  // ---------- Files: what is in the session's folder, read only ----------
-  // The server only opens paths under a folder some session has worked in, so this
-  // cannot wander off into the rest of the disk; it still shows anything Claude can see.
-  const fxPanel = $('#files-panel'), fxList = $('#fx-list'), fxView = $('#fx-view');
-  let filesOpen = false, fxDir = '', fxHome = '';
+  // ---------- Files: a tree beside tabs, fuzzy find, edit in place, comments, Office previews ----------
+  // The server only opens paths under a folder some session has worked in, so this cannot
+  // wander off into the rest of the disk; it still shows anything Claude can see — dotfiles
+  // included, which the old folder-at-a-time browser (and the "Open folder" picker, which
+  // still hides them) did not.
+  const fxPanel = $('#files-panel'), fxTree = $('#fx-tree'), fxResults = $('#fx-results'), fxTabsEl = $('#fx-tabs'), fxView = $('#fx-view'), fxEmpty = $('#fx-empty'), fxSearch = $('#fx-search');
+  let filesOpen = false, fxRoot = '';
   const FX_FOLDER = '<svg viewBox="0 0 20 20" width="15" height="15"><path d="M3 5.5A1.5 1.5 0 0 1 4.5 4h3.2l1.6 1.8h6.2A1.5 1.5 0 0 1 17 7.3v7.2a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 3 14.5z" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>';
   const FX_FILE = '<svg viewBox="0 0 20 20" width="15" height="15"><path d="M5 3.5h6L15 7v9.5a.5.5 0 0 1-.5.5h-9a.5.5 0 0 1-.5-.5v-13z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M11 3.5V7h4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>';
   const fxSize = (n) => n < 1024 ? n + ' B' : n < 1024 * 1024 ? Math.round(n / 1024) + ' KB' : (n / 1048576).toFixed(1) + ' MB';
+  const RICH_KINDS = /\.(md|markdown|mdx|csv|tsv|json)$/i;
+  // One level of a folder, cached: a tree expands lazily, the way Desktop's does, rather than
+  // reading a whole repository (node_modules included) the moment a session opens.
+  const fxChildren = new Map();   // dir path -> { dirs, files }
+  const fxLoading = new Set();    // dir paths with a fetch in flight, so expanding twice fast does not double it
+  const fxExpanded = new Set();   // dir paths currently open
+  const fxSelected = new Set();   // paths selected in the tree (Ctrl/Cmd and Shift extend it)
+  let fxLastClicked = null, fxFlatRows = [];
+  let fxOpen = [];                // open tabs: { path, name, preview, mode, text, savedText, dirty, mtimeMs, size, commentedLines, ... }
+  let fxActivePath = null;
+  let fxPendingHighlight = null;  // { path, startLine, endLine } from a #L5-L20 link, consumed once that tab renders
+  let fxAutoSave = true; try { fxAutoSave = localStorage.getItem('cr.fx.autosave') !== '0'; } catch {}
+  let fxPoll = null;
+
+  function relPath(p) {
+    if (fxRoot && String(p).toLowerCase().startsWith(fxRoot.toLowerCase())) {
+      const r = p.slice(fxRoot.length).replace(/^[\\/]+/, '').replace(/\\/g, '/');
+      return r || baseName(p);
+    }
+    return p;
+  }
+  const activeTab = () => fxOpen.find((t) => t.path === fxActivePath);
+  const defaultModeFor = (p) => RICH_KINDS.test(p) ? 'preview' : 'edit';
+
   function openFiles() {
     if (tasksOpen) closeTasks(); if (previewOpen) closePreview(); if (changesOpen) closeChanges();
     filesOpen = true; fxPanel.classList.remove('hidden'); app.classList.add('panel-open');
-    fxHome = state.cwd || '';
-    loadDir(fxDir || fxHome);
+    // A new session's folder starts the tree over; the same session keeps its open tabs,
+    // so switching to the Browser and back does not lose where you were.
+    if (fxRoot !== (state.cwd || '')) {
+      fxRoot = state.cwd || ''; fxChildren.clear(); fxExpanded.clear(); fxSelected.clear();
+      fxOpen = []; fxActivePath = null;
+    }
+    if (fxRoot) ensureChildren(fxRoot);
+    paintTree(); renderTabs(); renderActiveTab();
+    clearInterval(fxPoll); fxPoll = setInterval(pollActive, 1800);
   }
-  function closeFiles() { filesOpen = false; fxPanel.classList.add('hidden'); app.classList.remove('panel-open'); }
+  function closeFiles() {
+    filesOpen = false; fxPanel.classList.add('hidden'); app.classList.remove('panel-open');
+    clearInterval(fxPoll); fxPoll = null; closeFxMenu(); closeFxPopover(); removeSelBtn();
+  }
   $('#fx-close').addEventListener('click', closeFiles);
-  $('#fx-home').addEventListener('click', () => loadDir(fxHome || state.cwd || ''));
-  $('#fx-up').addEventListener('click', () => { if (!fxView.classList.contains('hidden')) return showDir(); const up = fxDir.replace(/[\\/]+$/, '').replace(/[\\/][^\\/]+$/, ''); if (up) loadDir(up); });
-  const showDir = () => { fxView.classList.add('hidden'); fxView.classList.remove('fx-rich'); fxView.textContent = ''; fxList.classList.remove('hidden'); $('#fx-path').textContent = fxDir; };
-  async function loadDir(dir) {
-    if (!dir) { fxList.innerHTML = ''; fxList.appendChild(el('div', 'muted small pad', 'This session has no folder.')); return; }
-    showDir();
-    try {
-      const d = await api('/browse?files=1&path=' + encodeURIComponent(dir));
-      fxDir = d.path; if (fxView.classList.contains('hidden')) $('#fx-path').textContent = d.path; // a file opened over the list keeps its own path
-      fxList.innerHTML = '';
-      for (const x of d.dirs) {
-        const b = el('button', 'fx-row'); b.type = 'button';
-        const ic = el('span', 'ic'); ic.innerHTML = FX_FOLDER; b.appendChild(ic);
-        b.appendChild(el('span', 'nm', x.name));
-        b.addEventListener('click', () => loadDir(x.path));
-        fxList.appendChild(b);
-      }
-      for (const x of d.files) {
-        const b = el('button', 'fx-row'); b.type = 'button';
-        const ic = el('span', 'ic'); ic.innerHTML = FX_FILE; b.appendChild(ic);
-        b.appendChild(el('span', 'nm', x.name));
-        b.appendChild(el('span', 'sz', fxSize(x.size)));
-        b.addEventListener('click', () => openFileAt(x.path, x.name));
-        fxList.appendChild(b);
-      }
-      if (!d.dirs.length && !d.files.length) fxList.appendChild(el('div', 'muted small pad', 'Nothing here.'));
-    } catch (e) { fxList.innerHTML = ''; fxList.appendChild(el('div', 'note error', e.message)); }
+  $('#fx-back').addEventListener('click', () => fxPanel.classList.remove('fx-file-open'));
+
+  // ---------- the tree: lazy, dotfiles and all ----------
+  async function ensureChildren(dir) {
+    if (fxChildren.has(dir) || fxLoading.has(dir)) return;
+    fxLoading.add(dir);
+    try { const d = await api('/browse?files=1&all=1&path=' + encodeURIComponent(dir)); fxChildren.set(dir, { dirs: d.dirs, files: d.files }); }
+    catch { fxChildren.set(dir, { dirs: [], files: [] }); }
+    fxLoading.delete(dir);
+    if (filesOpen) paintTree();
   }
-  async function openFileAt(p, name) {
+  function flattenChildren(dir, depth, out) {
+    const kids = fxChildren.get(dir);
+    if (!kids) { ensureChildren(dir); return; }
+    for (const d of kids.dirs) { out.push({ path: d.path, isDir: true, depth, name: d.name }); if (fxExpanded.has(d.path)) flattenChildren(d.path, depth + 1, out); }
+    for (const f of kids.files) out.push({ path: f.path, isDir: false, depth, name: f.name, size: f.size });
+  }
+  function paintTree() {
+    fxTree.innerHTML = '';
+    if (!fxRoot) { fxTree.appendChild(el('div', 'muted small pad', 'This session has no folder.')); return; }
+    const out = []; flattenChildren(fxRoot, 0, out); fxFlatRows = out;
+    if (!out.length && fxChildren.has(fxRoot)) { fxTree.appendChild(el('div', 'muted small pad', 'Nothing here.')); return; }
+    for (const row of out) fxTree.appendChild(buildRow(row));
+  }
+  function buildRow(row) {
+    const b = el('button', 'fx-row' + (fxSelected.has(row.path) ? ' sel' : '') + (row.path === fxActivePath ? ' active' : ''));
+    b.type = 'button'; b.style.paddingInlineStart = (8 + row.depth * 16) + 'px'; b.title = row.path;
+    const chev = el('span', 'fx-chev', row.isDir ? (fxExpanded.has(row.path) ? '▾' : '▸') : ''); b.appendChild(chev);
+    const ic = el('span', 'ic'); ic.innerHTML = row.isDir ? FX_FOLDER : FX_FILE; b.appendChild(ic);
+    b.appendChild(el('span', 'nm', row.name));
+    if (!row.isDir && row.size != null) b.appendChild(el('span', 'sz', fxSize(row.size)));
+    b.addEventListener('click', (e) => onRowClick(e, row));
+    b.addEventListener('dblclick', () => { if (!row.isDir) pinTab(row.path, row.name); });
+    b.addEventListener('contextmenu', (e) => { e.preventDefault(); onRowContext(e, row); });
+    return b;
+  }
+  function onRowClick(e, row) {
+    if (e.shiftKey && fxLastClicked) {
+      const i1 = fxFlatRows.findIndex((r) => r.path === fxLastClicked), i2 = fxFlatRows.findIndex((r) => r.path === row.path);
+      if (i1 >= 0 && i2 >= 0) { const [a, b] = i1 < i2 ? [i1, i2] : [i2, i1]; fxSelected.clear(); for (let i = a; i <= b; i++) fxSelected.add(fxFlatRows[i].path); paintTree(); return; }
+    }
+    if (e.ctrlKey || e.metaKey) { fxSelected.has(row.path) ? fxSelected.delete(row.path) : fxSelected.add(row.path); fxLastClicked = row.path; paintTree(); return; }
+    fxSelected.clear(); fxSelected.add(row.path); fxLastClicked = row.path;
+    if (row.isDir) { fxExpanded.has(row.path) ? fxExpanded.delete(row.path) : fxExpanded.add(row.path); ensureChildren(row.path); paintTree(); }
+    else openPreviewTab(row.path, row.name);
+  }
+  // ---------- right-click: Open, Copy path, Attach as context, Open in terminal, Open in editor ----------
+  let fxCtxMenu = null;
+  function closeFxMenu() { fxCtxMenu?.remove(); fxCtxMenu = null; }
+  function showFxMenu(x, y, items) {
+    closeFxMenu();
+    const m = el('div', 'menu'); m.style.position = 'fixed'; m.style.left = x + 'px'; m.style.top = y + 'px'; m.style.zIndex = '60';
+    for (const it of items) m.appendChild(it);
+    document.body.appendChild(m);
+    const r = m.getBoundingClientRect();
+    if (r.right > innerWidth) m.style.left = Math.max(4, innerWidth - r.width - 4) + 'px';
+    if (r.bottom > innerHeight) m.style.top = Math.max(4, innerHeight - r.height - 4) + 'px';
+    fxCtxMenu = m;
+    setTimeout(() => document.addEventListener('mousedown', onFxMenuOutside, true), 0);
+  }
+  function onFxMenuOutside(e) { if (fxCtxMenu && !fxCtxMenu.contains(e.target)) { closeFxMenu(); document.removeEventListener('mousedown', onFxMenuOutside, true); } }
+  function onRowContext(e, row) {
+    if (!fxSelected.has(row.path)) { fxSelected.clear(); fxSelected.add(row.path); fxLastClicked = row.path; paintTree(); }
+    const targets = [...fxSelected];
+    const dir = row.isDir ? row.path : row.path.slice(0, Math.max(row.path.lastIndexOf('\\'), row.path.lastIndexOf('/')));
+    const rows = [
+      item('Open', '', false, () => { closeFxMenu(); for (const p of targets) { const r = fxFlatRows.find((x) => x.path === p); if (r && !r.isDir) openPreviewTab(p, r.name); } }),
+      item('Copy path', '', false, () => { closeFxMenu(); try { navigator.clipboard.writeText(targets.join('\n')); } catch {} }),
+      item('Attach as context', '', false, () => { closeFxMenu(); targets.forEach(attachFileAsContext); }),
+    ];
+    // Another package adds the terminal; without it there is nothing to call.
+    if (typeof openTerminalAt === 'function') rows.push(item('Open in terminal', '', false, () => { closeFxMenu(); openTerminalAt(dir); }));
+    if (!row.isDir) rows.push(item('Open in editor', '', false, () => { closeFxMenu(); openInEditor(row.path); }));
+    showFxMenu(e.clientX, e.clientY, rows);
+  }
+  async function attachFileAsContext(p) {
+    const rel = relPath(p);
+    try {
+      const r = await api('/fs/read?path=' + encodeURIComponent(p));
+      if (r.binary || r.image) return attachContext({ label: rel, text: '(binary file, ' + fxSize(r.size) + ')' });
+      attachContext({ label: rel, text: r.text.length > 8000 ? r.text.slice(0, 8000) + '\n… truncated' : r.text });
+    } catch (e) { attachContext({ label: rel, text: '(could not be read: ' + e.message + ')' }); }
+  }
+  async function openInEditor(p, line) {
+    try { const r = await api('/fs/open-editor', { method: 'POST', body: JSON.stringify({ path: p, line }) }); if (!r.opened && r.url) openExternal(r.url); }
+    catch (e) { alert(e.message); }
+  }
+
+  // ---------- fuzzy find by name, or ? to search contents ----------
+  let fxSearchTimer = null;
+  fxSearch.addEventListener('input', () => { clearTimeout(fxSearchTimer); fxSearchTimer = setTimeout(runFxSearch, 180); });
+  async function runFxSearch() {
+    const q = fxSearch.value;
+    if (!q.trim()) { fxResults.classList.add('hidden'); fxTree.classList.remove('hidden'); return; }
+    fxTree.classList.add('hidden'); fxResults.classList.remove('hidden');
+    fxResults.innerHTML = ''; fxResults.appendChild(el('div', 'muted small pad', 'Searching…'));
+    try {
+      if (q.startsWith('?')) {
+        const needle = q.slice(1);
+        if (!needle.trim()) { fxResults.innerHTML = ''; fxResults.appendChild(el('div', 'muted small pad', 'Type to search file contents.')); return; }
+        const r = await api('/fs/search?root=' + encodeURIComponent(fxRoot) + '&q=' + encodeURIComponent(needle));
+        paintSearchResults(r.hits.map((h) => ({ kind: 'content', ...h })), r.truncated);
+      } else {
+        const r = await api('/fs/find?root=' + encodeURIComponent(fxRoot) + '&q=' + encodeURIComponent(q));
+        paintSearchResults(r.hits.map((h) => ({ kind: 'name', ...h })), r.truncated);
+      }
+    } catch (e) { fxResults.innerHTML = ''; fxResults.appendChild(el('div', 'note error', e.message)); }
+  }
+  function paintSearchResults(hits, truncated) {
+    fxResults.innerHTML = '';
+    if (!hits.length) { fxResults.appendChild(el('div', 'muted small pad', 'No matches.')); return; }
+    for (const h of hits.slice(0, 200)) {
+      const b = el('button', 'fx-row'); b.type = 'button'; b.title = h.path;
+      const ic = el('span', 'ic'); ic.innerHTML = h.isDir ? FX_FOLDER : FX_FILE; b.appendChild(ic);
+      b.appendChild(el('span', 'nm', h.kind === 'content' ? relPath(h.path) + ':' + h.line : (h.rel || relPath(h.path))));
+      if (h.kind === 'content') b.appendChild(el('span', 'fx-snippet', h.text.trim()));
+      b.addEventListener('click', () => {
+        if (h.isDir) return;
+        if (h.kind === 'content') fxPendingHighlight = { path: h.path, startLine: h.line, endLine: h.line };
+        openFileAt(h.path, baseName(h.path));
+      });
+      fxResults.appendChild(b);
+    }
+    if (truncated) fxResults.appendChild(el('div', 'muted small pad', 'Showing the first matches.'));
+  }
+
+  // ---------- tabs: single-click preview (replaced by the next one), a pin keeps it ----------
+  function renderTabs() {
+    fxTabsEl.innerHTML = ''; fxTabsEl.classList.toggle('hidden', !fxOpen.length);
+    for (const tab of fxOpen) {
+      const b = el('button', 'fx-tab' + (tab.path === fxActivePath ? ' active' : '') + (tab.preview ? ' preview' : ''));
+      b.type = 'button'; b.title = tab.path;
+      b.appendChild(el('span', 'fx-tab-name', tab.name));
+      if (tab.dirty) b.appendChild(el('span', 'fx-tab-dot', '●'));
+      const x = el('button', 'fx-tab-x', '×'); x.type = 'button'; x.title = 'Close';
+      x.addEventListener('click', (e) => { e.stopPropagation(); closeTab(tab.path); });
+      b.appendChild(x);
+      b.addEventListener('click', () => activateTab(tab.path));
+      b.addEventListener('dblclick', () => { tab.preview = false; renderTabs(); });
+      fxTabsEl.appendChild(b);
+    }
+  }
+  function openPreviewTab(p, name) {
+    if (!filesOpen) openFiles();
+    if (fxOpen.find((t) => t.path === p)) return activateTab(p);
+    const tab = { path: p, name, preview: true, mode: defaultModeFor(p), text: null, dirty: false, commentedLines: new Set() };
+    const prev = fxOpen.find((t) => t.preview);
+    if (prev) fxOpen[fxOpen.indexOf(prev)] = tab; else fxOpen.push(tab);
+    activateTab(p);
+  }
+  function pinTab(p, name) {
+    if (!filesOpen) openFiles();
+    let tab = fxOpen.find((t) => t.path === p);
+    if (tab) tab.preview = false;
+    else { tab = { path: p, name, preview: false, mode: defaultModeFor(p), text: null, dirty: false, commentedLines: new Set() }; fxOpen.push(tab); }
+    activateTab(p);
+  }
+  function activateTab(p) { fxActivePath = p; fxPanel.classList.toggle('fx-file-open', true); renderTabs(); loadTabContent(p); }
+  function closeTab(p) {
+    const tab = fxOpen.find((t) => t.path === p); if (!tab) return;
+    if (tab.dirty && !tab.shellOnly) saveTab(tab, { explicit: true }).catch(() => {});
+    fxOpen = fxOpen.filter((t) => t.path !== p);
+    if (fxActivePath === p) { const next = fxOpen[fxOpen.length - 1]; fxActivePath = next ? next.path : null; if (next) loadTabContent(next.path); }
+    renderTabs(); if (!fxOpen.length) { fxPanel.classList.remove('fx-file-open'); renderActiveTab(); }
+  }
+  async function openFileAt(p, name, opts = {}) {
     // A page, a PDF or an SVG is more than its source: each renders in the Browser rather
     // than being printed as text here. (Clicking one used to show its markup, which read as
     // the file failing to open.)
     if (/\.(html?|pdf|svg)$/i.test(p)) return openFileInBrowser(p);
-    fxList.classList.add('hidden'); fxView.classList.remove('hidden', 'fx-rich'); fxView.textContent = 'Opening…'; $('#fx-path').textContent = p;
+    if (opts.startLine) fxPendingHighlight = { path: p, startLine: opts.startLine, endLine: opts.endLine || opts.startLine };
+    pinTab(p, name);
+  }
+
+  // ---------- loading and rendering the active tab ----------
+  async function loadTabContent(p) {
+    const tab = fxOpen.find((t) => t.path === p); if (!tab) return;
+    if (tab.text != null || tab.binary || tab.image || tab.officeData || tab.loading) { renderActiveTab(); return; }
+    tab.loading = true; renderActiveTab();
     try {
       const r = await api('/fs/read?path=' + encodeURIComponent(p));
-      fxView.textContent = '';
-      renderFile(p, name, r);
+      tab.loading = false; tab.mtimeMs = r.mtimeMs; tab.size = r.size;
+      if (r.image) tab.image = true;
+      else if (r.binary) {
+        if (/\.(docx|xlsx|pptx)$/i.test(p)) { try { tab.officeData = await api('/fs/office?path=' + encodeURIComponent(p)); } catch { tab.binary = true; } }
+        else tab.binary = true;
+      } else { tab.text = r.text; tab.savedText = r.text; tab.truncated = r.truncated; }
     } catch (e) {
+      tab.loading = false;
       // The server's machine does not have this file. In the app it may sit on the machine
       // this window is on instead (a file you have locally while the session runs on another
       // computer); the shell can read that, the way a dropped file is read.
-      if (/not on this pc|not found|no path/i.test(e.message || '') && await showFromShell(p, name)) return;
-      fxView.textContent = notThere(e.message);
+      if (!(/not on this pc|not found|no path/i.test(e.message || '') && await tryShellRead(tab))) tab.error = notThere(e.message);
+    }
+    if (fxActivePath === p) renderActiveTab();
+  }
+  async function tryShellRead(tab) {
+    const invoke = bridge(); if (!invoke) return false;
+    try {
+      const bytes = new Uint8Array(await invoke('dropped_file', { path: tab.path }));
+      if (/\.(png|jpe?g|gif|webp|avif|bmp|ico)$/i.test(tab.path)) { tab.shellImageUrl = URL.createObjectURL(new Blob([bytes])); tab.image = true; return true; }
+      if (bytes.includes(0)) { tab.binary = true; tab.size = bytes.length; return true; }
+      tab.text = new TextDecoder().decode(bytes); tab.savedText = tab.text; tab.shellOnly = true; // no mtimeMs from the shell: this tab never saves
+      return true;
+    } catch { return false; }
+  }
+  function renderActiveTab() {
+    const tab = activeTab();
+    $('#fx-findbar').classList.add('hidden');
+    if (!tab) { fxView.classList.add('hidden'); fxEmpty.classList.remove('hidden'); return; }
+    fxEmpty.classList.add('hidden'); fxView.classList.remove('hidden'); fxView.classList.add('fx-rich'); fxView.innerHTML = '';
+    if (tab.loading) { fxView.appendChild(el('div', 'muted small pad', 'Opening…')); return; }
+    if (tab.error) { fxView.appendChild(el('div', 'note error', tab.error)); return; }
+    // A link that asked to highlight lines needs the raw text, not a rendered preview.
+    if (fxPendingHighlight?.path === tab.path && !tab.binary && !tab.image && !tab.officeData) tab.mode = 'edit';
+    const editable = !tab.binary && !tab.image && !tab.officeData && tab.text != null && !tab.truncated && !tab.shellOnly;
+    fxView.appendChild(buildBar(tab, editable));
+    const body = el('div', 'fx-body'); fxView.appendChild(body);
+    if (tab.conflict) body.appendChild(buildConflictNote(tab));
+    if (tab.officeData) body.appendChild(renderOffice(tab.officeData));
+    else if (tab.image) {
+      const src = tab.shellImageUrl || localFileUrl(tab.path);
+      if (isVideo(tab.path)) body.appendChild(videoEl(src));
+      else if (isAudio(tab.path)) { const a = el('audio', 'md-audio'); a.controls = true; a.src = src; body.appendChild(a); }
+      else { const img = el('img'); img.src = src; img.alt = tab.name; img.addEventListener('click', () => openImage(src, tab.name)); body.appendChild(img); }
+    } else if (tab.binary) {
+      body.appendChild(el('div', 'fx-note', tab.name + ' can’t be shown here. Download it to open it with its own app.'));
+    } else if (editable && tab.mode === 'edit') {
+      body.appendChild(buildEditor(tab));
+    } else {
+      body.appendChild(renderPreviewBody(tab));
+      if (tab.truncated) body.appendChild(el('div', 'fx-note', 'Showing the first 512 KB of ' + fxSize(tab.size) + '. Too large to edit here.'));
     }
   }
-  // A file in the side panel the way Claude shows one: a document rendered, a table as a
-  // table, data indented, code as code, a recording playing - with Source to see the text
-  // behind a rendered one, and Download for anything, including what cannot be shown.
-  function renderFile(p, name, r) {
-    fxView.classList.add('fx-rich');
+  function buildBar(tab, editable) {
     const bar = el('div', 'fx-bar');
-    bar.appendChild(el('span', 'fx-kind', fileKind(p) + (r.size != null ? ' · ' + fxSize(r.size) : '')));
+    bar.appendChild(el('span', 'fx-kind', fileKind(tab.path) + (tab.size != null ? ' · ' + fxSize(tab.size) : '')));
+    if (editable && RICH_KINDS.test(tab.path)) {
+      const tog = el('button', 'link-btn small', tab.mode === 'preview' ? 'Edit' : 'Preview'); tog.type = 'button';
+      tog.addEventListener('click', () => { tab.mode = tab.mode === 'preview' ? 'edit' : 'preview'; renderActiveTab(); });
+      bar.appendChild(tog);
+    }
+    if (editable) {
+      const findBtn = el('button', 'link-btn small', 'Find'); findBtn.type = 'button';
+      findBtn.addEventListener('click', () => { if (tab.mode === 'preview') { tab.mode = 'edit'; renderActiveTab(); } openFindBar(); });
+      bar.appendChild(findBtn);
+    }
     bar.appendChild(el('span', 'fx-spacer'));
-    const dl = el('button', 'link-btn small', 'Download'); dl.type = 'button'; dl.addEventListener('click', () => downloadFile(p)); 
-    fxView.appendChild(bar);
-    const body = el('div', 'fx-body'); fxView.appendChild(body);
-    const src = localFileUrl(p);
-    const code = (text) => { const pre = el('pre', 'fx-code'); pre.textContent = text; return pre; };
-    if (r.image) {
-      if (isVideo(p)) body.appendChild(videoEl(src));
-      else if (isAudio(p)) { const a = el('audio', 'md-audio'); a.controls = true; a.src = src; body.appendChild(a); }
-      else { const img = el('img'); img.src = src; img.alt = name; img.addEventListener('click', () => openImage(src, name)); body.appendChild(img); }
-      bar.appendChild(dl); return;
+    if (editable) {
+      tab._dirtyDot = el('span', 'fx-dirty' + (tab.dirty ? '' : ' hidden'), '●'); bar.appendChild(tab._dirtyDot);
+      tab._saveBtn = el('button', 'link-btn small', 'Save'); tab._saveBtn.type = 'button'; tab._saveBtn.disabled = !tab.dirty;
+      tab._saveBtn.addEventListener('click', () => saveTab(tab, { explicit: true }));
+      bar.appendChild(tab._saveBtn);
     }
-    if (r.binary) {
-      body.appendChild(el('div', 'fx-note', name + ' can\u2019t be shown here' + (/Word|Spreadsheet|Presentation/.test(fileKind(p)) ? ' yet' : '') + '. Download it to open it with its own app.'));
-      bar.appendChild(dl); return;
-    }
-    const text = r.text + (r.truncated ? '\n\n… the first 512 KB of ' + fxSize(r.size) + '.' : '');
-    let rendered = null;
-    if (/\.(md|markdown|mdx)$/i.test(p)) { rendered = el('div', 'prose fx-md'); rendered.dir = 'auto'; rendered.innerHTML = md(r.text); }
-    else if (/\.(csv|tsv)$/i.test(p)) rendered = csvTable(r.text, /\.tsv$/i.test(p) ? '\t' : ',');
-    else if (/\.json$/i.test(p)) { try { rendered = code(JSON.stringify(JSON.parse(r.text), null, 2)); } catch {} }
-    if (rendered && !/\.json$/i.test(p)) {
-      const raw = code(text); raw.classList.add('hidden');
-      const tog = el('button', 'link-btn small', 'Source'); tog.type = 'button';
-      tog.addEventListener('click', () => { const showRaw = raw.classList.toggle('hidden') === false; rendered.classList.toggle('hidden', showRaw); tog.textContent = showRaw ? 'Preview' : 'Source'; });
-      bar.appendChild(tog); body.appendChild(rendered); body.appendChild(raw);
-    } else body.appendChild(rendered || code(text));
-    bar.appendChild(dl);
+    if (!tab.shellOnly) { const dl = el('button', 'link-btn small', 'Download'); dl.type = 'button'; dl.addEventListener('click', () => downloadFile(tab.path)); bar.appendChild(dl); }
+    return bar;
+  }
+  function buildConflictNote(tab) {
+    const n = el('div', 'note error fx-conflict');
+    n.textContent = 'Your changes to ' + tab.name + ' weren’t saved because the file changed on disk. Reopen the file to see the latest version.';
+    n.appendChild(el('br'));
+    const btn = el('button', 'link-btn small', 'Reopen'); btn.type = 'button';
+    btn.addEventListener('click', async () => { tab.conflict = false; tab.text = null; tab.savedText = null; tab.dirty = false; await loadTabContent(tab.path); });
+    n.appendChild(btn);
+    return n;
+  }
+  // A file rendered the way Claude shows one: a document, a table, indented data, code. Edit
+  // mode (the same text) is one click away unless the file is too big to edit safely.
+  function renderPreviewBody(tab) {
+    const p = tab.path, text = tab.text || '';
+    if (/\.(md|markdown|mdx)$/i.test(p)) { const d = el('div', 'prose fx-md'); d.dir = 'auto'; d.innerHTML = md(text); return d; }
+    if (/\.(csv|tsv)$/i.test(p)) return csvTable(text, /\.tsv$/i.test(p) ? '\t' : ',');
+    const pre = el('pre', 'fx-code');
+    if (/\.json$/i.test(p)) { try { pre.textContent = JSON.stringify(JSON.parse(text), null, 2); return pre; } catch {} }
+    pre.textContent = text; return pre;
   }
   // CSV as a table: quoted fields, doubled quotes and line breaks inside quotes, as
-  // spreadsheets write them. The first 500 rows; the rest is in Source and Download.
+  // spreadsheets write them. The first 500 rows; the rest is in Edit and Download.
   function csvTable(text, sep) {
     const rows = []; let row = [], f = '', q = false;
     for (let i = 0; i < text.length && rows.length < 501; i++) {
@@ -3133,30 +3367,198 @@
     if (rows.length > 500) wrap.appendChild(el('div', 'fx-note', 'The first 500 rows.'));
     return wrap;
   }
+  // Office documents: a zip of XML, read with zlib server-side (lib/files.mjs) — no viewer,
+  // just the words: paragraphs and headings, a table as a table, sheet rows, slide text.
+  function renderOffice(data) {
+    const wrap = el('div', 'fx-office prose');
+    if (data.kind === 'docx') {
+      for (const b of data.blocks) {
+        if (b.type === 'heading') wrap.appendChild(el('h' + Math.min(6, Math.max(1, b.level || 1)), null, b.text));
+        else if (b.type === 'table') {
+          const t = el('table', 'fx-table');
+          for (const row of b.rows) { const tr = el('tr'); for (const c of row) tr.appendChild(el('td', null, c)); t.appendChild(tr); }
+          const w = el('div', 'fx-table-wrap'); w.appendChild(t); wrap.appendChild(w);
+        } else if (b.text) wrap.appendChild(el('p', null, b.text));
+      }
+      if (data.truncated) wrap.appendChild(el('div', 'fx-note', 'Showing the first part of the document.'));
+    } else if (data.kind === 'xlsx') {
+      for (const sheet of data.sheets) {
+        wrap.appendChild(el('h3', null, sheet.name));
+        const t = el('table', 'fx-table');
+        for (const row of sheet.rows) { const tr = el('tr'); for (const c of row) tr.appendChild(el('td', null, c)); t.appendChild(tr); }
+        const w = el('div', 'fx-table-wrap'); w.appendChild(t); wrap.appendChild(w);
+      }
+      if (!data.sheets.length) wrap.appendChild(el('div', 'fx-note', 'No sheets found.'));
+    } else if (data.kind === 'pptx') {
+      data.slides.forEach((s, i) => {
+        const card = el('div', 'fx-slide');
+        card.appendChild(el('div', 'fx-slide-n', 'Slide ' + (i + 1)));
+        for (const t of s.texts) card.appendChild(el('div', 'fx-slide-text', t));
+        wrap.appendChild(card);
+      });
+      if (!data.slides.length) wrap.appendChild(el('div', 'fx-note', 'No slides found.'));
+    }
+    return wrap;
+  }
+
+  // ---------- edit in place: line numbers, Tab, Ctrl/Cmd+S, a + per line for comments ----------
+  const FX_LINE_H = 18;
+  function buildEditor(tab) {
+    const wrap = el('div', 'fx-editor');
+    const gutterWrap = el('div', 'fx-editor-gutter'), gutterInner = el('div', 'fx-gutter-inner');
+    gutterWrap.appendChild(gutterInner);
+    const ta = el('textarea', 'fx-editor-ta'); ta.value = tab.text ?? ''; ta.spellcheck = false; ta.wrap = 'off';
+    ta.setAttribute('autocapitalize', 'off'); ta.setAttribute('autocorrect', 'off');
+    wrap.appendChild(gutterWrap); wrap.appendChild(ta);
+    tab._ta = ta; tab._gutterInner = gutterInner;
+    function paintGutter() {
+      const n = Math.min((ta.value.match(/\n/g)?.length || 0) + 1, 20000);
+      if (gutterInner.children.length !== n) {
+        gutterInner.innerHTML = '';
+        for (let i = 1; i <= n; i++) {
+          const row = el('div', 'fx-gline'); row.style.height = FX_LINE_H + 'px'; row.dataset.n = i;
+          row.appendChild(el('span', 'fx-gnum', String(i)));
+          if (i <= 5000) {
+            const add = el('button', 'fx-gadd', '+'); add.type = 'button'; add.title = 'Add comment';
+            add.addEventListener('click', (e) => { e.stopPropagation(); openCommentPopover(tab, i, i, row); });
+            row.appendChild(add);
+          }
+          gutterInner.appendChild(row);
+        }
+      }
+      for (const row of gutterInner.children) row.classList.toggle('commented', tab.commentedLines?.has(Number(row.dataset.n)));
+    }
+    paintGutter();
+    ta.addEventListener('scroll', () => { gutterInner.style.transform = 'translateY(-' + ta.scrollTop + 'px)'; removeSelBtn(); });
+    ta.addEventListener('input', () => {
+      tab.text = ta.value; tab.dirty = tab.text !== tab.savedText; tab.preview = false;
+      paintGutter(); renderTabs();
+      if (tab._dirtyDot) tab._dirtyDot.classList.toggle('hidden', !tab.dirty);
+      if (tab._saveBtn) tab._saveBtn.disabled = !tab.dirty;
+      clearTimeout(tab._saveTimer); if (fxAutoSave) tab._saveTimer = setTimeout(() => saveTab(tab, { explicit: false }), 900);
+    });
+    ta.addEventListener('keydown', (e) => {
+      if (e.key === 'Tab') { e.preventDefault(); const s = ta.selectionStart, en = ta.selectionEnd; ta.value = ta.value.slice(0, s) + '\t' + ta.value.slice(en); ta.selectionStart = ta.selectionEnd = s + 1; ta.dispatchEvent(new Event('input')); }
+      else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); saveTab(tab, { explicit: true }); }
+      else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') { e.preventDefault(); openFindBar(); }
+    });
+    ta.addEventListener('mouseup', () => showSelectionCommentButton(tab, ta));
+    ta.addEventListener('keyup', (e) => { if (e.shiftKey) showSelectionCommentButton(tab, ta); });
+    ta.addEventListener('blur', removeSelBtn);
+    if (fxPendingHighlight?.path === tab.path) { applyHighlight(ta, fxPendingHighlight); fxPendingHighlight = null; }
+    return wrap;
+  }
+  function applyHighlight(ta, { startLine, endLine }) {
+    const lines = ta.value.split('\n');
+    let start = 0; for (let i = 0; i < startLine - 1 && i < lines.length; i++) start += lines[i].length + 1;
+    let end = start; for (let i = startLine - 1; i < (endLine || startLine) && i < lines.length; i++) end += lines[i].length + 1;
+    end = Math.max(start, end - 1);
+    ta.focus(); ta.setSelectionRange(start, end);
+    ta.scrollTop = Math.max(0, (startLine - 1) * FX_LINE_H - ta.clientHeight / 2);
+  }
+  async function saveTab(tab, { explicit } = {}) {
+    if (!tab.dirty && !explicit) return;
+    if (tab._saving) return; tab._saving = true;
+    try {
+      const r = await api('/fs/write', { method: 'POST', body: JSON.stringify({ path: tab.path, text: tab.text, mtimeMs: tab.mtimeMs }) });
+      tab.savedText = tab.text; tab.mtimeMs = r.mtimeMs; tab.size = r.size; tab.dirty = false; tab.conflict = false;
+      if (tab._dirtyDot) tab._dirtyDot.classList.add('hidden'); if (tab._saveBtn) tab._saveBtn.disabled = true;
+      renderTabs();
+    } catch (e) {
+      if (e.status === 409) { tab.conflict = true; if (fxActivePath === tab.path) renderActiveTab(); }
+    } finally { tab._saving = false; }
+  }
+  // Find in the open file: Ctrl/Cmd+F inside the panel, scoped to whichever tab is open.
+  let fxFindMatches = [], fxFindIndex = -1;
+  function openFindBar() {
+    const tab = activeTab(); if (!tab?._ta) return;
+    $('#fx-findbar').classList.remove('hidden');
+    const input = $('#fx-find-input'); input.value = ''; input.focus(); updateFindMatches();
+  }
+  function closeFindBar() { $('#fx-findbar').classList.add('hidden'); fxFindMatches = []; fxFindIndex = -1; }
+  function updateFindMatches() {
+    const ta = activeTab()?._ta; const q = $('#fx-find-input').value;
+    fxFindMatches = [];
+    if (ta && q) { const hay = ta.value.toLowerCase(), needle = q.toLowerCase(); let i = 0; while ((i = hay.indexOf(needle, i)) !== -1) { fxFindMatches.push(i); i += Math.max(1, needle.length); } }
+    if (fxFindMatches.length) gotoMatch(0, q.length); else $('#fx-find-count').textContent = q ? '0/0' : '';
+  }
+  function gotoMatch(idx, len) {
+    const ta = activeTab()?._ta; if (!ta || !fxFindMatches.length) return;
+    fxFindIndex = (idx + fxFindMatches.length) % fxFindMatches.length;
+    const start = fxFindMatches[fxFindIndex];
+    ta.focus(); ta.setSelectionRange(start, start + len);
+    ta.scrollTop = Math.max(0, (ta.value.slice(0, start).match(/\n/g)?.length || 0) * FX_LINE_H - ta.clientHeight / 2);
+    $('#fx-find-count').textContent = (fxFindIndex + 1) + '/' + fxFindMatches.length;
+  }
+  $('#fx-find-input').addEventListener('input', updateFindMatches);
+  $('#fx-find-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); gotoMatch(fxFindIndex + (e.shiftKey ? -1 : 1), $('#fx-find-input').value.length); }
+    else if (e.key === 'Escape') { e.preventDefault(); closeFindBar(); activeTab()?._ta?.focus(); }
+  });
+  $('#fx-find-next').addEventListener('click', () => gotoMatch(fxFindIndex + 1, $('#fx-find-input').value.length));
+  $('#fx-find-prev').addEventListener('click', () => gotoMatch(fxFindIndex - 1, $('#fx-find-input').value.length));
+  $('#fx-find-close').addEventListener('click', closeFindBar);
+  fxPanel.addEventListener('keydown', (e) => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f' && activeTab()?._ta) { e.preventDefault(); openFindBar(); } });
+
+  // ---------- comments: the + beside a line, or a selection, attach a note to the next message ----------
+  let fxSelBtn = null;
+  function removeSelBtn() { fxSelBtn?.remove(); fxSelBtn = null; }
+  function showSelectionCommentButton(tab, ta) {
+    removeSelBtn();
+    const s = ta.selectionStart, e2 = ta.selectionEnd; if (s === e2) return;
+    const l1 = ta.value.slice(0, s).split('\n').length, l2 = ta.value.slice(0, e2).split('\n').length;
+    const btn = el('button', 'fx-sel-comment', 'Add comment'); btn.type = 'button';
+    const r = ta.getBoundingClientRect();
+    const top = r.top + (Math.max(l1, l2) - 1) * FX_LINE_H - ta.scrollTop;
+    btn.style.left = Math.max(r.left, r.right - 118) + 'px'; btn.style.top = Math.max(r.top, Math.min(top, r.bottom - 26)) + 'px';
+    btn.addEventListener('click', () => { openCommentPopover(tab, Math.min(l1, l2), Math.max(l1, l2), btn); removeSelBtn(); });
+    document.body.appendChild(btn); fxSelBtn = btn;
+  }
+  let fxPopover = null;
+  function closeFxPopover() { fxPopover?.remove(); fxPopover = null; document.removeEventListener('mousedown', onFxPopoverOutside, true); }
+  function onFxPopoverOutside(e) { if (fxPopover && !fxPopover.contains(e.target)) closeFxPopover(); }
+  function openCommentPopover(tab, l1, l2, anchorEl) {
+    closeFxPopover();
+    const pop = el('div', 'fx-comment-pop');
+    const ta2 = el('textarea', 'fx-comment-ta'); ta2.placeholder = 'Add a comment for Claude…'; ta2.rows = 3;
+    pop.appendChild(ta2);
+    const row = el('div', 'fx-comment-row');
+    const cancel = el('button', 'link-btn small', 'Cancel'); cancel.type = 'button'; cancel.addEventListener('click', closeFxPopover);
+    const add = el('button', 'btn btn-primary small', 'Add comment'); add.type = 'button';
+    add.addEventListener('click', () => {
+      const text = ta2.value.trim(); if (!text) return;
+      const label = relPath(tab.path) + '#L' + l1 + (l2 > l1 ? '-L' + l2 : '');
+      attachContext({ label, text });
+      tab.commentedLines ||= new Set(); for (let i = l1; i <= l2; i++) tab.commentedLines.add(i);
+      closeFxPopover(); if (fxActivePath === tab.path) renderActiveTab();
+    });
+    row.appendChild(cancel); row.appendChild(add); pop.appendChild(row);
+    document.body.appendChild(pop);
+    const r = (anchorEl || tab._ta).getBoundingClientRect();
+    pop.style.left = Math.max(4, Math.min(r.left, innerWidth - 300)) + 'px'; pop.style.top = Math.max(4, Math.min(r.top, innerHeight - 160)) + 'px';
+    ta2.focus(); fxPopover = pop;
+    setTimeout(() => document.addEventListener('mousedown', onFxPopoverOutside, true), 0);
+  }
+
+  // ---------- live refresh: an open file (and its preview) catches up when it changes on disk ----------
+  async function pollActive() {
+    if (!filesOpen) return;
+    const tab = activeTab(); if (!tab || tab.shellOnly || (tab.text == null && !tab.officeData && !tab.image)) return;
+    try {
+      const r = await api('/fs/stat?path=' + encodeURIComponent(tab.path));
+      if (r.mtimeMs === tab.mtimeMs) return;
+      if (tab.dirty) { return; } // left alone; the next save's own check is what catches this
+      tab.text = null; tab.officeData = null; tab.binary = false; tab.image = false; tab.savedText = null;
+      await loadTabContent(tab.path);
+    } catch {}
+  }
+
   // Download by the server's /api/file?download: in the app, the system browser saves it
   // (a webview does not always save a download); in a browser, an ordinary download.
   function downloadFile(p) {
     const url = localFileUrl(p) + '&download=1';
     if (window.__TAURI__?.opener?.openUrl) return openExternal(location.origin + url);
     const a = el('a'); a.href = url; a.download = baseName(p); document.body.appendChild(a); a.click(); a.remove();
-  }
-
-  // A file the server's machine cannot see, read from the window's machine through the shell.
-  // Only in the app (a plain browser has no shell) and only as a fallback, so the ordinary
-  // path is untouched.
-  async function showFromShell(p, name) {
-    const invoke = bridge(); if (!invoke) return false;
-    try {
-      const bytes = new Uint8Array(await invoke('dropped_file', { path: p }));
-      fxView.textContent = '';
-      if (/\.(png|jpe?g|gif|webp|avif|bmp|ico)$/i.test(p)) {
-        const url = URL.createObjectURL(new Blob([bytes]));
-        const img = el('img'); img.src = url; img.alt = name; img.addEventListener('click', () => openImage(url, name)); fxView.appendChild(img); return true;
-      }
-      if (bytes.includes(0)) { fxView.textContent = name + ' is not text (' + fxSize(bytes.length) + ').'; return true; }
-      fxView.textContent = new TextDecoder().decode(bytes);
-      return true;
-    } catch { return false; }
   }
   // "Not on this PC" on its own reads as a bug. Say whose disk was looked at and why it can
   // differ from the window you are in.
@@ -3165,6 +3567,31 @@
     const host = state.host && state.host !== 'this machine' ? '“' + state.host + '”' : 'the computer running this session';
     return 'This file is not on ' + host + ', which is where the session runs. If it is on another computer, open that one from the account menu.';
   }
+  // ---------- the pane's own menu: Auto save, on by default ----------
+  menuFor('#fx-menu-btn', '#fx-menu-pop', (m) => {
+    m.innerHTML = '';
+    const row = el('div', 'menu-item menu-switch');
+    row.appendChild(el('span', 'menu-label', 'Auto save'));
+    row.appendChild(el('span', 'desc', 'Saves a file a moment after you stop typing.'));
+    const sw = toggleEl(fxAutoSave, (on) => { fxAutoSave = on; try { localStorage.setItem('cr.fx.autosave', on ? '1' : '0'); } catch {} });
+    sw.setAttribute('aria-label', 'Toggle Auto save'); row.appendChild(sw);
+    m.appendChild(row);
+  });
+  // ---------- the tree column drags wider or narrower, inside the panel itself ----------
+  (function fxSideResize() {
+    const h = $('#fx-side-resizer'); if (!h) return;
+    let w = 0; try { w = Number(localStorage.getItem('cr.fx.sidew')) || 0; } catch {}
+    const apply = (px) => fxPanel.style.setProperty('--fx-side-w', px + 'px');
+    if (w) apply(w);
+    h.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault(); h.setPointerCapture(e.pointerId);
+      const x0 = e.clientX, w0 = $('#fx-side').getBoundingClientRect().width;
+      const move = (ev) => { w = Math.round(Math.max(160, Math.min(fxPanel.getBoundingClientRect().width - 200, w0 + (ev.clientX - x0)))); apply(w); };
+      const up = () => { h.removeEventListener('pointermove', move); h.removeEventListener('pointerup', up); try { localStorage.setItem('cr.fx.sidew', String(w)); } catch {} };
+      h.addEventListener('pointermove', move); h.addEventListener('pointerup', up);
+    });
+  })();
 
   // ---------- worktrees: a second checkout of the same repository, on its own branch ----------
   async function makeWorktree(cwd) {
@@ -3292,7 +3719,7 @@
   $('#ch-refresh').addEventListener('click', () => loadChanges());
   $('#ch-back').addEventListener('click', () => showChangesList());
   $('#sb-diff').addEventListener('click', () => changesOpen ? closeChanges() : openChanges());
-  function showChangesList() { changesFile = null; chDiff.classList.add('hidden'); chList.classList.remove('hidden'); $('#ch-back').classList.add('hidden'); $('#ch-file').textContent = ''; }
+  function showChangesList() { changesFile = null; chDiff.classList.add('hidden'); chList.classList.remove('hidden'); $('#ch-back').classList.add('hidden'); $('#ch-file').classList.add('hidden'); $('#ch-file-name').textContent = ''; $('#ch-open-editor').classList.add('hidden'); }
   async function loadChanges() {
     if (!state.current) return;
     try {
@@ -3324,8 +3751,11 @@
   }
   async function loadDiff(rel) {
     changesFile = rel;
-    chList.classList.add('hidden'); chDiff.classList.remove('hidden'); $('#ch-back').classList.remove('hidden');
-    $('#ch-file').textContent = rel; $('#ch-file').title = rel;
+    chList.classList.add('hidden'); chDiff.classList.remove('hidden'); $('#ch-back').classList.remove('hidden'); $('#ch-file').classList.remove('hidden');
+    $('#ch-file-name').textContent = rel; $('#ch-file-name').title = rel;
+    const editorBtn = $('#ch-open-editor');
+    editorBtn.classList.toggle('hidden', !changesData?.cwd);
+    editorBtn.onclick = () => openInEditor(changesData.cwd.replace(/[\\/]+$/, '') + '/' + rel);
     chDiff.innerHTML = ''; chDiff.appendChild(el('div', 'muted small pad', 'Loading…'));
     try {
       const r = await api(`/sessions/${state.current}/changes/diff?path=${encodeURIComponent(rel)}`);
@@ -3333,12 +3763,15 @@
       if (r.binary) { chDiff.appendChild(el('div', 'muted small pad', 'Binary file.')); return; }
       if (r.missing) { chDiff.appendChild(el('div', 'muted small pad', 'The file is gone.')); return; }
       if (!r.diff) { chDiff.appendChild(el('div', 'muted small pad', 'No differences.')); return; }
-      chDiff.appendChild(renderDiff(r.diff));
+      chDiff.appendChild(renderDiff(r.diff, rel));
       if (r.truncated) chDiff.appendChild(el('div', 'muted small pad', 'Showing the first 4,000 lines.'));
     } catch (e) { chDiff.innerHTML = ''; chDiff.appendChild(el('div', 'muted small pad', e.message)); }
   }
   // A unified diff as rows: old/new line numbers, then the line. Hunk headers stay as dividers.
-  function renderDiff(text) {
+  // A "+" beside a line (shown on hover) adds a review comment, sent with the next message via
+  // attachContext, same as a comment on a line of an open file; resolving one collapses it so
+  // the diff reads as what is still open, not everything ever said about it.
+  function renderDiff(text, rel) {
     const pre = el('div', 'diff');
     let o = 0, n = 0;
     for (const raw of text.split('\n')) {
@@ -3352,6 +3785,10 @@
       if (raw.startsWith('\\')) continue; // "No newline at end of file"
       const kind = raw[0] === '+' ? 'add' : raw[0] === '-' ? 'del' : 'ctx';
       line.classList.add(kind);
+      const lineNo = kind === 'del' ? o : n;
+      const add = el('button', 'dl-add', '+'); add.type = 'button'; add.title = 'Add review comment';
+      add.addEventListener('click', (e) => { e.stopPropagation(); openDiffComment(rel, lineNo, line); });
+      line.appendChild(add);
       line.appendChild(el('span', 'no', kind === 'add' ? '' : String(o)));
       line.appendChild(el('span', 'no', kind === 'del' ? '' : String(n)));
       line.appendChild(el('span', 'tx', raw.slice(1)));
@@ -3359,6 +3796,38 @@
       pre.appendChild(line);
     }
     return pre;
+  }
+  // A review comment on one diff line: the same popover the Files editor uses for a line
+  // comment (fx-comment-pop), anchored under the row instead of beside a gutter number.
+  function openDiffComment(rel, lineNo, anchorRow) {
+    closeFxPopover();
+    const pop = el('div', 'fx-comment-pop');
+    const ta = el('textarea', 'fx-comment-ta'); ta.placeholder = 'Add a review comment for Claude…'; ta.rows = 3;
+    pop.appendChild(ta);
+    const row = el('div', 'fx-comment-row');
+    const cancel = el('button', 'link-btn small', 'Cancel'); cancel.type = 'button'; cancel.addEventListener('click', closeFxPopover);
+    const addBtn = el('button', 'btn btn-primary small', 'Add comment'); addBtn.type = 'button';
+    addBtn.addEventListener('click', () => {
+      const text = ta.value.trim(); if (!text) return;
+      attachContext({ label: rel + '#L' + lineNo, text });
+      addDiffCommentCard(lineNo, text, anchorRow);
+      closeFxPopover();
+    });
+    row.appendChild(cancel); row.appendChild(addBtn); pop.appendChild(row);
+    document.body.appendChild(pop);
+    const r = anchorRow.getBoundingClientRect();
+    pop.style.left = Math.max(4, Math.min(r.left + 40, innerWidth - 300)) + 'px'; pop.style.top = Math.max(4, Math.min(r.bottom, innerHeight - 160)) + 'px';
+    ta.focus(); fxPopover = pop;
+    setTimeout(() => document.addEventListener('mousedown', onFxPopoverOutside, true), 0);
+  }
+  function addDiffCommentCard(lineNo, text, anchorRow) {
+    const card = el('div', 'dl-comment');
+    card.appendChild(el('div', 'dl-comment-head', 'Comment on line ' + lineNo));
+    card.appendChild(el('div', 'dl-comment-text', text));
+    const resolveBtn = el('button', 'link-btn small', 'Resolve'); resolveBtn.type = 'button';
+    resolveBtn.addEventListener('click', () => { const resolved = card.classList.toggle('resolved'); resolveBtn.textContent = resolved ? 'Reopen' : 'Resolve'; });
+    card.appendChild(resolveBtn);
+    anchorRow.after(card);
   }
 
   // ---------- live turn ----------

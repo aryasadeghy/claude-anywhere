@@ -310,15 +310,36 @@
 
     <aside id="files-panel" class="tasks-panel files-panel hidden" aria-label="Files">
       <div class="tp-head">
-        <button id="fx-up" class="icon-btn small" type="button" title="Up one folder"><svg viewBox="0 0 20 20" width="15" height="15"><path d="M10 15V5M5 10l5-5 5 5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <!-- A phone shows the tree or the open file, never both; this goes back to the tree. -->
+        <button id="fx-back" class="icon-btn small fx-back" type="button" title="Back to the file tree"><svg viewBox="0 0 20 20" width="15" height="15"><path d="M12 4l-6 6 6 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
         <span class="tp-title">Files</span>
         <span class="sb-spacer"></span>
-        <button id="fx-home" class="icon-btn small" type="button" title="Back to this session's folder"><svg viewBox="0 0 20 20" width="15" height="15"><path d="M3.5 9.5L10 4l6.5 5.5V16a.5.5 0 0 1-.5.5h-4V12h-4v4.5H4a.5.5 0 0 1-.5-.5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button>
+        <button id="fx-menu-btn" class="icon-btn small" type="button" title="Files menu" aria-label="Files menu"><svg viewBox="0 0 20 20" width="15" height="15"><circle cx="4" cy="10" r="1.4" fill="currentColor"/><circle cx="10" cy="10" r="1.4" fill="currentColor"/><circle cx="16" cy="10" r="1.4" fill="currentColor"/></svg></button>
+        <div id="fx-menu-pop" class="menu menu-top menu-end hidden"></div>
         <button id="fx-close" class="icon-btn small" type="button" title="Close"><svg viewBox="0 0 20 20" width="15" height="15"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
       </div>
-      <div id="fx-path" class="fx-path"></div>
-      <div id="fx-list" class="tp-list"></div>
-      <pre id="fx-view" class="fx-view hidden"></pre>
+      <div id="fx-split" class="fx-split">
+        <div id="fx-side" class="fx-side">
+          <div class="fx-search-wrap">
+            <input id="fx-search" class="fx-search" type="search" placeholder="Find by name, or ? to search contents" spellcheck="false" autocapitalize="off" autocorrect="off" autocomplete="off" aria-label="Find files">
+          </div>
+          <div id="fx-tree" class="fx-tree tp-list"></div>
+          <div id="fx-results" class="fx-tree tp-list hidden"></div>
+        </div>
+        <div id="fx-side-resizer" class="fx-side-resizer" title="Drag to resize"></div>
+        <div id="fx-main" class="fx-main">
+          <div id="fx-tabs" class="fx-tabs hidden"></div>
+          <div id="fx-empty" class="muted small pad">Pick a file on the left to open it here.</div>
+          <div id="fx-findbar" class="fx-findbar hidden">
+            <input id="fx-find-input" type="text" placeholder="Find in file" spellcheck="false" autocomplete="off" aria-label="Find in file">
+            <span id="fx-find-count" class="muted small"></span>
+            <button id="fx-find-prev" class="icon-btn small" type="button" title="Previous match">&uarr;</button>
+            <button id="fx-find-next" class="icon-btn small" type="button" title="Next match">&darr;</button>
+            <button id="fx-find-close" class="icon-btn small" type="button" title="Close">&times;</button>
+          </div>
+          <pre id="fx-view" class="fx-view hidden"></pre>
+        </div>
+      </div>
     </aside>
 
     <aside id="changes-panel" class="tasks-panel changes-panel hidden" aria-label="Changes">
@@ -331,7 +352,7 @@
         <button id="ch-refresh" class="icon-btn small" type="button" title="Refresh"><svg viewBox="0 0 20 20" width="15" height="15"><path d="M16 10a6 6 0 1 1-1.8-4.3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M16 4v4h-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
         <button id="ch-close" class="icon-btn small" type="button" title="Close"><svg viewBox="0 0 20 20" width="15" height="15"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
       </div>
-      <div id="ch-file" class="ch-file"></div>
+      <div id="ch-file" class="ch-file hidden"><span id="ch-file-name"></span><button id="ch-open-editor" class="link-btn small hidden" type="button">Open in editor</button></div>
       <div id="ch-list" class="tp-list ch-list"></div>
       <div id="ch-diff" class="ch-diffwrap hidden"></div>
     </aside>
