@@ -1015,3 +1015,22 @@ audio.lb-media { width: min(520px, 90vw); height: auto; }
 .note.warning { color: #b4691f; }
 :root[data-theme="dark"] .note.warning { color: #e3a15a; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .note.warning { color: #e3a15a; } }
+
+/* ---------- v54: the message box - "/" commands, "@" files, "!" shell, context chips, dictation, annotate ---------- */
+#composer { position: relative; } /* the popover and the context chips both float from this box */
+.context-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 2px 8px; }
+.ctx-chip { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; padding: 4px 4px 4px 10px; border-radius: 999px; background: var(--chip-bg); color: var(--ink-2); font-size: 12.5px; }
+.ctx-chip-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; }
+.ctx-chip-x { width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; color: var(--ink-3); flex: none; font-size: 13px; }
+.ctx-chip-x:hover { background: var(--bg-3); color: var(--ink); }
+.sel-attach-btn { position: fixed; transform: translate(-50%, -100%); z-index: 60; padding: 6px 12px; border-radius: 999px; border: 0; background: var(--ink); color: var(--bg); font-size: 12.5px; box-shadow: var(--shadow); }
+.sel-attach-btn:hover { opacity: .88; }
+/* The "/" and "@" popover: a .menu floating from #composer itself rather than a button beside it. */
+.composer-pop { left: 14px; right: 14px; bottom: calc(100% + 8px); width: auto; max-width: none; max-height: 40vh; }
+.cpop-item { display: flex; align-items: baseline; gap: 8px; width: 100%; text-align: start; padding: 7px 10px; border-radius: 8px; font-size: 13.5px; color: var(--ink); }
+.cpop-item .cpop-name { flex: none; font-family: var(--mono); }
+.cpop-item .cpop-desc { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-3); font-size: 12px; }
+.cpop-item .cpop-hint { flex: none; color: var(--ink-3); font-size: 11.5px; }
+.cpop-item.on, .cpop-item:hover { background: var(--bg-3); }
+.cpop-empty { padding: 10px; text-align: center; color: var(--ink-3); font-size: 13px; }
+@media (max-width: 860px) { .sel-attach-btn { font-size: 13px; } }

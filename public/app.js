@@ -3779,13 +3779,14 @@
   // Desktop does; any other /name goes to Claude Code. Features add theirs with registerCommand.
   const appCommands = new Map(); // name -> { description, argumentHint, run(args) }
   function registerCommand(name, spec) { appCommands.set(String(name).replace(/^\//, ''), spec); }
-  // "Attach as context": a message, a selection, lines of a file, a terminal's output - quoted in
-  // the next message. Everything that offers it calls this one function.
+  // "Attach as context": a message, a selection, lines of a file, a terminal's output - quoted
+  // before the next message. A removable chip above the box, not text stuffed into it, so what
+  // you type next stays legible - the composer block below turns this into chips and quotes
+  // them into the message when it is sent.
   function attachContext({ label, text }) {
     if (!text) return;
-    const quoted = (label ? label + ':\n' : '') + String(text).split('\n').map((l) => '> ' + l).join('\n');
-    input.value = (input.value.trim() ? input.value.replace(/\s+$/, '') + '\n\n' : '') + quoted + '\n\n';
-    input.dispatchEvent(new Event('input')); input.focus();
+    contextChips.push({ id: newId(), label: label || '', text: String(text) });
+    renderContextChips(); input.focus();
   }
   // Unsent text survives a refresh, per chat.
   const draftKey = (id) => 'cr.draft.' + (id || 'new');
@@ -3804,7 +3805,55 @@
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && window.matchMedia('(min-width: 861px)').matches) { e.preventDefault(); submit(); }
     if (e.key === 'Escape' && state.answering) { e.preventDefault(); stop(); }
   });
-  send.addEventListener('click', () => { if (state.answering && !input.value.trim() && !pending.length) stop(); else submit(); });
+  send.addEventListener('click', () => { if (state.answering && !input.value.trim() && !pending.length && !contextChips.length) stop(); else submit(); });
+
+  // ---------- composer: context chips, "/" commands, "@" files, "!" shell, dictation, number-key answers ----------
+  // Everything Desktop's message box does beyond plain text and attachments. One intercept point
+  // (runComposerIntercepts) sits ahead of submit() in the hook above; everything else is its own
+  // corner of the box.
+
+  // "Attach as context": a removable chip, quoted ahead of the next message when it is sent
+  // (attachContext, above, only pushes into this array and repaints the strip).
+  let contextChips = [];
+  const quoteContext = (c) => (c.label ? c.label + ':\n' : '') + String(c.text).split('\n').map((l) => '> ' + l).join('\n');
+  function renderContextChips() {
+    const strip = $('#context-chips');
+    strip.innerHTML = ''; strip.classList.toggle('hidden', !contextChips.length);
+    contextChips.forEach((c, i) => {
+      const chip = el('div', 'ctx-chip');
+      chip.appendChild(el('span', 'ctx-chip-label', c.label || c.text.replace(/\s+/g, ' ').trim().slice(0, 60)));
+      const x = el('button', 'ctx-chip-x'); x.type = 'button'; x.title = 'Remove'; x.textContent = '×';
+      x.addEventListener('click', () => { contextChips.splice(i, 1); renderContextChips(); });
+      chip.appendChild(x); strip.appendChild(chip);
+    });
+    paintSendButton();
+  }
+
+  // Selecting text in the thread offers the same "Attach as context" a right-click would
+  // (the right-click menu is another package's). mousedown on the button is prevented so the
+  // click never collapses the selection before the click handler reads it.
+  const ctxFloatBtn = $('#ctx-float-btn');
+  function hideCtxFloatBtn() { ctxFloatBtn.classList.add('hidden'); }
+  document.addEventListener('selectionchange', () => {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !sel.toString().trim() || !thread.contains(sel.anchorNode) || !thread.contains(sel.focusNode)) return hideCtxFloatBtn();
+    const rect = sel.getRangeAt(0).getBoundingClientRect();
+    if (!rect.width && !rect.height) return hideCtxFloatBtn();
+    ctxFloatBtn.style.left = Math.round(rect.left + rect.width / 2) + 'px';
+    ctxFloatBtn.style.top = Math.round(Math.max(8, rect.top - 8)) + 'px';
+    ctxFloatBtn.classList.remove('hidden');
+  });
+  scroll.addEventListener('scroll', hideCtxFloatBtn);
+  ctxFloatBtn.addEventListener('mousedown', (e) => e.preventDefault());
+  ctxFloatBtn.addEventListener('click', () => {
+    const sel = window.getSelection(), text = sel ? sel.toString() : '';
+    hideCtxFloatBtn(); sel?.removeAllRanges();
+    if (text.trim()) attachContext({ text });
+  });
+
+  // Filled in by the "/", "@" and "!" pieces below; a stub here keeps submit() working
+  // before they land, each committed as its own working step.
+  async function runComposerIntercepts(_typed) { return false; }
 
   // ---------- attachments: images go to Claude as images; other files are saved on the PC and referenced ----------
   const pending = []; // { kind: 'image'|'file', name, media_type, data (base64), dataUrl }
@@ -3886,12 +3935,17 @@
   })();
 
   async function submit() {
-    const text = input.value.trim(); if (!text && !pending.length) return;
+    const typed = input.value.trim(); if (!typed && !pending.length && !contextChips.length) return;
+    if (await runComposerIntercepts(typed)) return;
+    // Context chips are quoted ahead of what you typed, the same shape "Attach as context" used
+    // to drop straight into the box - just kept out of it, as chips, while you are still typing.
+    const text = contextChips.length ? contextChips.map((c) => quoteContext(c)).join('\n\n') + (typed ? '\n\n' + typed : '') : typed;
     const attachments = pending.filter((a) => a.kind === 'image').map((a) => ({ media_type: a.media_type, data: a.data }));
     const files = pending.filter((a) => a.kind === 'file').map((a) => ({ name: a.name, media_type: a.media_type, data: a.data }));
     const images = pending.filter((a) => a.kind === 'image').map((a) => a.dataUrl);
     const shown = text || (files.length ? files.map((f) => f.name).join(', ') : '');
     pending.length = 0; renderPending();
+    contextChips.length = 0; renderContextChips();
     input.value = ''; input.style.height = 'auto'; try { localStorage.removeItem(draftKey(state.current)); } catch {}
     empty.classList.remove('show'); stickToBottom = true;
     // The message's own id, drawn on its bubble now and sent with it: every event about the

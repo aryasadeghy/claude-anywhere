@@ -135,6 +135,9 @@
         <div id="thread" class="thread"></div>
         <div id="bottom-pad"></div>
       </div>
+      <!-- Selecting text in the thread offers to attach it as context, like right-click in Desktop
+           (the right-click menu itself belongs to another package). -->
+      <button id="ctx-float-btn" class="sel-attach-btn hidden" type="button">Attach as context</button>
 
       <div class="composer-wrap">
         <!-- New session: where it will run (Desktop's Local / folder / branch chips) -->
@@ -185,6 +188,8 @@
           <button id="lb-close" class="icon-btn small" type="button" title="Dismiss"><svg viewBox="0 0 20 20" width="14" height="14"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
         </div>
         <div class="composer" id="composer">
+          <div id="context-chips" class="context-chips hidden"></div>
+          <div id="composer-pop" class="menu composer-pop hidden"></div>
           <div id="attachments" class="attach-strip hidden"></div>
           <textarea id="input" rows="1" placeholder="How can I help you today?" dir="auto"></textarea>
           <div class="composer-row">
