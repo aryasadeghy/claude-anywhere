@@ -157,6 +157,30 @@ async function main() {
   // path is implemented from sdk-tools.d.ts and left unexercised here rather than asserted on a
   // tool the harness cannot actually turn on.
 
+  // 7. Transcript view: Normal never shows a non-narration thinking block; Thinking does, as its
+  // own row, once the session is reopened the way picking it from the header menu does; Verbose
+  // also opens tool steps by default.
+  await send(page, '[think] explain it');
+  check('Normal never shows the thinking', await until(async () => (await threadText(page)).includes('Answer to: it'), 20000) && !(await threadText(page)).includes('Working through what this needs'));
+  await idle(page);
+  const sessionHash2 = await page.evaluate(() => location.hash);
+  await page.click('#session-menu-btn');
+  await until(() => page.isVisible('#session-menu .menu-item'), 5000);
+  await page.click('#session-menu >> text=Transcript view');
+  await until(() => page.isVisible('#session-menu .menu-item:has-text("Thinking")'), 5000);
+  await page.click('#session-menu .menu-item:has-text("Thinking")');
+  check('Thinking re-fetches the session and now shows it, as its own row', await until(() => page.isVisible('.step.thought >> text=Working through what this needs'), 15000));
+  await page.screenshot({ path: path.join(SHOTS, 'conversation-transcript-thinking.png') });
+  // Verbose: a fresh tool call's step and group are expanded by default, not collapsed.
+  await page.click('#session-menu-btn');
+  await page.click('#session-menu >> text=Transcript view');
+  await until(() => page.isVisible('#session-menu .menu-item:has-text("Verbose")'), 5000);
+  await page.click('#session-menu .menu-item:has-text("Verbose")');
+  await until(async () => (await page.evaluate(() => location.hash)) === sessionHash2, 10000);
+  await send(page, '[background] one more');
+  check('Verbose opens a new tool step by itself', await until(() => page.$eval('.tool-group', (g) => g.open).catch(() => false), 15000));
+  await idle(page);
+
   check('no errors in the app', !errors.length, errors.join(' | '));
   await browser.close();
 

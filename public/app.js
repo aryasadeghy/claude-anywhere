@@ -11,6 +11,7 @@
     answering: false,    // Claude is actively producing this turn: the "Working" pill, the status line, the Stop button
     es: null, lastEventId: -1,
     live: null,          // streaming assistant message being built
+    transcriptView: 'normal', // this session's: Normal, Thinking (reads it) or Verbose (+ tool detail)
   };
   try { state.token = localStorage.getItem('cr.token'); } catch {}
   // The desktop app opens its own window already signed in.
@@ -1401,6 +1402,7 @@
     m.appendChild(item('Browser', 'Dev servers and the project\'s pages and PDFs, here and on your phone', false, () => { m.classList.add('hidden'); openPreview(); }));
     // Session chapters: MarkChapter, or a message pinned from its own menu.
     m.appendChild(item('Chapters', chapters.length ? String(chapters.length) : 'None yet', false, (e) => { e.stopPropagation(); renderChaptersMenu(m); }));
+    m.appendChild(item('Transcript view', TRANSCRIPT_VIEWS.find((v) => v[0] === state.transcriptView)?.[1] || 'Normal', false, (e) => { e.stopPropagation(); renderTranscriptMenu(m); }));
     m.appendChild(item('Worktrees…', 'A second checkout on its own branch', false, () => { m.classList.add('hidden'); showWorktrees(state.cwd); }));
     m.appendChild(item('Keep computer awake', (AWAKE.find((a) => a[0] === awakeMode) || AWAKE[0])[1], false, () => {
       m.classList.add('hidden');
@@ -1420,6 +1422,17 @@
     m.appendChild(el('div', 'menu-sep'));
     if (!chapters.length) m.appendChild(el('div', 'menu-empty', 'No chapters yet. Ask Claude to mark one, or pin a message from its menu.'));
     for (const c of chapters) m.appendChild(item(c.title, c.at ? relTime(c.at) : '', false, async () => { m.classList.add('hidden'); await jumpToMessage(c.uuid); }));
+  }
+  // Changing it here is for this open session; Settings' General pane sets what the next one
+  // opens to. Either way a plain reopen is the simplest correct redraw: Normal never fetched the
+  // thinking a switch to Thinking or Verbose now needs.
+  function renderTranscriptMenu(m) {
+    m.innerHTML = '';
+    m.appendChild(item('‹ Back', '', false, () => renderSessionMenu(m)));
+    m.appendChild(el('div', 'menu-sep'));
+    for (const [id, name] of TRANSCRIPT_VIEWS) {
+      m.appendChild(item(name, '', id === state.transcriptView, () => { m.classList.add('hidden'); if (id !== state.transcriptView) { explicitTranscriptView = id; openSession(state.current); } }));
+    }
   }
 
   // ---------- connectors & plugins (Desktop's panel) ----------
@@ -1832,6 +1845,7 @@
   }
   function stepEl(kind, name, arg) {
     const d = el('details', 'step ' + kind);
+    d.open = state.transcriptView === 'verbose'; // Verbose: tool inputs and results expanded
     const s = el('summary');
     s.appendChild(el('span', 'name', name));
     s.appendChild(el('span', 'arg', arg || ''));
@@ -1998,7 +2012,7 @@
     // The files a connector's SendUserFile delivered sit under its group without closing it.
     const g0 = msg.group, last = msg.body.lastElementChild;
     if (g0 && (g0 === last || (g0._cards?.length && g0._cards[g0._cards.length - 1] === last))) return g0;
-    const g = el('details', 'tool-group'); g.appendChild(el('summary', null, 'Working')); g.appendChild(el('div', 'group-body'));
+    const g = el('details', 'tool-group'); g.open = state.transcriptView === 'verbose'; g.appendChild(el('summary', null, 'Working')); g.appendChild(el('div', 'group-body'));
     g._names = []; g._inputs = []; msg.body.appendChild(g); msg.group = g; return g;
   }
   function setGroupSummary(g, text) { if (g) g.querySelector('summary').textContent = text; }
@@ -2011,6 +2025,14 @@
       const shown = stripHarness(block.text);
       node.innerHTML = md(shown);
       node.classList.toggle('hidden', !shown);
+    } else if (block.type === 'thinking' || block.type === 'redacted_thinking') {
+      // Thinking/Verbose only: Normal never lets one of these reach renderBlock at all
+      // (asShown, and the server page it came from, both leave it out).
+      if (!node) { node = stepEl('thought', 'Thought', ''); msg.body.appendChild(node); msg.blocks.set(index, node); msg.group = null; }
+      const text = block.type === 'redacted_thinking' ? '' : String(block.thinking || '');
+      node.querySelector('.arg').textContent = text.slice(0, 120);
+      const b = node.querySelector('.step-body'); b.innerHTML = '';
+      b.appendChild(text ? el('div', 'prose thought-text', text) : el('div', 'muted', 'This part of the thinking is encrypted and not shown.'));
     } else if (block.type === 'tool_use') {
       if (renderConvTool(msg, index, block)) return;
       if (!node) {
@@ -2057,7 +2079,11 @@
   // picture Claude read.
   function attachResult(toolNode, result) {
     if (!toolNode) return;
+    // A card from renderConvTool (a chapter divider, a recap, a suggested task) has no
+    // step-body to show a result in - its own card already says what Claude is telling the
+    // person, and the result text is just an echo of that.
     const b = toolNode.querySelector('.step-body');
+    if (!b) return;
     b.appendChild(el('div', 'label', result.is_error ? 'Error' : 'Result'));
     const blocks = Array.isArray(result.content) ? result.content : [{ type: 'text', text: resultText(result.content) }];
     const text = blocks.filter((x) => x.type === 'text').map((x) => x.text).join('\n');
@@ -2225,6 +2251,7 @@
   // SetSessionStatus tool exists at all (lib/tools-conversation.mjs reads the same setting).
   const TRANSCRIPT_VIEWS = [['normal', 'Normal'], ['thinking', 'Thinking'], ['verbose', 'Verbose']];
   let convSettings = { transcriptView: 'normal', autoClassify: false };
+  let explicitTranscriptView = null; // set by the session menu, consumed once by the next openSession
   async function loadConvSettings() { try { convSettings = { ...convSettings, ...(await api('/conversation/settings')) }; } catch {} }
   function paintConvSettings() {
     const seg = $('#set-transcript-view');
@@ -2448,7 +2475,14 @@
       return !!f8 && new TextDecoder().decode(f8) === 'narration';
     } catch { return false; }
   }
-  const asShown = (b) => b?.type === 'thinking' ? (isNarration(b) && b.thinking ? { type: 'text', text: b.thinking } : null) : b?.type === 'redacted_thinking' ? null : b;
+  // Normal: only narration, turned into plain text, as Desktop shows it as part of the answer.
+  // Thinking/Verbose: every thinking block, drawn as its own "Thought" row (asShown's one caller
+  // for a live block_start already keeps the thoughts off the status line regardless of view).
+  const asShown = (b) => {
+    if (b?.type === 'thinking') return state.transcriptView === 'normal' ? (isNarration(b) && b.thinking ? { type: 'text', text: b.thinking } : null) : b;
+    if (b?.type === 'redacted_thinking') return state.transcriptView === 'normal' ? null : b;
+    return b;
+  };
 
   // ---------- history: the transcript, drawn a page at a time ----------
   // One assistant row per turn, like Desktop. A page never holds a tool result without its call
@@ -2477,7 +2511,9 @@
             const r = openRow(); let any = false;
             if (!r.root.dataset.uuid) r.root.dataset.uuid = m.uuid; // the row's anchor for a deep link, a chapter, a pin
             m.content.forEach((b, i) => {
-              if (b.type === 'thinking' || b.type === 'redacted_thinking') return;
+              // Normal never asked the server for these blocks at all; Thinking/Verbose did, and
+              // draws them (lib/history.mjs keeps them only when the page was fetched that way).
+              if ((b.type === 'thinking' || b.type === 'redacted_thinking') && state.transcriptView === 'normal') return;
               const key = m.uuid + ':' + i;
               renderBlock(r, key, b); any = true;
               if (b.type === 'tool_use') toolNodes.set(b.id, r.blocks.get(key));
@@ -2623,7 +2659,7 @@
     const id = hist.id, seq = openSeq;
     hist.loading = true;
     try {
-      const p = await api(`/sessions/${id}/history?before=${hist.before}` + (hist.until ? '&until=' + hist.until : ''));
+      const p = await api(`/sessions/${id}/history?before=${hist.before}` + (hist.until ? '&until=' + hist.until : '') + (state.transcriptView !== 'normal' ? '&view=' + state.transcriptView : ''));
       if (seq !== openSeq) return;
       const frag = document.createDocumentFragment();
       const r = historyRenderer(frag);
@@ -4389,8 +4425,10 @@
       const until = !info.live ? 0 : byTurn ? info.turnStartedAt || 0 : info.runStartedAt || 0;
       // The newest page only; older ones come as the reader scrolls up. A server from before
       // paging has no /history and answers with the whole list.
+      // Picking a view from the session menu overrides the default for this one reopen only.
+      state.transcriptView = explicitTranscriptView || convSettings.transcriptView || 'normal'; explicitTranscriptView = null;
       let page;
-      try { page = await api(`/sessions/${id}/history` + (until ? '?until=' + until : '')); }
+      try { page = await api(`/sessions/${id}/history` + (until ? '?until=' + until : '') + (state.transcriptView !== 'normal' ? (until ? '&' : '?') + 'view=' + state.transcriptView : '')); }
       catch (e) { if (e.status !== 404) throw e; page = { messages: await api(`/sessions/${id}/messages` + (until ? '?before=' + until : '')), more: false }; }
       if (seq !== openSeq) return;
       const messages = page.messages;

@@ -1066,3 +1066,7 @@ audio.lb-media { width: min(520px, 90vw); height: auto; }
 .todo-item.status-completed .todo-check { border-color: var(--success); background: var(--success); }
 .todo-item.status-completed .todo-label { color: var(--ink-3); text-decoration: line-through; }
 .todo-item.status-in_progress .todo-label { color: var(--ink); font-weight: 500; }
+
+/* Transcript view: Thinking/Verbose draw a thinking block as its own row. */
+.step.thought > summary .name { color: var(--ink-3); font-style: italic; }
+.thought-text { white-space: pre-wrap; color: var(--ink-2); font-size: 13px; line-height: 1.5; }

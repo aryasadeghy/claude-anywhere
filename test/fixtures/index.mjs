@@ -245,9 +245,18 @@ export async function startFakeApi({ delay = 15 } = {}) {
     const pace = /\[slow\]/.test(said) ? 150 : delay;
     send('message_start', { type: 'message_start', message: { id: 'msg_' + requests.length, type: 'message', role: 'assistant', model: j.model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 12, output_tokens: 1 } } });
     if (words) {
-      send('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
-      for (const w of words.split(/(?<= )/)) { send('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: w } }); await new Promise((r) => setTimeout(r, pace)); }
-      send('content_block_stop', { type: 'content_block_stop', index: 0 });
+      // [think]: a non-narration thinking block ahead of the answer - Normal never asks for it
+      // (lib/history.mjs), Thinking/Verbose draw it as its own row (app.js's asShown).
+      let i = 0;
+      if (/\[think\]/.test(said)) {
+        send('content_block_start', { type: 'content_block_start', index: i, content_block: { type: 'thinking', thinking: '' } });
+        send('content_block_delta', { type: 'content_block_delta', index: i, delta: { type: 'thinking_delta', thinking: 'Working through what this needs.' } });
+        send('content_block_stop', { type: 'content_block_stop', index: i });
+        i++;
+      }
+      send('content_block_start', { type: 'content_block_start', index: i, content_block: { type: 'text', text: '' } });
+      for (const w of words.split(/(?<= )/)) { send('content_block_delta', { type: 'content_block_delta', index: i, delta: { type: 'text_delta', text: w } }); await new Promise((r) => setTimeout(r, pace)); }
+      send('content_block_stop', { type: 'content_block_stop', index: i });
       send('message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 6 } });
     } else {
       const TOOL_TAGS = {
