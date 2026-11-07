@@ -131,6 +131,12 @@ async function main() {
   // 5. /clear: Claude Code goes on in a new session, and the page with it.
   await send(page, '/clear');
   check('/clear opens the new session Claude Code went on in', await until(async () => { const h = await page.evaluate(() => location.hash); return /^#\/s\/[0-9a-f-]{36}$/.test(h) && !h.includes(sid); }, 20000), await page.evaluate(() => location.hash));
+  // ...and is live there: the next message goes in and its answer streams onto this page.
+  await idle(page);
+  const afterClear = await answers();
+  await send(page, 'Q6 after the clear');
+  check('...and the next message is answered there, live', await until(async () => (await answers()) > afterClear, 30000), (await threadText(page)).slice(-300));
+  await page.screenshot({ path: path.join(SHOTS, 'controls-after-clear.png') });
   check('no errors in the app', !errors.length, errors.join(' | '));
   await browser.close();
 

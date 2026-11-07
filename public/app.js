@@ -3521,8 +3521,10 @@
         case 'note': thread.appendChild(el('div', 'note' + (ev.level === 'warning' ? ' warning' : ''), ev.text)); statusPaint(); autoscroll(); break;
         // Stop took back messages typed mid-turn: their dashed bubbles go, on every device.
         case 'unqueued': for (const id of ev.ids || []) thread.querySelector('.msg.user.queued[data-prompt-id="' + CSS.escape(id) + '"]')?.remove(); break;
-        // /clear: Claude Code goes on in a new session, and the page goes with it.
-        case 'reset': if (state.current === sessionId && ev.sessionId) { es.close(); location.hash = '#/s/' + ev.sessionId; loadSessions().catch(() => {}); } break;
+        // /clear: Claude Code goes on in a new session, and the page goes with it. Only the page on
+        // the old session moves: the new session's stream replays this same event while the /clear
+        // turn is still under way, and acting on it there closed the stream it had just opened.
+        case 'reset': if (state.current === sessionId && ev.from === sessionId && ev.sessionId && ev.sessionId !== sessionId) { es.close(); location.hash = '#/s/' + ev.sessionId; loadSessions().catch(() => {}); } break;
         // One assistant row for the whole turn; each API message gets its own key space.
         case 'msg_start':
           msgNo += 1; partial.clear();
