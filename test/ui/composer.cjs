@@ -41,10 +41,20 @@ async function main() {
   fs.mkdirSync(SHOTS, { recursive: true });
   const sid = fx.makeSession(path.join(tmp, 'claude'), cwd, 'dddddddd-5555-2222-3333-444444444444');
 
-  async function open(type, opts) {
+  // A stand-in for the Web Speech API: real recognition needs a microphone and a live network
+  // connection to the browser's speech service, neither available here. window.__rec exposes
+  // the newest instance so a test can call .fire('text', final) the way the real API delivers
+  // a result, without touching anything about how app.js itself uses SpeechRecognition.
+  const FAKE_SPEECH = `window.SpeechRecognition = window.webkitSpeechRecognition = class {
+    start() { window.__rec = this; }
+    stop() { this.onend?.(); }
+    fire(text, isFinal = true) { this.onresult?.({ resultIndex: 0, results: [{ 0: { transcript: text }, isFinal, length: 1 }] }); }
+  };`;
+  async function open(type, opts, { speech = false } = {}) {
     const browser = await type.launch({ headless: true, ...(type === chromium && channel ? { channel } : {}) });
     const ctx = await browser.newContext({ colorScheme: 'dark', permissions: [], ...opts });
     await ctx.addInitScript((token) => { if (window.top === window) { localStorage.setItem('cr.accountChosen', '1'); localStorage.setItem('cr.token', token); } }, app.token);
+    if (speech) await ctx.addInitScript(FAKE_SPEECH);
     const page = await ctx.newPage();
     const errors = []; page.on('pageerror', (e) => errors.push(e.message));
     await page.goto(app.base + '/#/s/' + sid);
@@ -56,7 +66,7 @@ async function main() {
   async function send(page, text) { await page.fill('#input', text); await page.press('#input', 'Enter'); }
   const idle = (page) => until(async () => (await page.$eval('#send', (b) => b.title)) === 'Send', 30000);
 
-  const { browser, page, errors } = await open(chromium, { viewport: { width: 1380, height: 860 } });
+  const { browser, page, errors } = await open(chromium, { viewport: { width: 1380, height: 860 } }, { speech: true });
 
   // 1. Selecting text in an assistant message offers "Attach as context"; clicking it makes a
   // removable chip above the box, and sending quotes it ahead of what was typed.
@@ -110,6 +120,29 @@ async function main() {
   check('...and its output streams in', await until(async () => (await page.$eval('.step-shell-out', (n) => n.textContent)).includes('from-the-shell'), 8000));
   await page.screenshot({ path: path.join(SHOTS, 'composer-shell-command.png') });
   check('the output is attached as context for the next message', await until(() => page.isVisible('.ctx-chip'), 5000));
+  await page.click('.ctx-chip-x').catch(() => {});
+  await idle(page);
+
+  // 6. Dictation: a microphone button (Web Speech API), hidden where it does not exist - this
+  // page was given a stand-in so starting and stopping it can be tested without a real mic.
+  check('the dictate button shows up where SpeechRecognition exists', await until(() => page.isVisible('#dictate-btn:not(.hidden)'), 3000));
+  await page.click('#dictate-btn');
+  check('clicking starts it: "Cancel dictation"', await until(async () => (await page.getAttribute('#dictate-btn', 'title')) === 'Cancel dictation' && (await page.getAttribute('#dictate-btn', 'class')).includes('recording'), 3000));
+  await page.evaluate(() => window.__rec.fire('this came from dictation'));
+  check('a result lands in the box', await until(async () => (await page.inputValue('#input')).includes('this came from dictation'), 3000), await page.inputValue('#input'));
+  await page.screenshot({ path: path.join(SHOTS, 'composer-dictation.png') });
+  await page.click('#dictate-btn');
+  check('clicking again cancels it: back to "Dictation"', await until(async () => (await page.getAttribute('#dictate-btn', 'title')) === 'Dictation' && !(await page.getAttribute('#dictate-btn', 'class')).includes('recording'), 3000));
+  await page.fill('#input', '');
+
+  // 7. Number keys 1-9 pick an option on an open question card, when focus is not in a text field.
+  await send(page, 'Q7 [ask] pick one');
+  check('Claude asks: the question card', await until(() => page.isVisible('.question-card .q-opt'), 20000));
+  await page.click('#chat-title'); // focus leaves the box, onto something that is not a text field
+  await page.keyboard.press('2');
+  check('"2" picks the second option', await until(async () => (await page.$eval('.question-card:not(.answered) .q-opt:nth-child(2)', (b) => b.classList.contains('on'))), 3000));
+  await page.screenshot({ path: path.join(SHOTS, 'composer-number-key-answer.png') });
+  await page.click('.question-card:not(.answered) .permission-actions button:has-text("Answer")');
   await idle(page);
 
   console.log(`\n${passed} passed, ${failed} failed · screenshots in test/ui/shots`);

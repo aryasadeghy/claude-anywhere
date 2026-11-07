@@ -3862,6 +3862,7 @@
   let cpopMode = '', cpopRows = [], cpopAt = 0, cpopTrigger = null; // cpopTrigger: { mode, query, start, end } - the span in input.value a pick replaces
   let slashCommands = []; // Claude Code's own, for the session's folder (or the one picked for a new chat)
   let slashAskedFor = null; // what loadSlashCommands last answered for, so reopening "/" does not re-ask every time
+  let slashPromise = null, slashPromiseKey = null; // a call already in flight for this key, so a second "/" keystroke before it lands awaits the same answer rather than painting a stale one
   let mentionTimer = null, mentionSeq = 0;
 
   const composerPopOpen = () => !cpop.classList.contains('hidden');
@@ -3887,9 +3888,14 @@
   async function loadSlashCommands() {
     const cwd = state.cwd || '', key = cwd + '|' + (state.current || '');
     if (slashAskedFor === key) return;
-    slashAskedFor = key;
-    try { slashCommands = (await api('/commands?cwd=' + encodeURIComponent(cwd) + (state.current ? '&sessionId=' + encodeURIComponent(state.current) : ''))).commands || []; }
-    catch { slashCommands = []; }
+    if (slashPromiseKey === key) return slashPromise; // already asking - a second keystroke before it lands joins the same answer
+    slashPromiseKey = key;
+    slashPromise = (async () => {
+      try { slashCommands = (await api('/commands?cwd=' + encodeURIComponent(cwd) + (state.current ? '&sessionId=' + encodeURIComponent(state.current) : ''))).commands || []; }
+      catch { slashCommands = []; }
+      slashAskedFor = key; slashPromiseKey = null;
+    })();
+    return slashPromise;
   }
   // A name this app already runs itself wins the row - Claude Code's own command of that name
   // is never reachable by typing it, so it is left out rather than shown and then ignored.
@@ -4056,6 +4062,53 @@
     }
     return false;
   }
+
+  // ---------- dictation: a microphone button, Web Speech API ----------
+  // Safari and Firefox have no SpeechRecognition at all; the button simply never appears there
+  // rather than offering something that would fail the moment it is pressed.
+  (function dictation() {
+    const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const btn = $('#dictate-btn');
+    if (!Recognition) return;
+    btn.classList.remove('hidden');
+    let rec = null, base = ''; // base: what was already in the box when dictation started, so a result replaces only what it added
+    function stop() {
+      // rec is cleared before stop() is called on it: onend fires (some engines do it inline,
+      // not only after a tick) and its own "if (rec)" guard must already see it gone, or a
+      // stop that triggers onend synchronously recurses into this function forever.
+      const r = rec; rec = null; r?.stop();
+      btn.classList.remove('recording'); btn.title = 'Dictation'; btn.setAttribute('aria-label', 'Dictation');
+    }
+    btn.addEventListener('click', () => {
+      if (rec) return stop(); // "Cancel dictation": the same button starts and stops it
+      base = input.value; rec = new Recognition();
+      rec.continuous = true; rec.interimResults = true; rec.lang = navigator.language || 'en-US';
+      rec.onresult = (e) => {
+        let final = '', interim = '';
+        for (let i = e.resultIndex; i < e.results.length; i++) { const r = e.results[i]; if (r.isFinal) final += r[0].transcript; else interim += r[0].transcript; }
+        if (final) base = (base ? base.replace(/\s+$/, '') + ' ' : '') + final.trim() + ' ';
+        input.value = base + interim;
+        input.dispatchEvent(new Event('input'));
+      };
+      rec.onerror = () => { thread.appendChild(el('div', 'note error', 'Couldn’t start dictation. You can try again.')); autoscroll(); stop(); };
+      rec.onend = () => { if (rec) stop(); }; // silence, or the browser ending it on its own
+      try { rec.start(); btn.classList.add('recording'); btn.title = 'Cancel dictation'; btn.setAttribute('aria-label', 'Cancel dictation'); }
+      catch { stop(); }
+    });
+  })();
+
+  // ---------- number keys 1-9 pick an option on an open question card ----------
+  // Desktop's own wording for the hint: "Press a number key to pick an option when Claude asks
+  // a question." Only when focus is not in a text field, so typing "I'll pick option 2" in the
+  // box - or in the question's own "Something else" field - does not hijack the digit.
+  const isTextField = (n) => n && (n.tagName === 'TEXTAREA' || (n.tagName === 'INPUT' && !['button', 'checkbox', 'radio', 'submit'].includes(n.type)) || n.isContentEditable);
+  document.addEventListener('keydown', (e) => {
+    if (isTextField(document.activeElement) || e.ctrlKey || e.metaKey || e.altKey) return;
+    const n = Number(e.key); if (!(n >= 1 && n <= 9)) return;
+    const card = thread.querySelector('.question-card:not(.answered)'); if (!card) return;
+    const opts = card.querySelectorAll('.q-opt'); if (n > opts.length) return;
+    e.preventDefault(); opts[n - 1].click();
+  });
 
   // ---------- attachments: images go to Claude as images; other files are saved on the PC and referenced ----------
   const pending = []; // { kind: 'image'|'file', name, media_type, data (base64), dataUrl }

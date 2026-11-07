@@ -1038,3 +1038,7 @@ audio.lb-media { width: min(520px, 90vw); height: auto; }
 .step-shell-out { margin: 0; padding: 10px 12px; max-height: 40vh; overflow: auto; font-family: var(--mono); font-size: 12.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; color: var(--ink-2); }
 .step-shell-out:empty::before { content: "Running…"; color: var(--ink-3); font-style: italic; font-family: var(--sans); }
 .step-shell-kill { margin-inline-start: 6px; flex: none; }
+/* Dictation: the mic itself turns the same red as a recording light while it listens. */
+#dictate-btn.recording { color: var(--danger); background: var(--bg-3); }
+@keyframes dictate-pulse { 50% { opacity: .4; } }
+#dictate-btn.recording svg { animation: dictate-pulse 1.1s ease-in-out infinite; }
