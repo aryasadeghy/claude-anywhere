@@ -158,4 +158,4 @@ async function main() {
   try { fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch {}
   process.exitCode = failed ? 1 : 0;
 }
-main().catch((e) => { console.error(e); process.exitCode = 1; });
+main().catch((e) => { console.error(e); process.exit(1); });

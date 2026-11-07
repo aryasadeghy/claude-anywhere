@@ -45,9 +45,13 @@ async function main() {
     return { browser, page, errors };
   }
   async function settings(page) {
-    // On a phone the sidebar is a drawer, slid off the screen until it is opened.
+    // On a phone the sidebar is a drawer, slid off the screen until it is opened. Open it once and
+    // let it slide in: a drawer already opening covers the button, and a second tap timed out on it.
     const offscreen = () => page.$eval('#account-btn', (n) => { const r = n.getBoundingClientRect(); return r.right <= 0 || r.left >= window.innerWidth; });
-    for (let i = 0; i < 3 && (await offscreen()); i++) { await page.click('#sidebar-open'); await until(async () => !(await offscreen()), 2000); }
+    if (await offscreen()) {
+      if (!(await page.$eval('#app', (a) => a.classList.contains('sidebar-open')))) await page.click('#sidebar-open');
+      await until(async () => !(await offscreen()), 5000);
+    }
     await page.click('#account-btn');
     await page.click('#account-menu >> text=Settings…');
     await page.waitForSelector('#set-cc', { state: 'visible' });
@@ -118,4 +122,4 @@ async function main() {
   try { fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch {}
   process.exitCode = failed ? 1 : 0;
 }
-main().catch((e) => { console.error(e); process.exitCode = 1; });
+main().catch((e) => { console.error(e); process.exit(1); });

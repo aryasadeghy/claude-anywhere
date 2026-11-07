@@ -46,6 +46,8 @@ jobs:
   browser:
     name: Browser pane, in a browser
     runs-on: ubuntu-latest
+    # The suites take a few minutes; a stuck one would otherwise hold the job for six hours.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
