@@ -145,8 +145,76 @@ async function main() {
   await page.click('.question-card:not(.answered) .permission-actions button:has-text("Answer")');
   await idle(page);
 
-  console.log(`\n${passed} passed, ${failed} failed · screenshots in test/ui/shots`);
+  // 8. Ctrl/Cmd+U opens the file picker (the input itself; a real OS dialog never appears headless).
+  await page.evaluate(() => { window.__fileInputClicked = false; document.querySelector('#file-input').addEventListener('click', () => { window.__fileInputClicked = true; }, { once: true }); });
+  await page.keyboard.press((process.platform === 'darwin' ? 'Meta' : 'Control') + '+u');
+  check('Ctrl/Cmd+U opens the file picker', await until(() => page.evaluate(() => window.__fileInputClicked), 3000));
+
+  // 9. Clicking a staged image opens the annotate editor: pen, rectangle, undo, Done replaces it.
+  const pngPath = path.join(tmp, 'photo.png');
+  fs.writeFileSync(pngPath, fx.pngOf(300, 200));
+  await page.setInputFiles('#file-input', pngPath);
+  check('the image is staged', await until(() => page.isVisible('.att-img img'), 5000));
+  const srcBefore = await page.$eval('.att-img img', (img) => img.src);
+  await page.click('.att-img img');
+  check('clicking it opens the annotate editor', await until(() => page.isVisible('#annotate-modal:not(.hidden)'), 3000));
+  const canvasBox = async () => page.$eval('#an-canvas', (c) => { const r = c.getBoundingClientRect(); return { left: r.left, top: r.top, width: r.width, height: r.height }; });
+  let box = await canvasBox();
+  // Rectangle, dragged corner to corner.
+  await page.click('.an-tool[data-tool="rect"]');
+  await page.mouse.move(box.left + box.width * 0.15, box.top + box.height * 0.15);
+  await page.mouse.down();
+  await page.mouse.move(box.left + box.width * 0.7, box.top + box.height * 0.6, { steps: 6 });
+  await page.mouse.up();
+  await page.screenshot({ path: path.join(SHOTS, 'composer-annotate-rect.png') });
+  // Pen, a short scribble - a second stroke, so Undo below only takes this one back.
+  await page.click('.an-tool[data-tool="pen"]');
+  await page.mouse.move(box.left + box.width * 0.3, box.top + box.height * 0.75);
+  await page.mouse.down();
+  await page.mouse.move(box.left + box.width * 0.55, box.top + box.height * 0.8, { steps: 4 });
+  await page.mouse.up();
+  const beforeUndo = await page.$eval('#an-canvas', (c) => c.toDataURL());
+  await page.click('#an-undo');
+  const afterUndo = await page.$eval('#an-canvas', (c) => c.toDataURL());
+  check('Undo takes the last stroke back', beforeUndo !== afterUndo);
+  await page.click('#an-done');
+  check('Done closes the editor', await until(async () => !(await page.isVisible('#annotate-modal:not(.hidden)')), 3000));
+  const srcAfter = await page.$eval('.att-img img', (img) => img.src);
+  check('...and replaces the staged image', srcAfter !== srcBefore);
+  await page.screenshot({ path: path.join(SHOTS, 'composer-annotate-done.png') });
+  await page.click('.att-x');
+
   await browser.close();
+
+  // 10. The phone, in Safari's engine: the popover, the shell block and the annotate editor all
+  // fit at 390px, and a finger (Pointer Events with pointerType "touch") draws on the canvas.
+  {
+    const { browser, page, errors } = await open(webkit, devices['iPhone 15 Pro Max']);
+    await page.fill('#input', '/');
+    check('iphone: "/" opens the popover', await until(() => page.isVisible('#composer-pop .cpop-item'), 5000));
+    const wideSlash = await page.evaluate(() => [...document.querySelectorAll('#composer-pop')].filter((n) => n.getBoundingClientRect().right > window.innerWidth + 1));
+    check('iphone: the popover fits the screen', !wideSlash.length);
+    await page.screenshot({ path: path.join(SHOTS, 'composer-iphone-slash.png') });
+    await page.fill('#input', '');
+
+    await page.setInputFiles('#file-input', pngPath);
+    await until(() => page.isVisible('.att-img img'), 5000);
+    await page.click('.att-img img');
+    check('iphone: the annotate editor opens', await until(() => page.isVisible('#annotate-modal:not(.hidden)'), 3000));
+    const blank = await page.$eval('#an-canvas', (c) => c.toDataURL());
+    const ibox = await page.$eval('#an-canvas', (c) => { const r = c.getBoundingClientRect(); return { left: r.left, top: r.top, width: r.width, height: r.height }; });
+    const pt = (fx2, fy2) => ({ x: ibox.left + ibox.width * fx2, y: ibox.top + ibox.height * fy2 });
+    const touch = async (x, y, type) => page.dispatchEvent('#an-canvas', type, { pointerType: 'touch', pointerId: 2, isPrimary: true, clientX: x, clientY: y, bubbles: true, button: 0, buttons: type === 'pointerup' ? 0 : 1 });
+    const a = pt(0.2, 0.2), b = pt(0.6, 0.5);
+    await touch(a.x, a.y, 'pointerdown'); await touch(b.x, b.y, 'pointermove'); await touch(b.x, b.y, 'pointerup');
+    const touched = await page.$eval('#an-canvas', (c) => c.toDataURL());
+    check('iphone: a touch (pointerType touch) draws on the canvas', touched !== blank);
+    await page.screenshot({ path: path.join(SHOTS, 'composer-iphone-annotate.png') });
+    check('iphone: no errors in the app', !errors.length, errors.join(' | '));
+    await browser.close();
+  }
+
+  console.log(`\n${passed} passed, ${failed} failed overall`);
   await Promise.race([app.stop(), wait(5000)]);
   await api.close();
   try { fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch {}

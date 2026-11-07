@@ -4110,6 +4110,102 @@
     e.preventDefault(); opts[n - 1].click();
   });
 
+  // ---------- annotate: click a staged image to draw on it before sending ----------
+  // Pointer Events, not mouse/touch separately, so a finger on a phone draws the same way a
+  // mouse does; the canvas itself is touch-action:none (CSS) so a stroke never scrolls the page.
+  const AN_COLORS = ['#ef4444', '#f59e0b', '#22c55e', '#3b82f6', '#000000', '#ffffff'];
+  const anModal = $('#annotate-modal'), anCanvas = $('#an-canvas'), anCtx = anCanvas.getContext('2d'), anWrap = $('#an-canvas-wrap');
+  let an = null; // { idx, tool, color, undo: ImageData[], drag: {x,y}|null }
+  function anLineWidth() { return Math.max(3, Math.round(Math.min(anCanvas.width, anCanvas.height) / 180)); }
+  function anPoint(e) {
+    const r = anCanvas.getBoundingClientRect();
+    return { x: (e.clientX - r.left) * (anCanvas.width / r.width), y: (e.clientY - r.top) * (anCanvas.height / r.height) };
+  }
+  function anPushUndo() { an.undo.push(anCtx.getImageData(0, 0, anCanvas.width, anCanvas.height)); if (an.undo.length > 25) an.undo.shift(); }
+  function anPaintTools() { document.querySelectorAll('.an-tool').forEach((b) => b.classList.toggle('on', b.dataset.tool === an.tool)); }
+  function anPaintColors() {
+    const box = $('#an-colors'); box.innerHTML = '';
+    for (const c of AN_COLORS) {
+      const b = el('button', 'an-color' + (c === an.color ? ' on' : '')); b.type = 'button'; b.style.background = c; b.title = c; b.setAttribute('aria-label', 'Colour ' + c);
+      b.addEventListener('click', () => { an.color = c; anPaintColors(); });
+      box.appendChild(b);
+    }
+  }
+  function openAnnotate(idx) {
+    const item = pending[idx]; if (!item || item.kind !== 'image') return;
+    const img = new Image();
+    img.onload = () => {
+      anCanvas.width = img.naturalWidth; anCanvas.height = img.naturalHeight;
+      anCtx.drawImage(img, 0, 0);
+      an = { idx, tool: 'pen', color: AN_COLORS[0], undo: [] };
+      anPaintTools(); anPaintColors();
+      anModal.classList.remove('hidden');
+    };
+    img.src = item.dataUrl;
+  }
+  function closeAnnotate() { anModal.classList.add('hidden'); anWrap.querySelector('.an-text-input')?.remove(); an = null; }
+  document.querySelectorAll('.an-tool').forEach((b) => b.addEventListener('click', () => { an.tool = b.dataset.tool; anPaintTools(); }));
+  $('#an-undo').addEventListener('click', () => { if (an?.undo.length) anCtx.putImageData(an.undo.pop(), 0, 0); });
+  $('#an-close').addEventListener('click', closeAnnotate);
+  $('#an-cancel').addEventListener('click', closeAnnotate);
+  $('#an-done').addEventListener('click', () => {
+    const { idx } = an;
+    const dataUrl = anCanvas.toDataURL('image/png');
+    pending[idx] = { kind: 'image', name: pending[idx].name.replace(/\.\w+$/, '') + '.png', media_type: 'image/png', data: dataUrl.split(',')[1], dataUrl };
+    renderPending(); closeAnnotate();
+  });
+  // A text box placed over the canvas at the click point - Enter or losing focus commits it
+  // (empty: nothing is drawn, and nothing was pushed onto Undo for it either).
+  function anPlaceText(canvasPt, displayPt) {
+    const input = el('input', 'an-text-input'); input.type = 'text';
+    input.style.left = displayPt.x + 'px'; input.style.top = (displayPt.y - 11) + 'px'; input.style.color = an.color;
+    anWrap.appendChild(input); input.focus();
+    const commit = () => {
+      const text = input.value; input.remove();
+      if (!text.trim()) return;
+      anPushUndo();
+      anCtx.fillStyle = an.color; anCtx.font = Math.round(anLineWidth() * 4.5) + 'px ' + getComputedStyle(document.body).fontFamily;
+      anCtx.textBaseline = 'top'; anCtx.fillText(text, canvasPt.x, canvasPt.y);
+    };
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); input.blur(); } else if (e.key === 'Escape') { input.value = ''; input.blur(); } });
+    input.addEventListener('blur', commit, { once: true });
+  }
+  function anArrowHead(to, angle) {
+    const len = anLineWidth() * 3.2;
+    anCtx.beginPath(); anCtx.moveTo(to.x, to.y);
+    anCtx.lineTo(to.x - len * Math.cos(angle - Math.PI / 7), to.y - len * Math.sin(angle - Math.PI / 7));
+    anCtx.moveTo(to.x, to.y);
+    anCtx.lineTo(to.x - len * Math.cos(angle + Math.PI / 7), to.y - len * Math.sin(angle + Math.PI / 7));
+    anCtx.stroke();
+  }
+  anCtx.lineCap = 'round'; anCtx.lineJoin = 'round';
+  anCanvas.addEventListener('pointerdown', (e) => {
+    if (!an) return;
+    // A fast stroke that leaves the canvas mid-drag keeps being heard with capture; without it,
+    // pointermove just stops until the finger (or mouse) comes back. Not essential, so a pointer
+    // id the engine does not recognise as active (WebKit throws on one it did not originate) is
+    // not worth losing the stroke over.
+    try { anCanvas.setPointerCapture(e.pointerId); } catch {}
+    const p = anPoint(e);
+    if (an.tool === 'text') return anPlaceText(p, { x: e.clientX - anCanvas.getBoundingClientRect().left, y: e.clientY - anCanvas.getBoundingClientRect().top });
+    anPushUndo();
+    an.drag = p;
+    anCtx.strokeStyle = an.color; anCtx.lineWidth = anLineWidth();
+    if (an.tool === 'pen') { anCtx.beginPath(); anCtx.moveTo(p.x, p.y); }
+  });
+  anCanvas.addEventListener('pointermove', (e) => {
+    if (!an?.drag) return;
+    const p = anPoint(e);
+    if (an.tool === 'pen') { anCtx.lineTo(p.x, p.y); anCtx.stroke(); an.drag = p; return; }
+    // Rectangle and arrow redraw live from the snapshot taken on pointerdown, the way a drag
+    // preview has to - committing on every move would stack hundreds of overlapping shapes.
+    anCtx.putImageData(an.undo[an.undo.length - 1], 0, 0);
+    anCtx.strokeStyle = an.color; anCtx.lineWidth = anLineWidth();
+    if (an.tool === 'rect') anCtx.strokeRect(Math.min(an.drag.x, p.x), Math.min(an.drag.y, p.y), Math.abs(p.x - an.drag.x), Math.abs(p.y - an.drag.y));
+    else if (an.tool === 'arrow') { anCtx.beginPath(); anCtx.moveTo(an.drag.x, an.drag.y); anCtx.lineTo(p.x, p.y); anCtx.stroke(); anArrowHead(p, Math.atan2(p.y - an.drag.y, p.x - an.drag.x)); }
+  });
+  anCanvas.addEventListener('pointerup', () => { if (an) an.drag = null; });
+
   // ---------- attachments: images go to Claude as images; other files are saved on the PC and referenced ----------
   const pending = []; // { kind: 'image'|'file', name, media_type, data (base64), dataUrl }
   const strip = $('#attachments');
@@ -4117,7 +4213,7 @@
     strip.innerHTML = ''; strip.classList.toggle('hidden', !pending.length);
     pending.forEach((a, i) => {
       const chip = el('div', 'att' + (a.kind === 'image' ? ' att-img' : ''));
-      if (a.kind === 'image') { const im = el('img'); im.src = a.dataUrl; chip.appendChild(im); } else chip.appendChild(el('span', 'att-name', a.name));
+      if (a.kind === 'image') { const im = el('img'); im.src = a.dataUrl; im.title = 'Click to annotate'; im.addEventListener('click', () => openAnnotate(i)); chip.appendChild(im); } else chip.appendChild(el('span', 'att-name', a.name));
       const x = el('button', 'att-x'); x.type = 'button'; x.title = 'Remove'; x.textContent = '×';
       x.addEventListener('click', () => { pending.splice(i, 1); renderPending(); paintSendButton(); });
       chip.appendChild(x); strip.appendChild(chip);
