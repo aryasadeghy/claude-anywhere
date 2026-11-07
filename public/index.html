@@ -184,6 +184,11 @@
           <span class="sb-spacer"></span>
           <button id="lb-close" class="icon-btn small" type="button" title="Dismiss"><svg viewBox="0 0 20 20" width="14" height="14"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
         </div>
+        <!-- Messages typed after the plan's usage limit was reached: they wait here instead of failing -->
+        <div id="held-queue" class="held-queue hidden">
+          <div class="held-head"><span id="held-text">You hit your usage limit. Held messages will send when it resets.</span><span id="held-resets" class="muted"></span></div>
+          <div id="held-list" class="held-list"></div>
+        </div>
         <div class="composer" id="composer">
           <div id="attachments" class="attach-strip hidden"></div>
           <textarea id="input" rows="1" placeholder="How can I help you today?" dir="auto"></textarea>
