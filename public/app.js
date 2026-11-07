@@ -3833,8 +3833,9 @@
     return { kind: 'image', name: file.name.replace(/\.\w+$/, '') + '.jpg', media_type: 'image/jpeg', data: out.split(',')[1], dataUrl: out };
   }
   async function addFiles(files) {
+    // Desktop's own ceiling ("Attach up to 20 images in a single message for local sessions").
     for (const f of files) {
-      if (pending.length >= 10) break;
+      if (pending.length >= 20) break;
       try {
         if (f.type.startsWith('image/')) pending.push(await prepareImage(f));
         else if (f.size <= 25 * 1024 * 1024) pending.push({ kind: 'file', name: f.name, media_type: f.type || 'application/octet-stream', data: (await readAsDataUrl(f)).split(',')[1] });
@@ -4070,6 +4071,7 @@
     else if (k === 'b' && e.shiftKey) { e.preventDefault(); previewOpen ? closePreview() : openPreview(); } // Desktop's own shortcut for its Browser
     else if (k === 'b') { e.preventDefault(); app.classList.toggle('sidebar-open'); }
     else if (k === 'n') { e.preventDefault(); location.hash = '#/'; }
+    else if (k === 'u') { e.preventDefault(); $('#file-input').click(); } // Desktop's shortcut for "Attach files"
   });
 
   // ---------- routing ----------

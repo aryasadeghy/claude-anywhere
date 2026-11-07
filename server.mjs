@@ -76,7 +76,9 @@ app.use((req, res, next) => {
   if (req.path.startsWith('/api/')) return res.status(403).json({ error: 'Remote access is off on that computer. Turn it on there, in Settings → Remote access.', remoteClosed: true });
   res.status(403).type('html').send(CLOSED);
 });
-app.use(express.json({ limit: '60mb' })); // attachments travel as base64
+// 20 images at the client's own resize ceiling (1600px, jpeg .85) is a few MB of base64;
+// 60mb was sized for the old 10-image cap and left no room once the limit doubled.
+app.use(express.json({ limit: '100mb' })); // attachments travel as base64
 
 // Attachments: images are sent to Claude as image blocks; any other file is saved on
 // this PC and referenced from the prompt by path, the way Remote Control does it.
@@ -84,10 +86,10 @@ const UPLOAD_DIR = path.join(os.tmpdir(), 'claude-anywhere-uploads');
 function parseAttachments(body) {
   const images = (Array.isArray(body?.attachments) ? body.attachments : [])
     .filter((a) => a && typeof a.data === 'string' && /^image\/(png|jpeg|webp|gif)$/.test(a.media_type || ''))
-    .slice(0, 10)
+    .slice(0, 20) // Desktop's own ceiling ("Attach up to 20 images in a single message for local sessions")
     .map((a) => ({ media_type: a.media_type, data: a.data }));
   const paths = [];
-  for (const f of (Array.isArray(body?.files) ? body.files : []).slice(0, 10)) {
+  for (const f of (Array.isArray(body?.files) ? body.files : []).slice(0, 20)) {
     if (!f || typeof f.data !== 'string') continue;
     const safe = String(f.name || 'file').replace(/[^\w.\- ()]/g, '_').slice(0, 120);
     fs.mkdirSync(UPLOAD_DIR, { recursive: true });
