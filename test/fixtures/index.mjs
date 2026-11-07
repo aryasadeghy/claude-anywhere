@@ -230,7 +230,7 @@ export async function startFakeApi({ delay = 15 } = {}) {
     const said = userText(last);
     // After a question, Claude says what came back: the answer, or how it went unanswered.
     const askedBefore = afterTool && JSON.stringify((j.messages || []).at(-2)?.content || '').includes('AskUserQuestion');
-    const toolText = (last.content || []).filter((b) => b.type === 'tool_result').map((b) => (typeof b.content === 'string' ? b.content : (b.content || []).map((c) => c.text || '').join(''))).join(' ');
+    const toolText = (Array.isArray(last.content) ? last.content : []).filter((b) => b.type === 'tool_result').map((b) => (typeof b.content === 'string' ? b.content : (b.content || []).map((c) => c.text || '').join(''))).join(' ');
     const asking = /\[ask\]/.test(said);
     // The conversation package's own tags, each asking for one Claude-facing tool call (or
     // ExitPlanMode) instead of a Bash command - a fixed name and input, not the real model's.

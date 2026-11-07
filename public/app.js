@@ -2232,6 +2232,83 @@
     else if (wrap) { const t = wrap.firstChild; t.classList.toggle('on', convSettings.autoClassify); t.setAttribute('aria-checked', String(convSettings.autoClassify)); }
   }
 
+  // A floating "Plan comment" button that appears over a selection made inside the plan text,
+  // the way Desktop offers one - quoting the selected lines into the feedback box rather than
+  // retyping them. Returns a cleanup to run when the card collapses.
+  function planCommentButton(planEl, feedback) {
+    const btn = el('button', 'plan-comment-btn hidden', 'Plan comment'); btn.type = 'button';
+    document.body.appendChild(btn);
+    let picked = '';
+    const place = () => {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed || !sel.rangeCount || !planEl.contains(sel.anchorNode)) { btn.classList.add('hidden'); return; }
+      picked = sel.toString().trim();
+      if (!picked) { btn.classList.add('hidden'); return; }
+      const r = sel.getRangeAt(0).getBoundingClientRect();
+      btn.style.left = Math.round(r.left + r.width / 2) + 'px';
+      btn.style.top = Math.round(r.top - 8 + window.scrollY) + 'px';
+      btn.classList.remove('hidden');
+    };
+    const onUp = () => setTimeout(place, 0);
+    planEl.addEventListener('mouseup', onUp);
+    planEl.addEventListener('touchend', onUp);
+    const onScroll = () => btn.classList.add('hidden');
+    window.addEventListener('scroll', onScroll, true);
+    btn.addEventListener('click', () => {
+      if (picked) feedback.value = (feedback.value.trim() ? feedback.value.replace(/\s+$/, '') + '\n\n' : '') + picked.split('\n').map((l) => '> ' + l).join('\n') + '\n\n';
+      btn.classList.add('hidden');
+      feedback.focus();
+      window.getSelection()?.removeAllRanges();
+    });
+    return () => { btn.remove(); window.removeEventListener('scroll', onScroll, true); };
+  }
+  // ExitPlanMode's own permission card: the plan as Markdown, Desktop's three choices, and a
+  // feedback box - "No, keep planning" sends the feedback back as the reason Claude was told no.
+  // Approving rides the mode change on the same resolution (PermissionResult.updatedPermissions,
+  // a setMode entry) rather than a second round trip through /controls.
+  function showPlanApproval(ev) {
+    const plan = String(ev.input?.plan ?? '');
+    const card = el('div', 'permission plan-card');
+    card.dataset.reqId = ev.reqId;
+    const head = el('div', 'permission-head');
+    head.appendChild(el('span', 'spark', '✱'));
+    head.appendChild(el('span', null, 'Ready to code?'));
+    card.appendChild(head);
+    const planEl = el('div', 'prose plan-text'); planEl.dir = 'auto';
+    planEl.innerHTML = plan ? md(plan) : '<p class="muted">No plan found.</p>';
+    card.appendChild(planEl);
+    const feedback = el('textarea', 'plan-feedback'); feedback.rows = 2; feedback.placeholder = 'Tell Claude what to change (optional)';
+    const actions = el('div', 'permission-actions plan-actions');
+    const accept = el('button', 'btn btn-primary', 'Yes, and auto-accept edits'); accept.type = 'button';
+    const manual = el('button', 'btn btn-ghost', 'Yes, and manually approve edits'); manual.type = 'button';
+    const keep = el('button', 'btn btn-ghost', 'No, keep planning'); keep.type = 'button';
+    const result = el('div', 'perm-result hidden');
+    // Collapses the same way a question card does (resolvePermissionCard calls it with the same
+    // (unused, behavior) shape so either card type can answer from another device).
+    card.collapse = (_unused, behavior) => {
+      if (card.classList.contains('answered')) return;
+      card.classList.add('answered');
+      head.lastChild.textContent = behavior === 'deny' ? 'Claude kept planning' : 'Plan approved';
+      actions.remove(); feedback.remove();
+      card._cleanupComment?.(); card._cleanupComment = null;
+      result.classList.add('hidden');
+    };
+    const respond = async (behavior, updatedPermissions) => {
+      actions.querySelectorAll('button').forEach((b) => b.disabled = true);
+      const body = { behavior, ...(updatedPermissions ? { updatedPermissions } : {}), ...(behavior === 'deny' ? { message: feedback.value.trim() || 'Keep planning.' } : {}) };
+      try { await api('/permissions/' + ev.reqId, { method: 'POST', body: JSON.stringify(body) }); card.collapse(null, behavior); }
+      catch (e) { result.textContent = e.message; result.classList.remove('hidden'); actions.querySelectorAll('button').forEach((b) => b.disabled = false); }
+    };
+    accept.addEventListener('click', () => respond('allow', [{ type: 'setMode', mode: 'acceptEdits', destination: 'session' }]));
+    manual.addEventListener('click', () => respond('allow', [{ type: 'setMode', mode: 'default', destination: 'session' }]));
+    keep.addEventListener('click', () => respond('deny'));
+    actions.appendChild(accept); actions.appendChild(manual); actions.appendChild(keep);
+    card.appendChild(feedback); card.appendChild(actions); card.appendChild(result);
+    thread.appendChild(card);
+    card._cleanupComment = planCommentButton(planEl, feedback);
+    return true;
+  }
+
   // ---------- live status line (the Desktop "✱ Thinking… 12s · 1.2k tokens" row) ----------
   const VERBS = ['Thinking', 'Pondering', 'Considering', 'Working', 'Reasoning', 'Composing', 'Sketching', 'Puzzling', 'Brewing', 'Cooking', 'Musing', 'Mulling'];
   const status = { el: null, verb: VERBS[0], tool: null, toolSince: 0, startedAt: 0, tokens: 0, waiting: false, timer: null, verbTimer: null };
@@ -3894,6 +3971,7 @@
     // A reconnect replays the turn from its start, so the same request can arrive twice.
     if (ev.reqId && thread.querySelector(`[data-req-id="${ev.reqId}"]`)) return;
     if (isAskTool(ev.tool) && showQuestion(ev)) return;
+    if (ev.tool === 'ExitPlanMode' && showPlanApproval(ev)) return;
     const t = $('#tpl-permission').content.firstElementChild.cloneNode(true);
     t.dataset.reqId = ev.reqId;
     t.querySelector('.perm-tool').textContent = ev.tool;

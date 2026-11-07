@@ -105,6 +105,35 @@ async function main() {
   check('"Do it here" sends its prompt in this session', await until(() => api.bodies.slice(before2).some((b) => JSON.stringify(b.messages || []).includes('Write a README for this project')), 15000));
   await idle(page);
 
+  // 5. Plan approval: the plan as Markdown, a feedback box, and "No, keep planning" sends the
+  // feedback back as the reason Claude was told no.
+  await page.click('#mode-btn');
+  await until(() => page.isVisible('#mode-menu .menu-item'), 5000);
+  await page.click('#mode-menu >> text=Plan');
+  await send(page, '[plan] think about it');
+  check('the plan card shows the plan as markdown', await until(() => page.isVisible('.plan-card .plan-text >> text=Do the first thing'), 20000));
+  check('...with the three choices', await page.isVisible('.plan-card >> text=Yes, and auto-accept edits') && await page.isVisible('.plan-card >> text=Yes, and manually approve edits') && await page.isVisible('.plan-card >> text=No, keep planning'));
+  // Selecting text in the plan offers "Plan comment", which quotes it into the feedback box.
+  await page.evaluate(() => { const p = document.querySelector('.plan-card .plan-text p') || document.querySelector('.plan-card .plan-text'); const r = document.createRange(); r.selectNodeContents(p); const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r); });
+  await page.dispatchEvent('.plan-card .plan-text', 'mouseup');
+  check('a plan comment button appears over the selection', await until(() => page.isVisible('.plan-comment-btn:not(.hidden)'), 3000));
+  await page.click('.plan-comment-btn');
+  check('...and quotes the selection into the feedback box', await until(async () => (await page.inputValue('.plan-card .plan-feedback')).includes('>'), 3000));
+  await page.fill('.plan-card .plan-feedback', 'Use a different approach.');
+  await page.screenshot({ path: path.join(SHOTS, 'conversation-plan-approval.png') });
+  await page.click('.plan-card >> text=No, keep planning');
+  check('keep planning collapses the card', await until(() => page.isVisible('.plan-card.answered'), 5000));
+  await idle(page);
+  check('...and Claude is told to go on, with the feedback as the reason', await until(() => api.bodies.some((b) => JSON.stringify(b.messages || []).includes('Use a different approach.')), 15000));
+
+  // A second plan, approved with auto-accept edits: the mode chip picks it up from the same
+  // round trip (PermissionResult.updatedPermissions), no separate /controls call needed.
+  await send(page, '[plan] a second plan');
+  check('a second plan card appears', await until(() => page.isVisible('.plan-card:not(.answered) .plan-text'), 20000));
+  await page.click('.plan-card:not(.answered) >> text=Yes, and auto-accept edits');
+  check('approving switches the mode chip to Accept edits', await until(async () => (await page.textContent('#mode-name')) === 'Accept edits', 10000), await page.textContent('#mode-name'));
+  await idle(page);
+
   check('no errors in the app', !errors.length, errors.join(' | '));
   await browser.close();
 

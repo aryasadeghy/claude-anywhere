@@ -1043,3 +1043,12 @@ audio.lb-media { width: min(520px, 90vw); height: auto; }
 /* A deep link, a chapter, or an older find hit lands here: a brief highlight, not a permanent mark. */
 .jump-flash { animation: jump-flash-kf 2.2s ease-out; }
 @keyframes jump-flash-kf { 0% { background: color-mix(in srgb, var(--accent) 22%, transparent); } 100% { background: transparent; } }
+
+/* ExitPlanMode's own card: the plan as Markdown, a feedback box, and Desktop's three choices. */
+.plan-card { max-width: 640px; }
+.plan-card .plan-text { max-height: 360px; overflow: auto; padding: 10px 12px; margin-top: 8px; border: 1px solid var(--line-2); border-radius: 10px; background: var(--bg-3); }
+.plan-card .plan-feedback { width: 100%; box-sizing: border-box; margin-top: 10px; padding: 9px 12px; border-radius: 10px; border: 1px dashed var(--line-2); background: var(--bg-2); color: var(--ink); font: inherit; font-size: 13px; resize: vertical; outline: none; }
+.plan-card .plan-feedback:focus { border-style: solid; border-color: var(--accent); }
+.plan-card.answered .plan-text { max-height: 160px; }
+.plan-comment-btn { position: fixed; z-index: 60; transform: translate(-50%, -100%); padding: 5px 10px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--bg-000); color: var(--ink); font-size: 12.5px; box-shadow: var(--shadow); cursor: pointer; }
+.plan-comment-btn.hidden { display: none; }
