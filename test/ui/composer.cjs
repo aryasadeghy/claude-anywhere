@@ -76,6 +76,42 @@ async function main() {
   check('the chip is gone once sent', !(await page.isVisible('.ctx-chip')));
   await idle(page);
 
+  // 2. "/" opens a popover of the app's own commands and Claude Code's; arrows and Enter pick one.
+  await page.fill('#input', '/');
+  check('"/" opens the popover', await until(() => page.isVisible('#composer-pop .cpop-item'), 5000));
+  const names = () => page.$$eval('#composer-pop .cpop-item .cpop-name', (ns) => ns.map((n) => n.textContent));
+  check('the app\'s own commands are offered', (await names()).includes('/rename'), (await names()).join(', '));
+  check('and Claude Code\'s own are too', (await names()).includes('/compact'), (await names()).join(', '));
+  await page.screenshot({ path: path.join(SHOTS, 'composer-slash-menu.png') });
+  await page.type('#input', 'comp');
+  check('filters as you type', await until(async () => { const n = await names(); return n.length === 1 && n[0] === '/compact'; }, 3000), (await names()).join(', '));
+  await page.press('#input', 'Enter');
+  check('Enter inserts "/name " and closes the popover', await until(async () => (await page.inputValue('#input')) === '/compact ' && !(await page.isVisible('#composer-pop:not(.hidden) .cpop-item')), 3000), await page.inputValue('#input'));
+  await page.fill('#input', '');
+
+  // 3. An app command (/rename) runs here instead of reaching Claude Code.
+  await send(page, '/rename Renamed from the box');
+  check('/rename changes the title without a turn', await until(async () => (await page.$eval('#chat-title', (n) => n.textContent)) === 'Renamed from the box', 8000), await page.$eval('#chat-title', (n) => n.textContent));
+  check('...and Claude never saw it as a message', !(await threadText(page)).includes('/rename'));
+
+  // 4. "@" opens a fuzzy file picker for the session's folder.
+  await page.fill('#input', 'see @ind');
+  check('"@" opens the file picker', await until(() => page.isVisible('#composer-pop .cpop-item'), 5000));
+  check('it finds the file by a fuzzy match', await until(async () => (await page.$$eval('#composer-pop .cpop-name', (ns) => ns.map((n) => n.textContent))).some((n) => n.includes('index.js')), 3000));
+  await page.screenshot({ path: path.join(SHOTS, 'composer-mention-menu.png') });
+  await page.keyboard.press('Enter');
+  check('picking inserts "@path "', await until(async () => /^see @.*index\.js $/.test(await page.inputValue('#input')), 3000), await page.inputValue('#input'));
+  await page.fill('#input', '');
+
+  // 5. "!" runs a shell command here and attaches its output as context for the next message.
+  await send(page, '!echo from-the-shell');
+  check('a "You ran" block appears', await until(() => page.isVisible('.step.shell'), 8000));
+  check('...with the command shown', await until(async () => (await page.$eval('.step.shell summary .arg', (n) => n.textContent)).includes('echo from-the-shell')), 3000);
+  check('...and its output streams in', await until(async () => (await page.$eval('.step-shell-out', (n) => n.textContent)).includes('from-the-shell'), 8000));
+  await page.screenshot({ path: path.join(SHOTS, 'composer-shell-command.png') });
+  check('the output is attached as context for the next message', await until(() => page.isVisible('.ctx-chip'), 5000));
+  await idle(page);
+
   console.log(`\n${passed} passed, ${failed} failed · screenshots in test/ui/shots`);
   await browser.close();
   await Promise.race([app.stop(), wait(5000)]);

@@ -33,6 +33,9 @@ import * as pr from './lib/pr.mjs';
 import * as awake from './lib/awake.mjs';
 import * as update from './lib/update.mjs';
 import * as models from './lib/models.mjs';
+import * as commandsMod from './lib/commands.mjs';
+import * as filesearch from './lib/filesearch.mjs';
+import * as shell from './lib/shell.mjs';
 import * as claudeCode from './lib/claude-code.mjs';
 import * as access from './lib/access.mjs';
 import { getAuth, activeAccount, setActive, setToken, clearToken, setProvider, clearProvider, classifyToken, envFor, localSource, verifyEnv, candidateEnv, candidateProviderEnv } from './lib/auth.mjs';
@@ -375,6 +378,57 @@ const shape = (s, pinned) => ({
   tag: s.tag || '',
   archived: s.tag === 'archived',
   context: contextBySession.get(s.sessionId) || null,
+});
+
+// ---------- composer: "/" commands, "@" file mentions, "!" shell commands ----------
+// The "/" menu's Claude Code half: a live run answers for itself (its own process already
+// knows, and commands_changed keeps it current); a resting session or the folder chosen for a
+// new one goes through lib/commands.mjs's per-folder cache instead.
+app.get('/api/commands', async (req, res) => {
+  const run = runs.get(String(req.query.sessionId || ''));
+  if (run && !run.done && run.query) {
+    try { return res.json({ commands: await run.query.supportedCommands(), from: 'live' }); } catch {}
+  }
+  const cwd = String(req.query.cwd || '');
+  if (!cwd) return res.json({ commands: [], from: 'none' });
+  try { res.json({ commands: await commandsMod.forFolder(cwd), from: 'cache' }); }
+  catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+});
+
+// "@"'s file picker: fuzzy-ranked, and only ever inside a folder a session has actually worked in.
+app.get('/api/files/search', async (req, res) => {
+  try {
+    const cwd = String(req.query.cwd || '');
+    if (!cwd || !fs.existsSync(cwd)) return res.json({ files: [] });
+    if (!(await insideProjectRoots(cwd))) return res.status(403).json({ error: 'Outside the project folders' });
+    res.json({ files: await filesearch.search(cwd, String(req.query.q || '')) });
+  } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+});
+
+// "!": a shell command in the session's folder. One at a time per session; the output streams
+// back as newline-delimited JSON (see lib/shell.mjs for why not an EventSource).
+app.post('/api/sessions/:id/shell', async (req, res) => {
+  try {
+    const cwd = await sessionCwd(req.params.id);
+    if (!cwd || !fs.existsSync(cwd)) return res.status(400).json({ error: 'No folder for this session.' });
+    const command = String(req.body?.command || '').trim();
+    if (!command) return res.status(400).json({ error: 'Nothing to run.' });
+    res.json(shell.start(req.params.id, cwd, command));
+  } catch (e) { res.status(e.status || 500).json({ error: String(e.message || e) }); }
+});
+app.get('/api/sessions/:id/shell/:runId/stream', (req, res) => {
+  const r = shell.get(req.params.runId);
+  if (!r || r.sessionId !== req.params.id) return res.status(404).end();
+  res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+  res.write(JSON.stringify({ t: 'start', command: r.command, buffered: r.buffer }) + '\n');
+  if (r.done) { res.write(JSON.stringify({ t: 'done', exitCode: r.exitCode }) + '\n'); return res.end(); }
+  r.listeners.add(res);
+  req.on('close', () => r.listeners.delete(res));
+});
+app.post('/api/sessions/:id/shell/:runId/kill', (req, res) => {
+  const r = shell.get(req.params.runId);
+  if (!r || r.sessionId !== req.params.id) return res.status(404).json({ error: 'No such run.' });
+  res.json({ ok: shell.kill(req.params.runId) });
 });
 
 // ---------- session menu: rename, fork, archive, delete (the Desktop ⋮ menu) ----------

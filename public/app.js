@@ -3518,6 +3518,9 @@
           break;
         }
         case 'tasks': state.tasks = ev.tasks || []; paintTasks(); break;
+        // commands_changed: Claude Code's own slash-command list moved (a skill discovered mid-
+        // session, say). Replace, as its own doc comment says to - never merged edge by edge.
+        case 'commands': slashCommands = ev.commands || []; if (cpopMode === 'slash') openSlashMenu(cpopTrigger?.query || ''); break;
         case 'note': thread.appendChild(el('div', 'note' + (ev.level === 'warning' ? ' warning' : ''), ev.text)); statusPaint(); autoscroll(); break;
         // Stop took back messages typed mid-turn: their dashed bubbles go, on every device.
         case 'unqueued': for (const id of ev.ids || []) thread.querySelector('.msg.user.queued[data-prompt-id="' + CSS.escape(id) + '"]')?.remove(); break;
@@ -3802,6 +3805,9 @@
     paintSendButton();
   });
   input.addEventListener('keydown', (e) => {
+    // The "/" and "@" popover owns these keys while it is open; its own listener, registered
+    // below, handles them instead - so Enter picks a row rather than sending the message.
+    if (composerPopOpen() && (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Enter' || e.key === 'Tab' || e.key === 'Escape')) return;
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && window.matchMedia('(min-width: 861px)').matches) { e.preventDefault(); submit(); }
     if (e.key === 'Escape' && state.answering) { e.preventDefault(); stop(); }
   });
@@ -3851,9 +3857,205 @@
     if (text.trim()) attachContext({ text });
   });
 
-  // Filled in by the "/", "@" and "!" pieces below; a stub here keeps submit() working
-  // before they land, each committed as its own working step.
-  async function runComposerIntercepts(_typed) { return false; }
+  // ---------- "/" commands and "@" file mentions: one popover above the box, two sources ----------
+  const cpop = $('#composer-pop');
+  let cpopMode = '', cpopRows = [], cpopAt = 0, cpopTrigger = null; // cpopTrigger: { mode, query, start, end } - the span in input.value a pick replaces
+  let slashCommands = []; // Claude Code's own, for the session's folder (or the one picked for a new chat)
+  let slashAskedFor = null; // what loadSlashCommands last answered for, so reopening "/" does not re-ask every time
+  let mentionTimer = null, mentionSeq = 0;
+
+  const composerPopOpen = () => !cpop.classList.contains('hidden');
+  function closeComposerPop() { cpop.classList.add('hidden'); cpop.innerHTML = ''; cpopMode = ''; cpopRows = []; cpopTrigger = null; }
+  function paintComposerPop() {
+    cpop.innerHTML = '';
+    cpopRows.forEach((r, i) => {
+      const b = el('button', 'cpop-item' + (i === cpopAt ? ' on' : '')); b.type = 'button';
+      b.appendChild(el('span', 'cpop-name', (cpopMode === 'mention' ? '@' : '/') + r.name));
+      if (r.desc) b.appendChild(el('span', 'cpop-desc', r.desc));
+      if (r.hint) b.appendChild(el('span', 'cpop-hint', r.hint));
+      // mousedown, not click: a click first fires mousedown, which would otherwise move focus
+      // and the caret out of the textarea before the row's own handler ever runs.
+      b.addEventListener('mousedown', (e) => { e.preventDefault(); pickComposerPop(i); });
+      cpop.appendChild(b);
+    });
+    if (!cpopRows.length) cpop.appendChild(el('div', 'cpop-empty', cpopMode === 'mention' ? 'No files match.' : 'No commands match.'));
+    cpop.classList.remove('hidden');
+  }
+
+  // Claude Code's own list for this folder, asked for once per "/" opened (not per keystroke);
+  // commands_changed (the live-turn switch, above) replaces it without a re-ask.
+  async function loadSlashCommands() {
+    const cwd = state.cwd || '', key = cwd + '|' + (state.current || '');
+    if (slashAskedFor === key) return;
+    slashAskedFor = key;
+    try { slashCommands = (await api('/commands?cwd=' + encodeURIComponent(cwd) + (state.current ? '&sessionId=' + encodeURIComponent(state.current) : ''))).commands || []; }
+    catch { slashCommands = []; }
+  }
+  // A name this app already runs itself wins the row - Claude Code's own command of that name
+  // is never reachable by typing it, so it is left out rather than shown and then ignored.
+  function openSlashMenu(q) {
+    const query = (q || '').toLowerCase();
+    const appNames = new Set(appCommands.keys());
+    const app = [...appCommands].map(([name, spec]) => ({ name, desc: spec.description || '', hint: spec.argumentHint || '' })).filter((r) => !query || r.name.toLowerCase().startsWith(query));
+    const cc = slashCommands.filter((c) => !appNames.has(c.name) && (c.name.toLowerCase().startsWith(query) || (c.aliases || []).some((a) => a.toLowerCase().startsWith(query)))).map((c) => ({ name: c.name, desc: c.description || '', hint: c.argumentHint || '' }));
+    cpopMode = 'slash'; cpopRows = [...app, ...cc]; cpopAt = 0; paintComposerPop();
+  }
+  // "@": the session's folder (or the one chosen for a new chat), fuzzy-ranked server side.
+  // Debounced and sequenced, so a fast typist's last keystroke is the one that wins the paint.
+  function openMentionMenu(q) {
+    cpopMode = 'mention'; paintComposerPop(); // keep the last list on screen while the new one loads
+    const seq = ++mentionSeq;
+    clearTimeout(mentionTimer);
+    mentionTimer = setTimeout(async () => {
+      try {
+        const r = await api('/files/search?cwd=' + encodeURIComponent(state.cwd || '') + '&q=' + encodeURIComponent(q));
+        if (seq !== mentionSeq || cpopMode !== 'mention') return; // a newer keystroke, or the box moved on, already asked again
+        cpopRows = (r.files || []).map((f) => ({ name: f })); cpopAt = 0; paintComposerPop();
+      } catch { if (seq === mentionSeq) { cpopRows = []; paintComposerPop(); } }
+    }, 120);
+  }
+
+  // Where the box is now: "/" only as the very first thing typed (Claude Code commands only
+  // ever start a line); "@" anywhere, as long as it starts a run with no space in it and is
+  // itself preceded by whitespace or the start of the box - "ask @backend about" is a mention,
+  // "nice work @ 5pm" is not a file that does not exist.
+  function composerTrigger() {
+    if (input.selectionStart !== input.selectionEnd) return null;
+    const pos = input.selectionStart, head = input.value.slice(0, pos);
+    if (input.value[0] === '/') { const m = /^\/(\S*)$/.exec(head); if (m) return { mode: 'slash', query: m[1], start: 0, end: pos }; return null; }
+    const m = /(?:^|[\s])@([^\s@]*)$/.exec(head);
+    if (m) return { mode: 'mention', query: m[1], start: pos - m[1].length - 1, end: pos };
+    return null;
+  }
+  async function updateComposerTrigger() {
+    const trig = composerTrigger();
+    if (!trig) { if (cpopMode) closeComposerPop(); return; }
+    cpopTrigger = trig;
+    if (trig.mode === 'slash') { await loadSlashCommands(); openSlashMenu(trig.query); }
+    else openMentionMenu(trig.query);
+  }
+  input.addEventListener('input', updateComposerTrigger);
+  document.addEventListener('selectionchange', () => { if (document.activeElement === input) updateComposerTrigger(); });
+
+  // Picking a row: "@file" always inserts and waits (more text, or Enter to send it as a
+  // mention); a command - app or Claude Code's - is inserted as "/name " the same way, so
+  // arguments can follow. What then happens on Enter is runComposerIntercepts' job, below:
+  // an app command runs instead of being sent; a Claude Code one goes to Claude as text,
+  // exactly as it always has.
+  function pickComposerPop(i) {
+    const r = cpopRows[i], trig = cpopTrigger; if (!r || !trig) return;
+    const insert = (cpopMode === 'mention' ? '@' : '/') + r.name + ' ';
+    input.value = input.value.slice(0, trig.start) + insert + input.value.slice(trig.end);
+    const caret = trig.start + insert.length;
+    closeComposerPop();
+    input.focus(); input.setSelectionRange(caret, caret);
+    input.dispatchEvent(new Event('input'));
+  }
+  // The popover's own keys, while it is open (the guard in the box's keydown handler, above,
+  // keeps the ordinary Enter-to-send from also firing on the same press).
+  input.addEventListener('keydown', (e) => {
+    if (!composerPopOpen()) return;
+    if (e.key === 'ArrowDown') { e.preventDefault(); cpopAt = Math.min(cpopAt + 1, cpopRows.length - 1); paintComposerPop(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); cpopAt = Math.max(cpopAt - 1, 0); paintComposerPop(); }
+    else if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); if (cpopRows.length) pickComposerPop(cpopAt); else closeComposerPop(); }
+    else if (e.key === 'Escape') { e.preventDefault(); closeComposerPop(); }
+  });
+
+  // app commands Desktop's own menu offers from the box: an existing API each, not a new one.
+  registerCommand('rename', {
+    description: 'Rename this chat', argumentHint: '<title>',
+    async run(args) {
+      const title = (args || '').trim() || prompt('Session name', (state.sessions.find((s) => s.id === state.current) || {}).title || '');
+      if (!title || !title.trim() || !state.current) return;
+      await api(`/sessions/${state.current}/rename`, { method: 'POST', body: JSON.stringify({ title: title.trim() }) });
+      $('#chat-title').textContent = title.trim(); loadSessions();
+    },
+  });
+  registerCommand('usage', { description: 'Show session cost, plan usage, and what’s contributing to your limits', argumentHint: '', run: () => $('#usage-btn').click() });
+  registerCommand('model', {
+    description: 'Set the AI model for Claude Code', argumentHint: '<model>',
+    run(args) {
+      const q = (args || '').trim().toLowerCase();
+      if (!q) { $('#model-btn').click(); return; }
+      const row = MODELS.find((m) => m.displayName.toLowerCase() === q) || MODELS.find((m) => m.displayName.toLowerCase().includes(q)) || MODELS.find((m) => m.value.toLowerCase().includes(q));
+      if (!row) return toast('No model matches "' + args.trim() + '".');
+      state.model = row.value; try { localStorage.setItem('cr.model', row.value); } catch {}
+      renderModelChip(); renderEffortChip(); pushControls({ model: row.value });
+    },
+  });
+  registerCommand('mcp', { description: 'Open Connectors in Settings', argumentHint: '', run: () => openConnectors() });
+  registerCommand('resume', { description: 'Find and resume a session', argumentHint: '', run: () => { const sb = $('#sidebar'); if (!sb.classList.contains('searching')) $('#search-btn').click(); else $('#search-input').focus(); app.classList.add('sidebar-open'); } });
+
+  // ---------- "!" shell command: runs on this computer, in the session's folder ----------
+  // Desktop's own wording throughout: "Run a shell command in the terminal and send the output
+  // to Claude", "You ran …", "A shell command is already running".
+  let shellBusy = false;
+  async function runShellCommand(command) {
+    if (!command) return;
+    if (!state.current) { thread.appendChild(el('div', 'note error', 'Shell commands are only available in local sessions.')); autoscroll(); return; }
+    if (shellBusy) { thread.appendChild(el('div', 'note error', 'A shell command is already running')); autoscroll(); return; }
+    const step = stepEl('shell', 'You ran', command);
+    step.open = true;
+    const out = el('pre', 'step-shell-out', '');
+    step.querySelector('.step-body').appendChild(out);
+    thread.appendChild(step); autoscroll();
+    let runId = null;
+    const killBtn = el('button', 'btn btn-ghost small step-shell-kill', 'Stop'); killBtn.type = 'button';
+    killBtn.addEventListener('click', async () => { killBtn.disabled = true; if (runId) try { await api(`/sessions/${state.current}/shell/${runId}/kill`, { method: 'POST' }); } catch {} });
+    step.querySelector('summary').appendChild(killBtn);
+    shellBusy = true;
+    try {
+      const r = await api(`/sessions/${state.current}/shell`, { method: 'POST', body: JSON.stringify({ command }) });
+      runId = r.id;
+      const res = await fetch(`/api/sessions/${state.current}/shell/${runId}/stream`, { headers: { Authorization: 'Bearer ' + state.token } });
+      const reader = res.body.getReader(); const decoder = new TextDecoder(); let buf = '', exitCode = null;
+      for (;;) {
+        const { value, done } = await reader.read(); if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let nl;
+        while ((nl = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
+          if (!line) continue;
+          const ev = JSON.parse(line);
+          if (ev.t === 'start' && ev.buffered) out.textContent += ev.buffered;
+          else if (ev.t === 'chunk') { out.textContent += ev.text; autoscroll(); }
+          else if (ev.t === 'done') exitCode = ev.exitCode;
+        }
+      }
+      killBtn.remove();
+      step.querySelector('summary .arg').textContent = command + (exitCode ? ' (exit ' + exitCode + ')' : '');
+      // "Terminal output attached to chat": the result becomes context for what you send next,
+      // exactly like selecting text and choosing "Attach as context" - the same chip, the same quoting.
+      attachContext({ label: 'You ran: ' + command, text: out.textContent || '(no output)' });
+    } catch (e) {
+      killBtn.remove();
+      out.textContent += '\n' + (e.message || String(e));
+    } finally { shellBusy = false; }
+  }
+
+  // Both app commands and "!" are caught here, ahead of the normal send - an app command never
+  // reaches Claude Code, and a shell command never becomes a turn at all.
+  function matchAppCommand(text) {
+    const m = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(text);
+    const spec = m && appCommands.get(m[1]);
+    return spec ? { args: (m[2] || '').trim(), spec } : null;
+  }
+  async function runComposerIntercepts(typed) {
+    const cmd = matchAppCommand(typed);
+    if (cmd) {
+      input.value = ''; input.style.height = 'auto'; try { localStorage.removeItem(draftKey(state.current)); } catch {}
+      closeComposerPop();
+      try { await cmd.spec.run(cmd.args); } catch (e) { thread.appendChild(el('div', 'note error', e.message)); autoscroll(); }
+      return true;
+    }
+    if (/^!/.test(typed) && !pending.length) {
+      input.value = ''; input.style.height = 'auto'; try { localStorage.removeItem(draftKey(state.current)); } catch {}
+      closeComposerPop();
+      runShellCommand(typed.slice(1).trim());
+      return true;
+    }
+    return false;
+  }
 
   // ---------- attachments: images go to Claude as images; other files are saved on the PC and referenced ----------
   const pending = []; // { kind: 'image'|'file', name, media_type, data (base64), dataUrl }
