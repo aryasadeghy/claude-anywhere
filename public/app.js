@@ -3518,6 +3518,9 @@
           break;
         }
         case 'tasks': state.tasks = ev.tasks || []; paintTasks(); break;
+        // commands_changed: Claude Code's own slash-command list moved (a skill discovered mid-
+        // session, say). Replace, as its own doc comment says to - never merged edge by edge.
+        case 'commands': slashCommands = ev.commands || []; if (cpopMode === 'slash') openSlashMenu(cpopTrigger?.query || ''); break;
         case 'note': thread.appendChild(el('div', 'note' + (ev.level === 'warning' ? ' warning' : ''), ev.text)); statusPaint(); autoscroll(); break;
         // Stop took back messages typed mid-turn: their dashed bubbles go, on every device.
         case 'unqueued': for (const id of ev.ids || []) thread.querySelector('.msg.user.queued[data-prompt-id="' + CSS.escape(id) + '"]')?.remove(); break;
@@ -3779,13 +3782,14 @@
   // Desktop does; any other /name goes to Claude Code. Features add theirs with registerCommand.
   const appCommands = new Map(); // name -> { description, argumentHint, run(args) }
   function registerCommand(name, spec) { appCommands.set(String(name).replace(/^\//, ''), spec); }
-  // "Attach as context": a message, a selection, lines of a file, a terminal's output - quoted in
-  // the next message. Everything that offers it calls this one function.
+  // "Attach as context": a message, a selection, lines of a file, a terminal's output - quoted
+  // before the next message. A removable chip above the box, not text stuffed into it, so what
+  // you type next stays legible - the composer block below turns this into chips and quotes
+  // them into the message when it is sent.
   function attachContext({ label, text }) {
     if (!text) return;
-    const quoted = (label ? label + ':\n' : '') + String(text).split('\n').map((l) => '> ' + l).join('\n');
-    input.value = (input.value.trim() ? input.value.replace(/\s+$/, '') + '\n\n' : '') + quoted + '\n\n';
-    input.dispatchEvent(new Event('input')); input.focus();
+    contextChips.push({ id: newId(), label: label || '', text: String(text) });
+    renderContextChips(); input.focus();
   }
   // Unsent text survives a refresh, per chat.
   const draftKey = (id) => 'cr.draft.' + (id || 'new');
@@ -3801,10 +3805,406 @@
     paintSendButton();
   });
   input.addEventListener('keydown', (e) => {
+    // The "/" and "@" popover owns these keys while it is open; its own listener, registered
+    // below, handles them instead - so Enter picks a row rather than sending the message.
+    if (composerPopOpen() && (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Enter' || e.key === 'Tab' || e.key === 'Escape')) return;
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && window.matchMedia('(min-width: 861px)').matches) { e.preventDefault(); submit(); }
     if (e.key === 'Escape' && state.answering) { e.preventDefault(); stop(); }
   });
-  send.addEventListener('click', () => { if (state.answering && !input.value.trim() && !pending.length) stop(); else submit(); });
+  send.addEventListener('click', () => { if (state.answering && !input.value.trim() && !pending.length && !contextChips.length) stop(); else submit(); });
+
+  // ---------- composer: context chips, "/" commands, "@" files, "!" shell, dictation, number-key answers ----------
+  // Everything Desktop's message box does beyond plain text and attachments. One intercept point
+  // (runComposerIntercepts) sits ahead of submit() in the hook above; everything else is its own
+  // corner of the box.
+
+  // "Attach as context": a removable chip, quoted ahead of the next message when it is sent
+  // (attachContext, above, only pushes into this array and repaints the strip).
+  let contextChips = [];
+  const quoteContext = (c) => (c.label ? c.label + ':\n' : '') + String(c.text).split('\n').map((l) => '> ' + l).join('\n');
+  function renderContextChips() {
+    const strip = $('#context-chips');
+    strip.innerHTML = ''; strip.classList.toggle('hidden', !contextChips.length);
+    contextChips.forEach((c, i) => {
+      const chip = el('div', 'ctx-chip');
+      chip.appendChild(el('span', 'ctx-chip-label', c.label || c.text.replace(/\s+/g, ' ').trim().slice(0, 60)));
+      const x = el('button', 'ctx-chip-x'); x.type = 'button'; x.title = 'Remove'; x.textContent = '×';
+      x.addEventListener('click', () => { contextChips.splice(i, 1); renderContextChips(); });
+      chip.appendChild(x); strip.appendChild(chip);
+    });
+    paintSendButton();
+  }
+
+  // Selecting text in the thread offers the same "Attach as context" a right-click would
+  // (the right-click menu is another package's). mousedown on the button is prevented so the
+  // click never collapses the selection before the click handler reads it.
+  const ctxFloatBtn = $('#ctx-float-btn');
+  function hideCtxFloatBtn() { ctxFloatBtn.classList.add('hidden'); }
+  document.addEventListener('selectionchange', () => {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !sel.toString().trim() || !thread.contains(sel.anchorNode) || !thread.contains(sel.focusNode)) return hideCtxFloatBtn();
+    const rect = sel.getRangeAt(0).getBoundingClientRect();
+    if (!rect.width && !rect.height) return hideCtxFloatBtn();
+    ctxFloatBtn.style.left = Math.round(rect.left + rect.width / 2) + 'px';
+    ctxFloatBtn.style.top = Math.round(Math.max(8, rect.top - 8)) + 'px';
+    ctxFloatBtn.classList.remove('hidden');
+  });
+  scroll.addEventListener('scroll', hideCtxFloatBtn);
+  ctxFloatBtn.addEventListener('mousedown', (e) => e.preventDefault());
+  ctxFloatBtn.addEventListener('click', () => {
+    const sel = window.getSelection(), text = sel ? sel.toString() : '';
+    hideCtxFloatBtn(); sel?.removeAllRanges();
+    if (text.trim()) attachContext({ text });
+  });
+
+  // ---------- "/" commands and "@" file mentions: one popover above the box, two sources ----------
+  const cpop = $('#composer-pop');
+  let cpopMode = '', cpopRows = [], cpopAt = 0, cpopTrigger = null; // cpopTrigger: { mode, query, start, end } - the span in input.value a pick replaces
+  let slashCommands = []; // Claude Code's own, for the session's folder (or the one picked for a new chat)
+  let slashAskedFor = null; // what loadSlashCommands last answered for, so reopening "/" does not re-ask every time
+  let slashPromise = null, slashPromiseKey = null; // a call already in flight for this key, so a second "/" keystroke before it lands awaits the same answer rather than painting a stale one
+  let mentionTimer = null, mentionSeq = 0;
+
+  const composerPopOpen = () => !cpop.classList.contains('hidden');
+  function closeComposerPop() { cpop.classList.add('hidden'); cpop.innerHTML = ''; cpopMode = ''; cpopRows = []; cpopTrigger = null; }
+  function paintComposerPop() {
+    cpop.innerHTML = '';
+    cpopRows.forEach((r, i) => {
+      const b = el('button', 'cpop-item' + (i === cpopAt ? ' on' : '')); b.type = 'button';
+      b.appendChild(el('span', 'cpop-name', (cpopMode === 'mention' ? '@' : '/') + r.name));
+      if (r.desc) b.appendChild(el('span', 'cpop-desc', r.desc));
+      if (r.hint) b.appendChild(el('span', 'cpop-hint', r.hint));
+      // mousedown, not click: a click first fires mousedown, which would otherwise move focus
+      // and the caret out of the textarea before the row's own handler ever runs.
+      b.addEventListener('mousedown', (e) => { e.preventDefault(); pickComposerPop(i); });
+      cpop.appendChild(b);
+    });
+    if (!cpopRows.length) cpop.appendChild(el('div', 'cpop-empty', cpopMode === 'mention' ? 'No files match.' : 'No commands match.'));
+    cpop.classList.remove('hidden');
+  }
+
+  // Claude Code's own list for this folder, asked for once per "/" opened (not per keystroke);
+  // commands_changed (the live-turn switch, above) replaces it without a re-ask.
+  async function loadSlashCommands() {
+    const cwd = state.cwd || '', key = cwd + '|' + (state.current || '');
+    if (slashAskedFor === key) return;
+    if (slashPromiseKey === key) return slashPromise; // already asking - a second keystroke before it lands joins the same answer
+    slashPromiseKey = key;
+    slashPromise = (async () => {
+      try { slashCommands = (await api('/commands?cwd=' + encodeURIComponent(cwd) + (state.current ? '&sessionId=' + encodeURIComponent(state.current) : ''))).commands || []; }
+      catch { slashCommands = []; }
+      slashAskedFor = key; slashPromiseKey = null;
+    })();
+    return slashPromise;
+  }
+  // A name this app already runs itself wins the row - Claude Code's own command of that name
+  // is never reachable by typing it, so it is left out rather than shown and then ignored.
+  function openSlashMenu(q) {
+    const query = (q || '').toLowerCase();
+    const appNames = new Set(appCommands.keys());
+    const app = [...appCommands].map(([name, spec]) => ({ name, desc: spec.description || '', hint: spec.argumentHint || '' })).filter((r) => !query || r.name.toLowerCase().startsWith(query));
+    const cc = slashCommands.filter((c) => !appNames.has(c.name) && (c.name.toLowerCase().startsWith(query) || (c.aliases || []).some((a) => a.toLowerCase().startsWith(query)))).map((c) => ({ name: c.name, desc: c.description || '', hint: c.argumentHint || '' }));
+    cpopMode = 'slash'; cpopRows = [...app, ...cc]; cpopAt = 0; paintComposerPop();
+  }
+  // "@": the session's folder (or the one chosen for a new chat), fuzzy-ranked server side.
+  // Debounced and sequenced, so a fast typist's last keystroke is the one that wins the paint.
+  function openMentionMenu(q) {
+    cpopMode = 'mention'; paintComposerPop(); // keep the last list on screen while the new one loads
+    const seq = ++mentionSeq;
+    clearTimeout(mentionTimer);
+    mentionTimer = setTimeout(async () => {
+      try {
+        const r = await api('/files/search?cwd=' + encodeURIComponent(state.cwd || '') + '&q=' + encodeURIComponent(q));
+        if (seq !== mentionSeq || cpopMode !== 'mention') return; // a newer keystroke, or the box moved on, already asked again
+        cpopRows = (r.files || []).map((f) => ({ name: f })); cpopAt = 0; paintComposerPop();
+      } catch { if (seq === mentionSeq) { cpopRows = []; paintComposerPop(); } }
+    }, 120);
+  }
+
+  // Where the box is now: "/" only as the very first thing typed (Claude Code commands only
+  // ever start a line); "@" anywhere, as long as it starts a run with no space in it and is
+  // itself preceded by whitespace or the start of the box - "ask @backend about" is a mention,
+  // "nice work @ 5pm" is not a file that does not exist.
+  function composerTrigger() {
+    if (input.selectionStart !== input.selectionEnd) return null;
+    const pos = input.selectionStart, head = input.value.slice(0, pos);
+    if (input.value[0] === '/') { const m = /^\/(\S*)$/.exec(head); if (m) return { mode: 'slash', query: m[1], start: 0, end: pos }; return null; }
+    const m = /(?:^|[\s])@([^\s@]*)$/.exec(head);
+    if (m) return { mode: 'mention', query: m[1], start: pos - m[1].length - 1, end: pos };
+    return null;
+  }
+  async function updateComposerTrigger() {
+    const trig = composerTrigger();
+    if (!trig) { if (cpopMode) closeComposerPop(); return; }
+    cpopTrigger = trig;
+    if (trig.mode === 'slash') { await loadSlashCommands(); openSlashMenu(trig.query); }
+    else openMentionMenu(trig.query);
+  }
+  input.addEventListener('input', updateComposerTrigger);
+  document.addEventListener('selectionchange', () => { if (document.activeElement === input) updateComposerTrigger(); });
+
+  // Picking a row: "@file" always inserts and waits (more text, or Enter to send it as a
+  // mention); a command - app or Claude Code's - is inserted as "/name " the same way, so
+  // arguments can follow. What then happens on Enter is runComposerIntercepts' job, below:
+  // an app command runs instead of being sent; a Claude Code one goes to Claude as text,
+  // exactly as it always has.
+  function pickComposerPop(i) {
+    const r = cpopRows[i], trig = cpopTrigger; if (!r || !trig) return;
+    const insert = (cpopMode === 'mention' ? '@' : '/') + r.name + ' ';
+    input.value = input.value.slice(0, trig.start) + insert + input.value.slice(trig.end);
+    const caret = trig.start + insert.length;
+    closeComposerPop();
+    input.focus(); input.setSelectionRange(caret, caret);
+    input.dispatchEvent(new Event('input'));
+  }
+  // The popover's own keys, while it is open (the guard in the box's keydown handler, above,
+  // keeps the ordinary Enter-to-send from also firing on the same press).
+  input.addEventListener('keydown', (e) => {
+    if (!composerPopOpen()) return;
+    if (e.key === 'ArrowDown') { e.preventDefault(); cpopAt = Math.min(cpopAt + 1, cpopRows.length - 1); paintComposerPop(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); cpopAt = Math.max(cpopAt - 1, 0); paintComposerPop(); }
+    else if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); if (cpopRows.length) pickComposerPop(cpopAt); else closeComposerPop(); }
+    else if (e.key === 'Escape') { e.preventDefault(); closeComposerPop(); }
+  });
+
+  // app commands Desktop's own menu offers from the box: an existing API each, not a new one.
+  registerCommand('rename', {
+    description: 'Rename this chat', argumentHint: '<title>',
+    async run(args) {
+      const title = (args || '').trim() || prompt('Session name', (state.sessions.find((s) => s.id === state.current) || {}).title || '');
+      if (!title || !title.trim() || !state.current) return;
+      await api(`/sessions/${state.current}/rename`, { method: 'POST', body: JSON.stringify({ title: title.trim() }) });
+      $('#chat-title').textContent = title.trim(); loadSessions();
+    },
+  });
+  registerCommand('usage', { description: 'Show session cost, plan usage, and what’s contributing to your limits', argumentHint: '', run: () => $('#usage-btn').click() });
+  registerCommand('model', {
+    description: 'Set the AI model for Claude Code', argumentHint: '<model>',
+    run(args) {
+      const q = (args || '').trim().toLowerCase();
+      if (!q) { $('#model-btn').click(); return; }
+      const row = MODELS.find((m) => m.displayName.toLowerCase() === q) || MODELS.find((m) => m.displayName.toLowerCase().includes(q)) || MODELS.find((m) => m.value.toLowerCase().includes(q));
+      if (!row) return toast('No model matches "' + args.trim() + '".');
+      state.model = row.value; try { localStorage.setItem('cr.model', row.value); } catch {}
+      renderModelChip(); renderEffortChip(); pushControls({ model: row.value });
+    },
+  });
+  registerCommand('mcp', { description: 'Open Connectors in Settings', argumentHint: '', run: () => openConnectors() });
+  registerCommand('resume', { description: 'Find and resume a session', argumentHint: '', run: () => { const sb = $('#sidebar'); if (!sb.classList.contains('searching')) $('#search-btn').click(); else $('#search-input').focus(); app.classList.add('sidebar-open'); } });
+
+  // ---------- "!" shell command: runs on this computer, in the session's folder ----------
+  // Desktop's own wording throughout: "Run a shell command in the terminal and send the output
+  // to Claude", "You ran …", "A shell command is already running".
+  let shellBusy = false;
+  async function runShellCommand(command) {
+    if (!command) return;
+    if (!state.current) { thread.appendChild(el('div', 'note error', 'Shell commands are only available in local sessions.')); autoscroll(); return; }
+    if (shellBusy) { thread.appendChild(el('div', 'note error', 'A shell command is already running')); autoscroll(); return; }
+    const step = stepEl('shell', 'You ran', command);
+    step.open = true;
+    const out = el('pre', 'step-shell-out', '');
+    step.querySelector('.step-body').appendChild(out);
+    thread.appendChild(step); autoscroll();
+    let runId = null;
+    const killBtn = el('button', 'btn btn-ghost small step-shell-kill', 'Stop'); killBtn.type = 'button';
+    killBtn.addEventListener('click', async () => { killBtn.disabled = true; if (runId) try { await api(`/sessions/${state.current}/shell/${runId}/kill`, { method: 'POST' }); } catch {} });
+    step.querySelector('summary').appendChild(killBtn);
+    shellBusy = true;
+    try {
+      const r = await api(`/sessions/${state.current}/shell`, { method: 'POST', body: JSON.stringify({ command }) });
+      runId = r.id;
+      const res = await fetch(`/api/sessions/${state.current}/shell/${runId}/stream`, { headers: { Authorization: 'Bearer ' + state.token } });
+      const reader = res.body.getReader(); const decoder = new TextDecoder(); let buf = '', exitCode = null;
+      for (;;) {
+        const { value, done } = await reader.read(); if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let nl;
+        while ((nl = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
+          if (!line) continue;
+          const ev = JSON.parse(line);
+          if (ev.t === 'start' && ev.buffered) out.textContent += ev.buffered;
+          else if (ev.t === 'chunk') { out.textContent += ev.text; autoscroll(); }
+          else if (ev.t === 'done') exitCode = ev.exitCode;
+        }
+      }
+      killBtn.remove();
+      step.querySelector('summary .arg').textContent = command + (exitCode ? ' (exit ' + exitCode + ')' : '');
+      // "Terminal output attached to chat": the result becomes context for what you send next,
+      // exactly like selecting text and choosing "Attach as context" - the same chip, the same quoting.
+      attachContext({ label: 'You ran: ' + command, text: out.textContent || '(no output)' });
+    } catch (e) {
+      killBtn.remove();
+      out.textContent += '\n' + (e.message || String(e));
+    } finally { shellBusy = false; }
+  }
+
+  // Both app commands and "!" are caught here, ahead of the normal send - an app command never
+  // reaches Claude Code, and a shell command never becomes a turn at all.
+  function matchAppCommand(text) {
+    const m = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(text);
+    const spec = m && appCommands.get(m[1]);
+    return spec ? { args: (m[2] || '').trim(), spec } : null;
+  }
+  async function runComposerIntercepts(typed) {
+    const cmd = matchAppCommand(typed);
+    if (cmd) {
+      input.value = ''; input.style.height = 'auto'; try { localStorage.removeItem(draftKey(state.current)); } catch {}
+      closeComposerPop();
+      try { await cmd.spec.run(cmd.args); } catch (e) { thread.appendChild(el('div', 'note error', e.message)); autoscroll(); }
+      return true;
+    }
+    if (/^!/.test(typed) && !pending.length) {
+      input.value = ''; input.style.height = 'auto'; try { localStorage.removeItem(draftKey(state.current)); } catch {}
+      closeComposerPop();
+      runShellCommand(typed.slice(1).trim());
+      return true;
+    }
+    return false;
+  }
+
+  // ---------- dictation: a microphone button, Web Speech API ----------
+  // Safari and Firefox have no SpeechRecognition at all; the button simply never appears there
+  // rather than offering something that would fail the moment it is pressed.
+  (function dictation() {
+    const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const btn = $('#dictate-btn');
+    if (!Recognition) return;
+    btn.classList.remove('hidden');
+    let rec = null, base = ''; // base: what was already in the box when dictation started, so a result replaces only what it added
+    function stop() {
+      // rec is cleared before stop() is called on it: onend fires (some engines do it inline,
+      // not only after a tick) and its own "if (rec)" guard must already see it gone, or a
+      // stop that triggers onend synchronously recurses into this function forever.
+      const r = rec; rec = null; r?.stop();
+      btn.classList.remove('recording'); btn.title = 'Dictation'; btn.setAttribute('aria-label', 'Dictation');
+    }
+    btn.addEventListener('click', () => {
+      if (rec) return stop(); // "Cancel dictation": the same button starts and stops it
+      base = input.value; rec = new Recognition();
+      rec.continuous = true; rec.interimResults = true; rec.lang = navigator.language || 'en-US';
+      rec.onresult = (e) => {
+        let final = '', interim = '';
+        for (let i = e.resultIndex; i < e.results.length; i++) { const r = e.results[i]; if (r.isFinal) final += r[0].transcript; else interim += r[0].transcript; }
+        if (final) base = (base ? base.replace(/\s+$/, '') + ' ' : '') + final.trim() + ' ';
+        input.value = base + interim;
+        input.dispatchEvent(new Event('input'));
+      };
+      rec.onerror = () => { thread.appendChild(el('div', 'note error', 'Couldn’t start dictation. You can try again.')); autoscroll(); stop(); };
+      rec.onend = () => { if (rec) stop(); }; // silence, or the browser ending it on its own
+      try { rec.start(); btn.classList.add('recording'); btn.title = 'Cancel dictation'; btn.setAttribute('aria-label', 'Cancel dictation'); }
+      catch { stop(); }
+    });
+  })();
+
+  // ---------- number keys 1-9 pick an option on an open question card ----------
+  // Desktop's own wording for the hint: "Press a number key to pick an option when Claude asks
+  // a question." Only when focus is not in a text field, so typing "I'll pick option 2" in the
+  // box - or in the question's own "Something else" field - does not hijack the digit.
+  const isTextField = (n) => n && (n.tagName === 'TEXTAREA' || (n.tagName === 'INPUT' && !['button', 'checkbox', 'radio', 'submit'].includes(n.type)) || n.isContentEditable);
+  document.addEventListener('keydown', (e) => {
+    if (isTextField(document.activeElement) || e.ctrlKey || e.metaKey || e.altKey) return;
+    const n = Number(e.key); if (!(n >= 1 && n <= 9)) return;
+    const card = thread.querySelector('.question-card:not(.answered)'); if (!card) return;
+    const opts = card.querySelectorAll('.q-opt'); if (n > opts.length) return;
+    e.preventDefault(); opts[n - 1].click();
+  });
+
+  // ---------- annotate: click a staged image to draw on it before sending ----------
+  // Pointer Events, not mouse/touch separately, so a finger on a phone draws the same way a
+  // mouse does; the canvas itself is touch-action:none (CSS) so a stroke never scrolls the page.
+  const AN_COLORS = ['#ef4444', '#f59e0b', '#22c55e', '#3b82f6', '#000000', '#ffffff'];
+  const anModal = $('#annotate-modal'), anCanvas = $('#an-canvas'), anCtx = anCanvas.getContext('2d'), anWrap = $('#an-canvas-wrap');
+  let an = null; // { idx, tool, color, undo: ImageData[], drag: {x,y}|null }
+  function anLineWidth() { return Math.max(3, Math.round(Math.min(anCanvas.width, anCanvas.height) / 180)); }
+  function anPoint(e) {
+    const r = anCanvas.getBoundingClientRect();
+    return { x: (e.clientX - r.left) * (anCanvas.width / r.width), y: (e.clientY - r.top) * (anCanvas.height / r.height) };
+  }
+  function anPushUndo() { an.undo.push(anCtx.getImageData(0, 0, anCanvas.width, anCanvas.height)); if (an.undo.length > 25) an.undo.shift(); }
+  function anPaintTools() { document.querySelectorAll('.an-tool').forEach((b) => b.classList.toggle('on', b.dataset.tool === an.tool)); }
+  function anPaintColors() {
+    const box = $('#an-colors'); box.innerHTML = '';
+    for (const c of AN_COLORS) {
+      const b = el('button', 'an-color' + (c === an.color ? ' on' : '')); b.type = 'button'; b.style.background = c; b.title = c; b.setAttribute('aria-label', 'Colour ' + c);
+      b.addEventListener('click', () => { an.color = c; anPaintColors(); });
+      box.appendChild(b);
+    }
+  }
+  function openAnnotate(idx) {
+    const item = pending[idx]; if (!item || item.kind !== 'image') return;
+    const img = new Image();
+    img.onload = () => {
+      anCanvas.width = img.naturalWidth; anCanvas.height = img.naturalHeight;
+      anCtx.drawImage(img, 0, 0);
+      an = { idx, tool: 'pen', color: AN_COLORS[0], undo: [] };
+      anPaintTools(); anPaintColors();
+      anModal.classList.remove('hidden');
+    };
+    img.src = item.dataUrl;
+  }
+  function closeAnnotate() { anModal.classList.add('hidden'); anWrap.querySelector('.an-text-input')?.remove(); an = null; }
+  document.querySelectorAll('.an-tool').forEach((b) => b.addEventListener('click', () => { an.tool = b.dataset.tool; anPaintTools(); }));
+  $('#an-undo').addEventListener('click', () => { if (an?.undo.length) anCtx.putImageData(an.undo.pop(), 0, 0); });
+  $('#an-close').addEventListener('click', closeAnnotate);
+  $('#an-cancel').addEventListener('click', closeAnnotate);
+  $('#an-done').addEventListener('click', () => {
+    const { idx } = an;
+    const dataUrl = anCanvas.toDataURL('image/png');
+    pending[idx] = { kind: 'image', name: pending[idx].name.replace(/\.\w+$/, '') + '.png', media_type: 'image/png', data: dataUrl.split(',')[1], dataUrl };
+    renderPending(); closeAnnotate();
+  });
+  // A text box placed over the canvas at the click point - Enter or losing focus commits it
+  // (empty: nothing is drawn, and nothing was pushed onto Undo for it either).
+  function anPlaceText(canvasPt, displayPt) {
+    const input = el('input', 'an-text-input'); input.type = 'text';
+    input.style.left = displayPt.x + 'px'; input.style.top = (displayPt.y - 11) + 'px'; input.style.color = an.color;
+    anWrap.appendChild(input); input.focus();
+    const commit = () => {
+      const text = input.value; input.remove();
+      if (!text.trim()) return;
+      anPushUndo();
+      anCtx.fillStyle = an.color; anCtx.font = Math.round(anLineWidth() * 4.5) + 'px ' + getComputedStyle(document.body).fontFamily;
+      anCtx.textBaseline = 'top'; anCtx.fillText(text, canvasPt.x, canvasPt.y);
+    };
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); input.blur(); } else if (e.key === 'Escape') { input.value = ''; input.blur(); } });
+    input.addEventListener('blur', commit, { once: true });
+  }
+  function anArrowHead(to, angle) {
+    const len = anLineWidth() * 3.2;
+    anCtx.beginPath(); anCtx.moveTo(to.x, to.y);
+    anCtx.lineTo(to.x - len * Math.cos(angle - Math.PI / 7), to.y - len * Math.sin(angle - Math.PI / 7));
+    anCtx.moveTo(to.x, to.y);
+    anCtx.lineTo(to.x - len * Math.cos(angle + Math.PI / 7), to.y - len * Math.sin(angle + Math.PI / 7));
+    anCtx.stroke();
+  }
+  anCtx.lineCap = 'round'; anCtx.lineJoin = 'round';
+  anCanvas.addEventListener('pointerdown', (e) => {
+    if (!an) return;
+    // A fast stroke that leaves the canvas mid-drag keeps being heard with capture; without it,
+    // pointermove just stops until the finger (or mouse) comes back. Not essential, so a pointer
+    // id the engine does not recognise as active (WebKit throws on one it did not originate) is
+    // not worth losing the stroke over.
+    try { anCanvas.setPointerCapture(e.pointerId); } catch {}
+    const p = anPoint(e);
+    if (an.tool === 'text') return anPlaceText(p, { x: e.clientX - anCanvas.getBoundingClientRect().left, y: e.clientY - anCanvas.getBoundingClientRect().top });
+    anPushUndo();
+    an.drag = p;
+    anCtx.strokeStyle = an.color; anCtx.lineWidth = anLineWidth();
+    if (an.tool === 'pen') { anCtx.beginPath(); anCtx.moveTo(p.x, p.y); }
+  });
+  anCanvas.addEventListener('pointermove', (e) => {
+    if (!an?.drag) return;
+    const p = anPoint(e);
+    if (an.tool === 'pen') { anCtx.lineTo(p.x, p.y); anCtx.stroke(); an.drag = p; return; }
+    // Rectangle and arrow redraw live from the snapshot taken on pointerdown, the way a drag
+    // preview has to - committing on every move would stack hundreds of overlapping shapes.
+    anCtx.putImageData(an.undo[an.undo.length - 1], 0, 0);
+    anCtx.strokeStyle = an.color; anCtx.lineWidth = anLineWidth();
+    if (an.tool === 'rect') anCtx.strokeRect(Math.min(an.drag.x, p.x), Math.min(an.drag.y, p.y), Math.abs(p.x - an.drag.x), Math.abs(p.y - an.drag.y));
+    else if (an.tool === 'arrow') { anCtx.beginPath(); anCtx.moveTo(an.drag.x, an.drag.y); anCtx.lineTo(p.x, p.y); anCtx.stroke(); anArrowHead(p, Math.atan2(p.y - an.drag.y, p.x - an.drag.x)); }
+  });
+  anCanvas.addEventListener('pointerup', () => { if (an) an.drag = null; });
 
   // ---------- attachments: images go to Claude as images; other files are saved on the PC and referenced ----------
   const pending = []; // { kind: 'image'|'file', name, media_type, data (base64), dataUrl }
@@ -3813,7 +4213,7 @@
     strip.innerHTML = ''; strip.classList.toggle('hidden', !pending.length);
     pending.forEach((a, i) => {
       const chip = el('div', 'att' + (a.kind === 'image' ? ' att-img' : ''));
-      if (a.kind === 'image') { const im = el('img'); im.src = a.dataUrl; chip.appendChild(im); } else chip.appendChild(el('span', 'att-name', a.name));
+      if (a.kind === 'image') { const im = el('img'); im.src = a.dataUrl; im.title = 'Click to annotate'; im.addEventListener('click', () => openAnnotate(i)); chip.appendChild(im); } else chip.appendChild(el('span', 'att-name', a.name));
       const x = el('button', 'att-x'); x.type = 'button'; x.title = 'Remove'; x.textContent = '×';
       x.addEventListener('click', () => { pending.splice(i, 1); renderPending(); paintSendButton(); });
       chip.appendChild(x); strip.appendChild(chip);
@@ -3833,8 +4233,9 @@
     return { kind: 'image', name: file.name.replace(/\.\w+$/, '') + '.jpg', media_type: 'image/jpeg', data: out.split(',')[1], dataUrl: out };
   }
   async function addFiles(files) {
+    // Desktop's own ceiling ("Attach up to 20 images in a single message for local sessions").
     for (const f of files) {
-      if (pending.length >= 10) break;
+      if (pending.length >= 20) break;
       try {
         if (f.type.startsWith('image/')) pending.push(await prepareImage(f));
         else if (f.size <= 25 * 1024 * 1024) pending.push({ kind: 'file', name: f.name, media_type: f.type || 'application/octet-stream', data: (await readAsDataUrl(f)).split(',')[1] });
@@ -3885,12 +4286,17 @@
   })();
 
   async function submit() {
-    const text = input.value.trim(); if (!text && !pending.length) return;
+    const typed = input.value.trim(); if (!typed && !pending.length && !contextChips.length) return;
+    if (await runComposerIntercepts(typed)) return;
+    // Context chips are quoted ahead of what you typed, the same shape "Attach as context" used
+    // to drop straight into the box - just kept out of it, as chips, while you are still typing.
+    const text = contextChips.length ? contextChips.map((c) => quoteContext(c)).join('\n\n') + (typed ? '\n\n' + typed : '') : typed;
     const attachments = pending.filter((a) => a.kind === 'image').map((a) => ({ media_type: a.media_type, data: a.data }));
     const files = pending.filter((a) => a.kind === 'file').map((a) => ({ name: a.name, media_type: a.media_type, data: a.data }));
     const images = pending.filter((a) => a.kind === 'image').map((a) => a.dataUrl);
     const shown = text || (files.length ? files.map((f) => f.name).join(', ') : '');
     pending.length = 0; renderPending();
+    contextChips.length = 0; renderContextChips();
     input.value = ''; input.style.height = 'auto'; try { localStorage.removeItem(draftKey(state.current)); } catch {}
     empty.classList.remove('show'); stickToBottom = true;
     // The message's own id, drawn on its bubble now and sent with it: every event about the
@@ -4070,6 +4476,7 @@
     else if (k === 'b' && e.shiftKey) { e.preventDefault(); previewOpen ? closePreview() : openPreview(); } // Desktop's own shortcut for its Browser
     else if (k === 'b') { e.preventDefault(); app.classList.toggle('sidebar-open'); }
     else if (k === 'n') { e.preventDefault(); location.hash = '#/'; }
+    else if (k === 'u') { e.preventDefault(); $('#file-input').click(); } // Desktop's shortcut for "Attach files"
   });
 
   // ---------- routing ----------

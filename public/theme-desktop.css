@@ -1015,3 +1015,47 @@ audio.lb-media { width: min(520px, 90vw); height: auto; }
 .note.warning { color: #b4691f; }
 :root[data-theme="dark"] .note.warning { color: #e3a15a; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .note.warning { color: #e3a15a; } }
+
+/* ---------- v54: the message box - "/" commands, "@" files, "!" shell, context chips, dictation, annotate ---------- */
+#composer { position: relative; } /* the popover and the context chips both float from this box */
+.context-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 2px 8px; }
+.ctx-chip { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; padding: 4px 4px 4px 10px; border-radius: 999px; background: var(--chip-bg); color: var(--ink-2); font-size: 12.5px; }
+.ctx-chip-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; }
+.ctx-chip-x { width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; color: var(--ink-3); flex: none; font-size: 13px; }
+.ctx-chip-x:hover { background: var(--bg-3); color: var(--ink); }
+.sel-attach-btn { position: fixed; transform: translate(-50%, -100%); z-index: 60; padding: 6px 12px; border-radius: 999px; border: 0; background: var(--ink); color: var(--bg); font-size: 12.5px; box-shadow: var(--shadow); }
+.sel-attach-btn:hover { opacity: .88; }
+/* The "/" and "@" popover: a .menu floating from #composer itself rather than a button beside it. */
+.composer-pop { left: 14px; right: 14px; bottom: calc(100% + 8px); width: auto; max-width: none; max-height: 40vh; }
+.cpop-item { display: flex; align-items: baseline; gap: 8px; width: 100%; text-align: start; padding: 7px 10px; border-radius: 8px; font-size: 13.5px; color: var(--ink); }
+.cpop-item .cpop-name { flex: none; font-family: var(--mono); }
+.cpop-item .cpop-desc { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-3); font-size: 12px; }
+.cpop-item .cpop-hint { flex: none; color: var(--ink-3); font-size: 11.5px; }
+.cpop-item.on, .cpop-item:hover { background: var(--bg-3); }
+.cpop-empty { padding: 10px; text-align: center; color: var(--ink-3); font-size: 13px; }
+@media (max-width: 860px) { .sel-attach-btn { font-size: 13px; } }
+/* "!"'s "You ran …" block: the output grows live, so it scrolls in place instead of the page. */
+.step-shell-out { margin: 0; padding: 10px 12px; max-height: 40vh; overflow: auto; font-family: var(--mono); font-size: 12.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; color: var(--ink-2); }
+.step-shell-out:empty::before { content: "Running…"; color: var(--ink-3); font-style: italic; font-family: var(--sans); }
+.step-shell-kill { margin-inline-start: 6px; flex: none; }
+/* Dictation: the mic itself turns the same red as a recording light while it listens. */
+#dictate-btn.recording { color: var(--danger); background: var(--bg-3); }
+@keyframes dictate-pulse { 50% { opacity: .4; } }
+#dictate-btn.recording svg { animation: dictate-pulse 1.1s ease-in-out infinite; }
+/* Annotate: clicking a staged image opens this; pen/rectangle/arrow/text over a canvas sized to
+   the picture's own pixels, scaled to fit, touch-action none so a finger draws instead of scrolls. */
+.att-img img { cursor: pointer; }
+.annotate-card { width: min(720px, 96vw); max-width: none; padding: 14px 16px 16px; display: flex; flex-direction: column; gap: 10px; }
+.an-toolbar { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.an-tools { display: flex; gap: 2px; background: var(--bg-2); border-radius: 10px; padding: 3px; }
+.an-tool { width: 30px; height: 30px; border-radius: 7px; display: grid; place-items: center; color: var(--ink-2); }
+.an-tool:hover { color: var(--ink); }
+.an-tool.on { background: var(--bg-000); color: var(--ink); box-shadow: 0 1px 2px rgba(0, 0, 0, .15); }
+.an-colors { display: flex; gap: 6px; margin-inline-start: 8px; }
+.an-color { width: 22px; height: 22px; border-radius: 50%; border: 2px solid transparent; padding: 0; }
+.an-color.on { border-color: var(--ink); }
+.an-canvas-wrap { flex: 1; min-height: 0; display: grid; place-items: center; background: var(--bg-2); border-radius: 12px; padding: 8px; overflow: hidden; }
+#an-canvas { max-width: 100%; max-height: min(60vh, 520px); touch-action: none; border-radius: 4px; cursor: crosshair; }
+.an-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.an-text-input { position: absolute; font: inherit; font-size: 15px; padding: 2px 4px; border: 1px dashed var(--ink-3); background: rgba(255, 255, 255, .85); color: #000; min-width: 60px; }
+@media (max-width: 860px) { .annotate-card { width: 100%; max-height: 92vh; } #an-canvas { max-height: 46vh; } }
