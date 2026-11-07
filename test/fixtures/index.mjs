@@ -222,14 +222,20 @@ export async function startFakeApi({ delay = 15 } = {}) {
     if (url.pathname.endsWith('/v1/messages')) bodies.push(j);
     if (url.pathname.endsWith('/count_tokens')) { res.writeHead(200, { 'content-type': 'application/json' }); return res.end('{"input_tokens":12}'); }
     if (req.method !== 'POST' || !url.pathname.endsWith('/v1/messages')) { res.writeHead(404, { 'content-type': 'application/json' }); return res.end('{"type":"error","error":{"type":"not_found_error","message":"not here"}}'); }
-    const last = (j.messages || []).at(-1) || {};
+    // The literal last message is sometimes a trailing role:"system" aside (environment info,
+    // sent once) rather than the human's own turn or its tool result - search back for the last
+    // one Claude or the person actually wrote.
+    const last = [...(j.messages || [])].reverse().find((m) => m.role === 'user') || (j.messages || []).at(-1) || {};
     const afterTool = Array.isArray(last.content) && last.content.some((b) => b.type === 'tool_result');
     const said = userText(last);
     // After a question, Claude says what came back: the answer, or how it went unanswered.
     const askedBefore = afterTool && JSON.stringify((j.messages || []).at(-2)?.content || '').includes('AskUserQuestion');
     const toolText = (last.content || []).filter((b) => b.type === 'tool_result').map((b) => (typeof b.content === 'string' ? b.content : (b.content || []).map((c) => c.text || '').join(''))).join(' ');
     const asking = /\[ask\]/.test(said);
-    const words = afterTool ? (askedBefore ? `Noted: ${toolText.replace(/\s+/g, ' ').slice(0, 160)}` : 'Started it in the background.') : /\[background\]/.test(said) || asking ? null : `Answer to: ${(said.match(/Q\d+/) || ['it'])[0]}. Done.`;
+    // The conversation package's own tags, each asking for one Claude-facing tool call (or
+    // ExitPlanMode) instead of a Bash command - a fixed name and input, not the real model's.
+    const toolTag = (said.match(/\[(suggest|chapter|sugtask|status|plan)\]/) || [])[1];
+    const words = afterTool ? (askedBefore ? `Noted: ${toolText.replace(/\s+/g, ' ').slice(0, 160)}` : 'Started it in the background.') : /\[background\]/.test(said) || asking || toolTag ? null : `Answer to: ${(said.match(/Q\d+/) || ['it'])[0]}. Done.`;
     if (!j.stream) {
       res.writeHead(200, { 'content-type': 'application/json' });
       return res.end(JSON.stringify({ id: 'msg_' + requests.length, type: 'message', role: 'assistant', model: j.model, content: [{ type: 'text', text: words || 'ok' }], stop_reason: 'end_turn', stop_sequence: null, usage: { input_tokens: 12, output_tokens: 6 } }));
@@ -244,8 +250,17 @@ export async function startFakeApi({ delay = 15 } = {}) {
       send('content_block_stop', { type: 'content_block_stop', index: 0 });
       send('message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 6 } });
     } else {
-      const input = JSON.stringify(asking ? { questions: [{ question: 'Which colour should the button be?', header: 'Colour', options: [{ label: 'Red', description: 'Warm' }, { label: 'Blue', description: 'Calm' }], multiSelect: false }] } : { command: 'sleep 20', description: 'Render the long video', run_in_background: true });
-      send('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'toolu_fake_' + requests.length, name: asking ? 'AskUserQuestion' : 'Bash', input: {} } });
+      const TOOL_TAGS = {
+        suggest: ['mcp__claude-anywhere__SuggestNextSteps', { recap: 'Set up the thing.', steps: [{ label: 'Add tests', prompt: 'Add tests for the thing' }] }],
+        chapter: ['mcp__claude-anywhere__MarkChapter', { title: 'Set up the database' }],
+        sugtask: ['mcp__claude-anywhere__SuggestTask', { title: 'Write the README', prompt: 'Write a README for this project' }],
+        status: ['mcp__claude-anywhere__SetSessionStatus', { status: 'ready_for_review', note: 'Looks good' }],
+        plan: ['ExitPlanMode', { plan: '# Plan\n\n1. Do the first thing\n2. Do the second thing' }],
+      };
+      const [tagName, tagInput] = TOOL_TAGS[toolTag] || [];
+      const name = asking ? 'AskUserQuestion' : tagName || 'Bash';
+      const input = JSON.stringify(asking ? { questions: [{ question: 'Which colour should the button be?', header: 'Colour', options: [{ label: 'Red', description: 'Warm' }, { label: 'Blue', description: 'Calm' }], multiSelect: false }] } : tagInput || { command: 'sleep 20', description: 'Render the long video', run_in_background: true });
+      send('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'toolu_fake_' + requests.length, name, input: {} } });
       send('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: input } });
       send('content_block_stop', { type: 'content_block_stop', index: 0 });
       send('message_delta', { type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { output_tokens: 20 } });

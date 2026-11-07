@@ -21,7 +21,8 @@ const SERVER_STARTED_AT = Date.now();
 import { promisify } from 'node:util';
 import { listSessions, getSessionMessages, getSessionInfo, renameSession, forkSession, deleteSession, tagSession } from '@anthropic-ai/claude-agent-sdk';
 import { runs, pendingPermissions, isLive, isBusy, startRun, answerPermission, bus, contextBySession, lastLimits } from './lib/runs.mjs';
-import { historyPage, historyImage } from './lib/history.mjs';
+import { historyPage, historyImage, searchSession } from './lib/history.mjs';
+import { readConvSettings, writeConvSettings } from './lib/conv-settings.mjs';
 import * as runsMod from './lib/runs.mjs';
 const execFileP = promisify(execFile);
 import { tailSession, isWorkingElsewhere, WORKING_WINDOW_MS, sessionFile } from './lib/tail.mjs';
@@ -373,6 +374,8 @@ const shape = (s, pinned) => ({
   tag: s.tag || '',
   archived: s.tag === 'archived',
   context: contextBySession.get(s.sessionId) || null,
+  // Set by Claude's own SetSessionStatus tool (lib/tools-conversation.mjs), shown as a sidebar badge.
+  status: readConvSettings().status[s.sessionId] || null,
 });
 
 // ---------- session menu: rename, fork, archive, delete (the Desktop ⋮ menu) ----------
@@ -669,6 +672,50 @@ app.get('/api/git', async (req, res) => {
   if (!cwd || !fs.existsSync(cwd)) return res.json({ git: false });
   try { const r = await execFileP('git', ['-C', cwd, 'rev-parse', '--abbrev-ref', 'HEAD'], { timeout: 5000, windowsHide: true }); res.json({ git: true, branch: r.stdout.trim() }); }
   catch { res.json({ git: false }); }
+});
+
+// ---------- conversation: chapters, session status, transcript view, find in session ----------
+// A chapter's anchor is the uuid of the message it was marked on (MarkChapter's own tool_use
+// block, or a message the person pinned from its menu) - the client registers one the first
+// time it draws that message, live or from history, so reopening a session a page at a time
+// still ends up with the same list without scanning the whole transcript up front.
+app.get('/api/sessions/:id/chapters', (_req, res) => {
+  const s = readConvSettings();
+  res.json({ chapters: Object.values(s.chapters[_req.params.id] || {}).sort((a, b) => (a.at || 0) - (b.at || 0)) });
+});
+app.post('/api/sessions/:id/chapters', (req, res) => {
+  const { uuid, title } = req.body || {};
+  if (!uuid || !title) return res.status(400).json({ error: 'uuid and title are required' });
+  const s = readConvSettings();
+  (s.chapters[req.params.id] ||= {})[uuid] = { uuid, title: String(title).slice(0, 120), at: Date.now() };
+  writeConvSettings(s);
+  res.json({ ok: true });
+});
+app.delete('/api/sessions/:id/chapters/:uuid', (req, res) => {
+  const s = readConvSettings();
+  if (s.chapters[req.params.id]) { delete s.chapters[req.params.id][req.params.uuid]; writeConvSettings(s); }
+  res.json({ ok: true });
+});
+
+// The app-wide switches: the default Transcript view for a newly opened session, and whether
+// Claude's SetSessionStatus tool exists at all (lib/tools-conversation.mjs reads it per turn).
+app.get('/api/conversation/settings', (_req, res) => { const { transcriptView, autoClassify } = readConvSettings(); res.json({ transcriptView, autoClassify }); });
+app.post('/api/conversation/settings', (req, res) => {
+  const s = readConvSettings();
+  if (req.body?.transcriptView && ['normal', 'thinking', 'verbose'].includes(req.body.transcriptView)) s.transcriptView = req.body.transcriptView;
+  if (req.body?.autoClassify !== undefined) s.autoClassify = !!req.body.autoClassify;
+  writeConvSettings(s);
+  res.json({ transcriptView: s.transcriptView, autoClassify: s.autoClassify });
+});
+
+// Text anywhere in one session's own transcript (not every session - that is /api/search):
+// the find bar over an open session, reading the same file lib/history.mjs pages through.
+app.get('/api/sessions/:id/search', async (req, res, next) => {
+  try {
+    const q = String(req.query.q || '').trim();
+    if (!q) return res.json({ hits: [] });
+    res.json(await searchSession(req.params.id, q, { limit: Math.min(Number(req.query.limit) || 200, 500) }));
+  } catch (e) { next(e); }
 });
 
 // ---------- per-session worktrees ----------
@@ -1074,7 +1121,10 @@ app.post('/api/sessions/:id/prefs', (req, res) => {
 app.get('/api/sessions/:id/history', async (req, res, next) => {
   try {
     const before = req.query.before != null && req.query.before !== '' ? Number(req.query.before) : Infinity;
-    const page = await historyPage(req.params.id, { before: Number.isFinite(before) ? before : Infinity, until: Number(req.query.until) || 0 });
+    // Thinking/Verbose keep the thinking blocks Normal leaves out (lib/history.mjs); the
+    // savings Normal relies on (never reading them off disk) only hold when nobody asked.
+    const view = ['thinking', 'verbose'].includes(req.query.view) ? req.query.view : 'normal';
+    const page = await historyPage(req.params.id, { before: Number.isFinite(before) ? before : Infinity, until: Number(req.query.until) || 0, thinking: view !== 'normal' });
     res.json(page || { messages: [], before: 0, more: false, midTurn: false });
   } catch (e) { next(e); }
 });
@@ -1266,8 +1316,8 @@ app.get('/api/sessions/:id/events', (req, res) => {
 });
 
 app.post('/api/permissions/:reqId', (req, res) => {
-  const { behavior, always, updatedInput } = req.body || {};
-  if (!answerPermission(req.params.reqId, behavior, !!always, updatedInput)) return res.status(404).json({ error: 'No such request (it may have expired).' });
+  const { behavior, always, updatedInput, updatedPermissions, message } = req.body || {};
+  if (!answerPermission(req.params.reqId, behavior, !!always, updatedInput, undefined, updatedPermissions, message)) return res.status(404).json({ error: 'No such request (it may have expired).' });
   res.json({ ok: true });
 });
 

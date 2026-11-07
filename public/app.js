@@ -231,6 +231,7 @@
       ? 'You have ' + v.version + (v.commit ? ' · ' + v.commit : '') + (v.update?.newer ? ' — ' + v.update.latest + ' is out' : ' — up to date')
       : 'Claude Anywhere updates itself from GitHub.';
     claudeCodeRow();
+    paintConvSettings();
   }
   // ---------- Claude Code: the one that computer runs, and a newer one from npm ----------
   // The app carries a Claude Code of its own, and a model or a fix newer than it used to wait
@@ -705,6 +706,7 @@
     if (attn) { const d = el('span', 'dot ' + attn); d.title = attn === 'needs-input' ? 'Needs your input' : attn === 'failed' ? 'The last turn failed' : 'Finished while you were away'; a.appendChild(d); }
     else if (working(s)) { const d = el('span', 'dot'); d.title = (s.busy ?? s.live) ? 'Working (started here)' : 'Working in another window'; a.appendChild(d); }
     const t = el('span', 't', s.title); t.dir = 'auto'; a.appendChild(t);
+    const badge = statusBadge(s.status); if (badge) a.appendChild(badge);
     // Found inside the transcript: the row grows a second line with what was found there.
     const found = hits.get(s.id);
     if (found && searchingInside) {
@@ -1389,7 +1391,7 @@
   $('#sb-close').addEventListener('click', () => $('#session-bar').classList.add('hidden'));
   $('#sb-pr').addEventListener('click', () => { input.value = 'Create a pull request for the current changes: commit what is uncommitted with a clear message, push the branch, and open the PR with a title and a short description.'; input.dispatchEvent(new Event('input')); submit(); });
 
-  menuFor('#session-menu-btn', '#session-menu', (m) => {
+  function renderSessionMenu(m) {
     m.innerHTML = '';
     const s = state.sessions.find((x) => x.id === state.current) || {};
     m.appendChild(item('Rename', '', false, async () => { m.classList.add('hidden'); const t = prompt('Session name', s.title || ''); if (t && t.trim()) { try { await api(`/sessions/${state.current}/rename`, { method: 'POST', body: JSON.stringify({ title: t.trim() }) }); $('#chat-title').textContent = t.trim(); loadSessions(); } catch (e) { alert(e.message); } } }, { hint: 'R' }));
@@ -1397,6 +1399,8 @@
     m.appendChild(item('Changes', '', false, () => { m.classList.add('hidden'); openChanges(); }));
     m.appendChild(item('Files', 'Look through this session\'s folder', false, () => { m.classList.add('hidden'); openFiles(); }));
     m.appendChild(item('Browser', 'Dev servers and the project\'s pages and PDFs, here and on your phone', false, () => { m.classList.add('hidden'); openPreview(); }));
+    // Session chapters: MarkChapter, or a message pinned from its own menu.
+    m.appendChild(item('Chapters', chapters.length ? String(chapters.length) : 'None yet', false, (e) => { e.stopPropagation(); renderChaptersMenu(m); }));
     m.appendChild(item('Worktrees…', 'A second checkout on its own branch', false, () => { m.classList.add('hidden'); showWorktrees(state.cwd); }));
     m.appendChild(item('Keep computer awake', (AWAKE.find((a) => a[0] === awakeMode) || AWAKE[0])[1], false, () => {
       m.classList.add('hidden');
@@ -1406,7 +1410,17 @@
     m.appendChild(item(s.archived ? 'Unarchive' : 'Archive', '', false, async () => { m.classList.add('hidden'); try { await api(`/sessions/${state.current}/archive`, { method: 'POST', body: JSON.stringify({ archived: !s.archived }) }); await loadSessions(); if (!s.archived) location.hash = '#/'; } catch (e) { alert(e.message); } }, { hint: 'A' }));
     const del = item('Delete', '', false, async () => { m.classList.add('hidden'); if (!confirm('Delete this session? It moves to the trash and can be put back from Deleted sessions.')) return; try { await api(`/sessions/${state.current}`, { method: 'DELETE' }); await loadSessions(); location.hash = '#/'; } catch (e) { alert(e.message); } }, { hint: 'D' });
     del.classList.add('danger'); m.appendChild(del);
-  });
+  }
+  menuFor('#session-menu-btn', '#session-menu', renderSessionMenu);
+  // "Chapters" redraws the same popover with the list, and "Back" redraws the menu above -
+  // one menu element, two views, like the model menu reusing itself after Refresh.
+  function renderChaptersMenu(m) {
+    m.innerHTML = '';
+    m.appendChild(item('‹ Back', '', false, () => renderSessionMenu(m)));
+    m.appendChild(el('div', 'menu-sep'));
+    if (!chapters.length) m.appendChild(el('div', 'menu-empty', 'No chapters yet. Ask Claude to mark one, or pin a message from its menu.'));
+    for (const c of chapters) m.appendChild(item(c.title, c.at ? relTime(c.at) : '', false, async () => { m.classList.add('hidden'); await jumpToMessage(c.uuid); }));
+  }
 
   // ---------- connectors & plugins (Desktop's panel) ----------
   const ctModal = settingsModal;
@@ -1998,6 +2012,7 @@
       node.innerHTML = md(shown);
       node.classList.toggle('hidden', !shown);
     } else if (block.type === 'tool_use') {
+      if (renderConvTool(msg, index, block)) return;
       if (!node) {
         node = stepEl('tool', block.name, ''); node._toolId = block.id;
         if (block.name === 'SendUserFile') msg.group = null; // Desktop's own: "Sent ›" is a line of its own
@@ -2088,6 +2103,134 @@
   }
   let pendingPrefill = '';
   async function markRead(id) { try { await api(`/sessions/${id}/read`, { method: 'POST' }); const s = state.sessions.find((x) => x.id === id); if (s && (s.unread || s.failed)) { s.unread = false; s.failed = false; renderSessions(); } } catch {} }
+
+  // ---------- conversation: Claude's own tools, chapters, session status ----------
+  // lib/tools-conversation.mjs gives Claude SuggestNextSteps, MarkChapter, SuggestTask and
+  // (only once Settings allows it) SetSessionStatus. A tool_use block's name arrives either
+  // short or mcp__claude-anywhere__-qualified, like every connector tool (see isSendTool above).
+  const toolNamed = (name, short) => name === short || new RegExp('__' + short + '$').test(name || '');
+
+  // A chapter's anchor is the uuid of the message it was marked on - MarkChapter's own tool_use
+  // block, or one a person pinned from its menu. Registering it here (not in the tool handler)
+  // means both paths end up the same way, and a session needs no transcript scan to offer its
+  // Chapters menu: whichever messages a page has actually drawn already know the title.
+  let chapters = [];                       // {uuid, title, at}, this session's, oldest first
+  const registeredChapters = new Set();
+  async function registerChapter(uuid, title) {
+    if (!state.current || !uuid || registeredChapters.has(uuid)) return;
+    registeredChapters.add(uuid);
+    try { await api(`/sessions/${state.current}/chapters`, { method: 'POST', body: JSON.stringify({ uuid, title }) }); chapters.push({ uuid, title, at: Date.now() }); renderChaptersBadge(); }
+    catch { registeredChapters.delete(uuid); }
+  }
+  async function loadChapters(id) {
+    chapters = []; registeredChapters.clear();
+    try { const r = await api(`/sessions/${id}/chapters`); chapters = r.chapters || []; for (const c of chapters) registeredChapters.add(c.uuid); } catch {}
+    renderChaptersBadge();
+  }
+  function renderChaptersBadge() { const b = $('#session-menu-btn'); if (b) b.classList.toggle('has-chapters', chapters.length > 0); }
+
+  // Jump to a message, loading older pages until it is on screen: a deep link, a chapter, and an
+  // older find-bar hit all land here. `loadOlder` (below) already guards against a second opening
+  // racing it, so a dumb retry loop is safe.
+  async function jumpToMessage(uuid) {
+    let tries = 0;
+    while (!thread.querySelector(`[data-uuid="${CSS.escape(uuid)}"]`) && hist.more && hist.id === state.current && tries++ < 300) await loadOlder();
+    const node = thread.querySelector(`[data-uuid="${CSS.escape(uuid)}"]`);
+    if (!node) return false;
+    stickToBottom = false;
+    node.scrollIntoView({ block: 'center' });
+    node.classList.add('jump-flash');
+    setTimeout(() => node.classList.remove('jump-flash'), 2200);
+    return true;
+  }
+
+  // The recap + next-step buttons SuggestNextSteps asked for; pressing one sends its prompt the
+  // way any typed message goes in.
+  function paintSuggestCard(card, inp) {
+    card.innerHTML = '';
+    if (inp.recap) { const r = el('div', 'prose suggest-recap'); r.dir = 'auto'; r.innerHTML = md(String(inp.recap)); card.appendChild(r); }
+    const row = el('div', 'suggest-steps');
+    for (const step of Array.isArray(inp.steps) ? inp.steps : []) {
+      if (!step?.prompt) continue;
+      const b = el('button', 'btn btn-ghost suggest-step', step.label || String(step.prompt).slice(0, 40)); b.type = 'button';
+      b.addEventListener('click', () => { input.value = step.prompt; input.dispatchEvent(new Event('input')); submit(); });
+      row.appendChild(b);
+    }
+    if (row.children.length) card.appendChild(row);
+  }
+  // SuggestTask's card: the same prompt either goes into this session or starts a new one.
+  function paintSuggestedTaskCard(card, inp) {
+    card.innerHTML = '';
+    card.appendChild(el('div', 'suggest-task-label', 'Suggested task'));
+    if (inp.title) card.appendChild(el('div', 'suggest-task-title', String(inp.title)));
+    const row = el('div', 'suggest-steps');
+    const here = el('button', 'btn btn-ghost', 'Do it here'); here.type = 'button';
+    here.addEventListener('click', () => { if (!inp.prompt) return; input.value = inp.prompt; input.dispatchEvent(new Event('input')); submit(); });
+    const fresh = el('button', 'btn btn-ghost', 'Start in a new session'); fresh.type = 'button';
+    fresh.addEventListener('click', async () => {
+      if (!inp.prompt) return;
+      fresh.disabled = true; here.disabled = true;
+      try { const r = await api('/sessions', { method: 'POST', body: JSON.stringify({ text: inp.prompt, cwd: state.cwd || '~' }) }); location.hash = '#/s/' + r.sessionId; }
+      catch (e) { fresh.disabled = false; here.disabled = false; toast(e.message); }
+    });
+    row.appendChild(here); row.appendChild(fresh);
+    card.appendChild(row);
+  }
+  // Dispatches a tool_use block to one of the three cards above, or a chapter divider - called
+  // from renderBlock before its generic "collapsed step" handling; true means it drew the block.
+  function renderConvTool(msg, index, block) {
+    const inp = block.input && typeof block.input === 'object' ? block.input : {};
+    if (toolNamed(block.name, 'MarkChapter')) {
+      let node = msg.blocks.get(index);
+      if (!node) { node = el('div', 'chapter-divider'); node._toolId = block.id; msg.body.appendChild(node); msg.blocks.set(index, node); msg.group = null; }
+      node.textContent = inp.title ? String(inp.title) : 'Chapter';
+      const uuid = msg.root?.dataset.uuid;
+      if (inp.title && uuid) registerChapter(uuid, String(inp.title));
+      return true;
+    }
+    if (toolNamed(block.name, 'SuggestNextSteps')) {
+      let node = msg.blocks.get(index);
+      if (!node) { node = el('div', 'suggest-card'); node._toolId = block.id; msg.body.appendChild(node); msg.blocks.set(index, node); msg.group = null; }
+      paintSuggestCard(node, inp);
+      return true;
+    }
+    if (toolNamed(block.name, 'SuggestTask')) {
+      let node = msg.blocks.get(index);
+      if (!node) { node = el('div', 'suggested-task-card'); node._toolId = block.id; msg.body.appendChild(node); msg.blocks.set(index, node); msg.group = null; }
+      paintSuggestedTaskCard(node, inp);
+      return true;
+    }
+    return false;
+  }
+
+  // The badge SetSessionStatus leaves on a sidebar row.
+  const STATUS_LABEL = { blocked: 'Blocked', ready_for_review: 'Ready for review', done: 'Done' };
+  function statusBadge(status) {
+    if (!status?.status) return null;
+    const b = el('span', 'status-badge status-' + status.status, STATUS_LABEL[status.status] || status.status);
+    if (status.note) b.title = status.note;
+    return b;
+  }
+
+  // This app's own small switches: the default Transcript view, and whether Claude's
+  // SetSessionStatus tool exists at all (lib/tools-conversation.mjs reads the same setting).
+  const TRANSCRIPT_VIEWS = [['normal', 'Normal'], ['thinking', 'Thinking'], ['verbose', 'Verbose']];
+  let convSettings = { transcriptView: 'normal', autoClassify: false };
+  async function loadConvSettings() { try { convSettings = { ...convSettings, ...(await api('/conversation/settings')) }; } catch {} }
+  function paintConvSettings() {
+    const seg = $('#set-transcript-view');
+    if (seg) {
+      seg.innerHTML = '';
+      for (const [id, name] of TRANSCRIPT_VIEWS) {
+        const b = el('button', 'set-opt' + (convSettings.transcriptView === id ? ' on' : ''), name); b.type = 'button';
+        b.addEventListener('click', async () => { convSettings.transcriptView = id; paintConvSettings(); try { await api('/conversation/settings', { method: 'POST', body: JSON.stringify({ transcriptView: id }) }); } catch {} });
+        seg.appendChild(b);
+      }
+    }
+    const wrap = $('#set-auto-classify');
+    if (wrap && !wrap.firstChild) wrap.appendChild(toggleEl(convSettings.autoClassify, async (on) => { convSettings.autoClassify = on; try { await api('/conversation/settings', { method: 'POST', body: JSON.stringify({ autoClassify: on }) }); } catch (e) { convSettings.autoClassify = !on; throw e; } }));
+    else if (wrap) { const t = wrap.firstChild; t.classList.toggle('on', convSettings.autoClassify); t.setAttribute('aria-checked', String(convSettings.autoClassify)); }
+  }
 
   // ---------- live status line (the Desktop "✱ Thinking… 12s · 1.2k tokens" row) ----------
   const VERBS = ['Thinking', 'Pondering', 'Considering', 'Working', 'Reasoning', 'Composing', 'Sketching', 'Puzzling', 'Brewing', 'Cooking', 'Musing', 'Mulling'];
@@ -2188,6 +2331,7 @@
           }
           case 'assistant': {
             const r = openRow(); let any = false;
+            if (!r.root.dataset.uuid) r.root.dataset.uuid = m.uuid; // the row's anchor for a deep link, a chapter, a pin
             m.content.forEach((b, i) => {
               if (b.type === 'thinking' || b.type === 'redacted_thinking') return;
               const key = m.uuid + ':' + i;
@@ -3518,6 +3662,7 @@
           break;
         }
         case 'tasks': state.tasks = ev.tasks || []; paintTasks(); break;
+        case 'session_status': { const srow = state.sessions.find((x) => x.id === sessionId); if (srow) srow.status = { status: ev.status, note: ev.note }; renderSessions(); break; }
         case 'note': thread.appendChild(el('div', 'note' + (ev.level === 'warning' ? ' warning' : ''), ev.text)); statusPaint(); autoscroll(); break;
         // Stop took back messages typed mid-turn: their dashed bubbles go, on every device.
         case 'unqueued': for (const id of ev.ids || []) thread.querySelector('.msg.user.queued[data-prompt-id="' + CSS.escape(id) + '"]')?.remove(); break;
@@ -3541,7 +3686,7 @@
         case 'delta': {
           const p = partial.get(ev.index); if (!p || !state.live) break;
           if (ev.kind === 'text_delta') { p.text += ev.text; renderBlock(state.live, key(ev.index), { type: 'text', text: p.text }); state.live.blocks.get(key(ev.index))?.classList.add('cursor'); }
-          else if (ev.kind === 'input_json_delta') { p.json += ev.text; const n = state.live.blocks.get(key(ev.index)); if (n) n.querySelector('.arg').textContent = p.json.slice(0, 200); }
+          else if (ev.kind === 'input_json_delta') { p.json += ev.text; const n = state.live.blocks.get(key(ev.index)); const a = n?.querySelector('.arg'); if (a) a.textContent = p.json.slice(0, 200); }
           autoscroll(); break;
         }
         case 'block_stop': {
@@ -3551,6 +3696,7 @@
         case 'assistant':
           // final blocks for the message being streamed: re-render with full data
           if (!state.live) { state.live = assistantMsg(); thread.appendChild(state.live.root); }
+          if (!state.live.root.dataset.uuid) state.live.root.dataset.uuid = ev.uuid; // the row's anchor, as historyRenderer gives it
           if (ev.tail) {
             // From the transcript file: one finished block per line, keyed by its uuid.
             ev.content.forEach((b, i) => { const s = asShown(b); if (s) renderBlock(state.live, ev.uuid + ':' + i, s); });
@@ -4088,6 +4234,7 @@
     try {
       const info = await api('/sessions/' + id);
       if (seq !== openSeq) return;
+      const chaptersReady = loadChapters(id); // raced with the history fetch below, awaited before it draws
       // A turn started here and still running is replayed by the live stream from
       // its prompt onwards, so the history stops just before it.
       // From a server that tells turns apart (`busy` comes with it), the run gives the turn under way and
@@ -4109,6 +4256,7 @@
       // A chat's own folder is where it works (the Files panel, the Browser, relative paths), but
       // it is not a folder to start the next session in: New goes back to what was picked.
       state.cwd = info.cwd || state.cwd; state.cwdIsChat = !!info.chat; renderProjectChip(); pvFollow(); $('#project-btn').classList.add('locked');
+      await chaptersReady; if (seq !== openSeq) return;
       renderHistory(messages);
       paintHistoryTop();
       // The last turn never finished (the app or the PC restarted mid-work): say so, offer to go on.
@@ -4135,6 +4283,7 @@
     openSeq++; // a session still loading must not paint over the new-chat screen
     if (state.cwdIsChat) { state.cwdIsChat = false; state.cwd = localStorage.getItem('cr.cwd') || ''; renderProjectChip(); }
     hist.id = null; hist.more = false;
+    chapters = []; registeredChapters.clear();
     state.current = null; state.live = null; state.tasks = []; hiddenTasks.clear(); paintTasks(); if (changesOpen) closeChanges(); if (filesOpen) closeFiles(); stopPrWatch(); $("#sb-pr-state").classList.add("hidden");
     if (state.es) { state.es.close(); state.es = null; }
     app.classList.remove('sidebar-open');
@@ -4211,7 +4360,7 @@
     // Opening the app is exactly when "is there a new one?" should be answered afresh:
     // a merge publishes in about eight minutes, and a stale answer reads as "nothing new".
     api('/version').then((v) => { if (!v.update?.checkedAt || Date.now() - v.update.checkedAt > 120000) return api('/update/check', { method: 'POST', body: JSON.stringify({}) }); }).then(() => checkForUpdate()).catch(() => {});
-    await Promise.all([loadSessions(), loadProjects(), loadAwake(), loadModels()]);
+    await Promise.all([loadSessions(), loadProjects(), loadAwake(), loadModels(), loadConvSettings()]);
     route();
     // First time on this device: ask which account to use (local or token).
     let chosen = false; try { chosen = !!localStorage.getItem('cr.accountChosen'); } catch {}

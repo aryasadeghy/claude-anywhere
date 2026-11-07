@@ -1015,3 +1015,31 @@ audio.lb-media { width: min(520px, 90vw); height: auto; }
 .note.warning { color: #b4691f; }
 :root[data-theme="dark"] .note.warning { color: #e3a15a; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .note.warning { color: #e3a15a; } }
+
+/* ---------- v55: plan approval, live plan box, Claude's tools, transcript view, math, masking, context menu, find ---------- */
+.menu-empty { padding: 8px 12px; font-size: 12.5px; color: var(--ink-3); max-width: 240px; white-space: normal; }
+
+/* A chapter marker in the thread: its own line, not folded into a tool group. */
+.chapter-divider { display: flex; align-items: center; gap: 10px; margin: 14px 0; font-size: 12.5px; font-weight: 600; color: var(--ink-3); }
+.chapter-divider::before, .chapter-divider::after { content: ''; flex: 1; height: 1px; background: var(--line-2); }
+
+/* SuggestNextSteps: a short recap and buttons for what to send next. */
+.suggest-card { margin-top: 8px; }
+.suggest-card .suggest-recap { color: var(--ink-2); }
+.suggest-steps { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.suggest-step { font-size: 13px; }
+
+/* SuggestTask: its own card, so it reads as an offer rather than part of the answer. */
+.suggested-task-card { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--line-2); border-radius: 10px; background: var(--bg-2); }
+.suggest-task-label { font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; color: var(--ink-3); }
+.suggest-task-title { margin-top: 2px; font-size: 13.5px; }
+
+/* The badge SetSessionStatus leaves on a sidebar row. */
+.status-badge { flex: none; margin-inline-start: 6px; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+.status-badge.status-blocked { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger); }
+.status-badge.status-ready_for_review { background: color-mix(in srgb, #3b82f6 16%, transparent); color: #3b82f6; }
+.status-badge.status-done { background: color-mix(in srgb, var(--success) 18%, transparent); color: var(--success); }
+
+/* A deep link, a chapter, or an older find hit lands here: a brief highlight, not a permanent mark. */
+.jump-flash { animation: jump-flash-kf 2.2s ease-out; }
+@keyframes jump-flash-kf { 0% { background: color-mix(in srgb, var(--accent) 22%, transparent); } 100% { background: transparent; } }
