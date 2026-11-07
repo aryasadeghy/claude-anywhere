@@ -1006,3 +1006,12 @@ audio.lb-media { width: min(520px, 90vw); height: auto; }
 .fx-table { border-collapse: collapse; font-size: 12.5px; }
 .fx-table th, .fx-table td { border: 1px solid var(--line-2); padding: 4px 8px; text-align: start; white-space: nowrap; max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
 .fx-table th { background: var(--bg-2); font-weight: 600; position: sticky; top: 0; }
+
+/* ---------- v53: Fast mode in the model menu, and notices that are warnings ---------- */
+.menu-item.menu-switch { display: grid; grid-template-columns: 1fr auto; column-gap: 12px; align-items: center; padding-inline-end: 10px; cursor: default; }
+.menu-item.menu-switch .menu-label { grid-column: 1; }
+.menu-item.menu-switch .desc { grid-column: 1; max-width: 270px; }
+.menu-item.menu-switch .toggle { grid-column: 2; grid-row: 1 / span 2; }
+.note.warning { color: #b4691f; }
+:root[data-theme="dark"] .note.warning { color: #e3a15a; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .note.warning { color: #e3a15a; } }

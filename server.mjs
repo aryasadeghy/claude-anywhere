@@ -858,7 +858,7 @@ function reachableAt() {
   const rank = (k) => (k === 'tailscale' ? 0 : k === 'lan' ? 1 : 2);
   return out.sort((a, b) => rank(a.kind) - rank(b.kind));
 }
-app.get('/api/me', (_req, res) => res.json({ version: appVersion, userName: USER_NAME, host: process.env.COMPUTERNAME || process.env.HOSTNAME || 'this machine', account: whoAmI(), active: activeAccount(), hasToken: getAuth().hasToken, port: PORT, listensEverywhere: HOST === '0.0.0.0' || HOST === '::', passwordRequired: access.passwordRequired(), passwordSource: access.source(), addresses: reachableAt() }));
+app.get('/api/me', (_req, res) => res.json({ version: appVersion, userName: USER_NAME, host: process.env.COMPUTERNAME || process.env.HOSTNAME || 'this machine', account: whoAmI(), active: activeAccount(), hasToken: getAuth().hasToken, port: PORT, listensEverywhere: HOST === '0.0.0.0' || HOST === '::', passwordRequired: access.passwordRequired(), passwordSource: access.source(), addresses: reachableAt(), credentialExpiresAt: activeAccount() === 'local' ? runsMod.credentialExpiresAt : null }));
 
 // ---------- remote access: the password, the signed-in devices, the failed attempts ----------
 app.get('/api/access', (req, res) => res.json({ source: access.source(), minLength: access.MIN_PASSWORD, listensEverywhere: HOST === '0.0.0.0' || HOST === '::', remoteOpen: access.remoteAllowed(), fromApp: access.isAppKey(bearer(req)), devices: access.devices(bearer(req)), failures: access.failures() }));
@@ -993,7 +993,8 @@ function sessionSettings(id) {
       }
     }
   } catch {}
-  return { model: saved.model || model || '', permissionMode: saved.permissionMode || mode || '', effort: saved.effort ?? '' };
+  // Ultracode and Fast mode are remembered per session too; Ultracode was saved and never read back.
+  return { model: saved.model || model || '', permissionMode: saved.permissionMode || mode || '', effort: saved.effort ?? '', ultracode: !!saved.ultracode, ...(saved.fast !== undefined ? { fast: !!saved.fast } : {}) };
 }
 // The newest model and mode in bytes [from, to) of a transcript, a few MB at a time from the
 // end, stopping once both are found - prompt lines (the mode) are rare in a long transcript,
@@ -1063,7 +1064,7 @@ app.get('/api/sessions/:id', async (req, res, next) => {
 app.post('/api/sessions/:id/prefs', (req, res) => {
   const p = readPrefs(); p.sessionPrefs = p.sessionPrefs || {};
   const cur = p.sessionPrefs[req.params.id] || {};
-  for (const k of ['model', 'permissionMode', 'effort', 'ultracode']) if (req.body?.[k] !== undefined) cur[k] = req.body[k];
+  for (const k of ['model', 'permissionMode', 'effort', 'ultracode', 'fast']) if (req.body?.[k] !== undefined) cur[k] = req.body[k];
   p.sessionPrefs[req.params.id] = cur; writePrefs(p);
   res.json(cur);
 });
@@ -1117,8 +1118,8 @@ app.post('/api/sessions/:id/send', async (req, res, next) => {
     if (isLive(id)) { const qid = runs.get(id).enqueue(prompt, images, cid || undefined); if (qid) return res.json({ queued: true, id: qid, sessionId: id }); }
     const info = await getSessionInfo(id);
     if (!info) return res.status(404).json({ error: 'Session not found' });
-    const { model, permissionMode, effort } = req.body || {};
-    const { run } = startRun({ sessionId: id, cwd: info.cwd, prompt, images, model, permissionMode, effort, disabledMcp: readPrefs().disabledMcp || [], promptId: cid });
+    const { model, permissionMode, effort, ultracode, fast } = req.body || {};
+    const { run } = startRun({ sessionId: id, cwd: info.cwd, prompt, images, model, permissionMode, effort, ultracode, fast, disabledMcp: readPrefs().disabledMcp || [], promptId: cid });
     joinRun(id, run); // other devices with this session open watch the turn as it streams
     res.json({ runId: run.id, sessionId: id, id: cid });
   } catch (e) { next(e); }
@@ -1130,8 +1131,8 @@ app.post('/api/sessions/:id/controls', async (req, res, next) => {
   try {
     const run = runs.get(req.params.id);
     if (!run || run.done) return res.json({ applied: {}, live: false });
-    const { permissionMode, model, effort, ultracode } = req.body || {};
-    res.json({ applied: await run.setControls({ permissionMode, model, effort, ultracode }), live: true });
+    const { permissionMode, model, effort, ultracode, fast } = req.body || {};
+    res.json({ applied: await run.setControls({ permissionMode, model, effort, ultracode, fast }), live: true });
   } catch (e) { next(e); }
 });
 
@@ -1143,12 +1144,12 @@ app.post('/api/sessions', async (req, res) => {
   // left lying in it - a page, a CSV, a script - mixed with the person's own files and with
   // no way to tell which chat it came from. The id is chosen here and handed to the SDK, so
   // the folder and the session are the same name.
+  if (!prompt && !images.length) return res.status(400).json({ error: 'Empty message' });
   let newId;
   if (!cwd || cwd === '~') { newId = randomUUID(); cwd = path.join(CHATS_DIR, newId); fs.mkdirSync(cwd, { recursive: true }); }
-  if (!prompt && !images.length) return res.status(400).json({ error: 'Empty message' });
   if (!fs.existsSync(cwd)) return res.status(400).json({ error: 'That folder does not exist on this machine.' });
-  const { model, permissionMode, effort } = req.body || {};
-  const { run, ready } = startRun({ newId, cwd, prompt, images, model, permissionMode, effort, disabledMcp: readPrefs().disabledMcp || [], promptId: clientId(req.body?.cid) });
+  const { model, permissionMode, effort, ultracode, fast } = req.body || {};
+  const { run, ready } = startRun({ newId, cwd, prompt, images, model, permissionMode, effort, ultracode, fast, disabledMcp: readPrefs().disabledMcp || [], promptId: clientId(req.body?.cid) });
   try {
     const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('Claude Code did not start in time')), 60000));
     const sessionId = await Promise.race([ready, timeout]);
@@ -1158,10 +1159,11 @@ app.post('/api/sessions', async (req, res) => {
   }
 });
 
-app.post('/api/sessions/:id/stop', (req, res) => {
+app.post('/api/sessions/:id/stop', async (req, res) => {
   const run = runs.get(req.params.id);
-  if (run && !run.done) run.stop();
-  res.json({ ok: true });
+  // An interrupt Claude Code never answers must not hold the button: the turn is stopped either way.
+  const taken = run && !run.done ? await Promise.race([run.stop(), new Promise((r) => setTimeout(() => r([]), 3000))]) : [];
+  res.json({ ok: true, unqueued: (taken || []).map((x) => ({ id: x.id, text: x.text })) });
 });
 
 // Tasks: the commands, subagents and workflows a live turn is running (Desktop's tasks panel).

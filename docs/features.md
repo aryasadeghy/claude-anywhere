@@ -112,7 +112,8 @@ AskUserQuestion" with nothing to read and an Allow button.
 
 It is now shown as what it is: the question, each option with its description as a
 button, and a box underneath for an answer that is not on the list. Several questions
-at once and multi-select both work. **Skip** declines the question. What you choose
+at once and multi-select both work. **Skip** leaves it unanswered — Claude is told it was
+skipped, not refused, and goes on — and writing in the chat while it is open answers it there. What you choose
 travels back on the tool’s own `answers` field, so Claude receives the answer rather
 than mere permission to ask.
 
@@ -150,10 +151,15 @@ options up invites a second answer that nothing is listening for.
   answered and has a **Refresh** that asks again while you watch, and a daily job opens
   a pull request whenever the package that carries the CLI moves — so the app catches
   up without anyone having to notice it was behind.
+- **Fast mode** is a switch at the foot of the model menu, for a model that offers it
+  (Opus 5.5): the same intelligence with significantly faster output, billed via usage
+  credits. The chip says *Fast* while it is on. When Claude Code cannot serve it - no usage
+  credits, a provider in between, an organisation that has it off - the chat says why.
 - Permission prompts appear as a card with **Allow**, **Allow always** and
   **Deny**, answerable from the phone.
 - The composer's stop button ends the turn. Background work is not killed by
-  it — each task has its own Stop.
+  it — each task has its own Stop. A message typed mid-turn that Claude had not read yet
+  comes back into the box rather than running after the Stop.
 
 ## Tasks
 
@@ -467,7 +473,6 @@ actual word wins over scattered letters, and scattered letters still work:
 Honest gaps against Claude Desktop's Code tab, roughly in the order they are
 worth doing:
 
-- Fast mode.
 - Preview tools for Claude itself: reading the previewed page's console,
   network errors and DOM, the way Claude Desktop's `preview_*` tools do.
 - A terminal pane, and split view.

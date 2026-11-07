@@ -497,6 +497,8 @@
   async function refreshMe() {
     const me = await api('/me');
     state.userName = me.userName; state.host = me.host;
+    state.signInEnds = Date.parse(me.credentialExpiresAt || '') || 0;
+    if (typeof paintLimitBanner === 'function') try { paintLimitBanner(); } catch {}
     const acc = me.account || {};
     $('#sidebar-name').textContent = me.userName;
     $('#sidebar-account').innerHTML = '';
@@ -1131,7 +1133,11 @@
   state.model = localStorage.getItem('cr.model') || MODELS[0].value;
   state.effort = localStorage.getItem('cr.effort') || '';
   state.ultracode = !!localStorage.getItem('cr.ultracode');
+  state.fast = !!localStorage.getItem('cr.fast');
   state.mode = localStorage.getItem('cr.mode') || 'default';
+  // Fast mode is the model's to offer (Opus 5.5 does), and a switch of its own in the model menu.
+  const fastFor = (id) => !!modelRow(id)?.supportsFastMode;
+  const FAST_ABOUT = 'Fast mode has the same intelligence with significantly faster output. It uses more credits and is billed via usage credits.';
 
   // A saved `claude-sonnet-5` is the wire id of the CLI's `sonnet` row; the CLI wants
   // its own value back, so the answer is also a migration of what this device saved.
@@ -1169,7 +1175,7 @@
     const name = (modelRow(state.model)?.displayName || 'Model').replace(/\s*\([^)]*\)\s*$/, '');
     // The effort only when the model has levels and this is not its default one.
     const shown = effortsFor(state.model).includes(state.effort) && state.effort !== DEFAULT_EFFORT ? state.effort : '';
-    $('#model-label').textContent = name + (shown ? ' · ' + (EFFORT_NAMES[shown] || shown) : '');
+    $('#model-label').textContent = name + (shown ? ' · ' + (EFFORT_NAMES[shown] || shown) : '') + (state.fast && fastFor(state.model) ? ' · Fast' : '');
   }
   function renderModeChip() { $('#mode-name').textContent = (MODES.find((x) => x.id === state.mode) || MODES[0]).name; }
   // Model, mode and effort belong to the session, like Desktop: a change is remembered for
@@ -1190,12 +1196,14 @@
     if (s.permissionMode && MODES.some((m) => m.id === s.permissionMode)) state.mode = s.permissionMode;
     state.effort = s.effort || '';
     state.ultracode = !!s.ultracode;
+    if (s.fast !== undefined) state.fast = !!s.fast;
     renderModelChip(); renderModeChip(); renderEffortChip();
   }
   function restoreDeviceDefaults() {
     state.model = modelRow(localStorage.getItem('cr.model')).value;
     state.effort = localStorage.getItem('cr.effort') || '';
     state.ultracode = !!localStorage.getItem('cr.ultracode');
+    state.fast = !!localStorage.getItem('cr.fast');
     state.mode = localStorage.getItem('cr.mode') || 'default';
     renderModelChip(); renderModeChip(); renderEffortChip();
   }
@@ -1215,8 +1223,18 @@
       const patch = { model: x.value };
       if (state.effort && !effortsFor(x.value).includes(state.effort)) { state.effort = ''; localStorage.removeItem('cr.effort'); patch.effort = ''; }
       if (state.ultracode && !effortStops(x.value).includes('ultracode')) { state.ultracode = false; localStorage.removeItem('cr.ultracode'); patch.ultracode = false; }
+      if (state.fast && !fastFor(x.value)) { state.fast = false; localStorage.removeItem('cr.fast'); patch.fast = false; }
       renderModelChip(); renderEffortChip(); m.classList.add('hidden'); pushControls(patch);
     }, { hint: x.value === state.model ? '' : String(i + 1), tag: x.discount ? '−' + x.discount + '%' : '' })))));
+    if (fastFor(state.model)) {
+      m.appendChild(el('div', 'menu-sep'));
+      const row = el('div', 'menu-item menu-switch'); row.title = FAST_ABOUT;
+      const t = el('span', 'menu-label'); t.appendChild(document.createTextNode('Fast mode')); row.appendChild(t);
+      row.appendChild(el('span', 'desc', FAST_ABOUT));
+      const sw = toggleEl(state.fast, async (on) => { state.fast = on; try { if (on) localStorage.setItem('cr.fast', '1'); else localStorage.removeItem('cr.fast'); } catch {} renderModelChip(); await pushControls({ fast: on }); });
+      sw.setAttribute('aria-label', 'Toggle fast mode'); row.appendChild(sw);
+      m.appendChild(row);
+    }
     // Where the list came from, and how to ask again. A model can arrive between two
     // page loads — Claude publishes it, and the CLI offers it as soon as it is new
     // enough — so opening the menu is itself a reason to re-ask.
@@ -1350,7 +1368,7 @@
     }
   });
   renderModelChip(); renderModeChip();
-  const turnOptions = () => ({ model: state.model, permissionMode: state.mode, ...(state.effort ? { effort: state.effort } : {}), ...(state.ultracode ? { ultracode: true } : {}) });
+  const turnOptions = () => ({ model: state.model, permissionMode: state.mode, ...(state.effort ? { effort: state.effort } : {}), ...(state.ultracode ? { ultracode: true } : {}), ...(state.fast && fastFor(state.model) ? { fast: true } : {}) });
 
   // ---------- session bar (project · branch · +added −removed · Create PR), session ⋮ menu, usage popover ----------
   async function refreshGit() {
@@ -1744,6 +1762,16 @@
     const L = usage.limits?.rate_limits; const bar = $('#limit-banner');
     let worst = null;
     if (L) for (const [name, lim] of [['weekly', L.seven_day], ['5-hour', L.five_hour], ...((L.model_scoped || []).map((m) => [m.display_name, m]))]) { if (!lim || lim.utilization == null) continue; const u = lim.utilization * (lim.utilization <= 1 ? 100 : 1); if (u >= 85 && (!worst || u > worst.u)) worst = { name, u, resets: lim.resets_at }; }
+    // With no limit to warn about, the same strip says when this computer's Claude sign-in ends -
+    // three days ahead, because renewing it takes the computer itself (claude login), not a phone.
+    const ends = state.signInEnds, soon = ends && ends - Date.now() < 3 * 86400000;
+    if (!worst && soon && sessionStorage.getItem('cr.limitDismissed') !== 'signin:' + ends) {
+      bar.classList.remove('hidden');
+      $('#lb-text').textContent = ends <= Date.now() ? 'The Claude sign-in on this computer has probably ended' : 'The Claude sign-in on this computer ends ' + new Date(ends).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+      $('#lb-resets').textContent = 'Sign in again there with claude login';
+      $('#lb-close').onclick = () => { try { sessionStorage.setItem('cr.limitDismissed', 'signin:' + ends); } catch {} bar.classList.add('hidden'); };
+      return;
+    }
     if (!worst || sessionStorage.getItem('cr.limitDismissed') === String(worst.resets)) { bar.classList.add('hidden'); return; }
     bar.classList.remove('hidden');
     $('#lb-text').textContent = (worst.u >= 100 ? 'Reached ' : 'Approaching ') + worst.name + ' usage limit';
@@ -3474,10 +3502,11 @@
         }
         case 'init':
           mode = 'run'; setRunning(true);
-          if (ev.controls) { if (ev.controls.permissionMode) state.mode = ev.controls.permissionMode; if (ev.controls.model) state.model = ev.controls.model; state.effort = ev.controls.effort || ''; if (ev.controls.ultracode !== undefined) state.ultracode = !!ev.controls.ultracode; renderModeChip(); renderModelChip(); renderEffortChip(); }
+          if (ev.controls) { if (ev.controls.permissionMode) state.mode = ev.controls.permissionMode; if (ev.controls.model) state.model = ev.controls.model; state.effort = ev.controls.effort || ''; if (ev.controls.ultracode !== undefined) state.ultracode = !!ev.controls.ultracode; if (ev.controls.fast !== undefined) state.fast = !!ev.controls.fast; renderModeChip(); renderModelChip(); renderEffortChip(); }
+          fastNote(ev.fast);
           break;
         case 'controls':
-          if (ev.permissionMode) state.mode = ev.permissionMode; if (ev.model) state.model = ev.model; if (ev.effort !== undefined) state.effort = ev.effort; if (ev.ultracode !== undefined) state.ultracode = !!ev.ultracode;
+          if (ev.permissionMode) state.mode = ev.permissionMode; if (ev.model) state.model = ev.model; if (ev.effort !== undefined) state.effort = ev.effort; if (ev.ultracode !== undefined) state.ultracode = !!ev.ultracode; if (ev.fast !== undefined) state.fast = !!ev.fast;
           renderModeChip(); renderModelChip(); break;
         case 'status': if (ev.permissionMode) { state.mode = ev.permissionMode; renderModeChip(); } break;
         case 'context': usage.context = ev; paintUsage(); break;
@@ -3489,7 +3518,11 @@
           break;
         }
         case 'tasks': state.tasks = ev.tasks || []; paintTasks(); break;
-        case 'note': thread.appendChild(el('div', 'note', ev.text)); statusPaint(); break;
+        case 'note': thread.appendChild(el('div', 'note' + (ev.level === 'warning' ? ' warning' : ''), ev.text)); statusPaint(); autoscroll(); break;
+        // Stop took back messages typed mid-turn: their dashed bubbles go, on every device.
+        case 'unqueued': for (const id of ev.ids || []) thread.querySelector('.msg.user.queued[data-prompt-id="' + CSS.escape(id) + '"]')?.remove(); break;
+        // /clear: Claude Code goes on in a new session, and the page goes with it.
+        case 'reset': if (state.current === sessionId && ev.sessionId) { es.close(); location.hash = '#/s/' + ev.sessionId; loadSessions().catch(() => {}); } break;
         // One assistant row for the whole turn; each API message gets its own key space.
         case 'msg_start':
           msgNo += 1; partial.clear();
@@ -3537,9 +3570,11 @@
           status.tool = null; status.toolSince = 0; statusPaint();
           autoscroll(); break;
         case 'permission': showPermission(ev); status.waiting = true; statusPaint(); autoscroll(); break;
-        case 'permission_resolved': resolvePermissionCard(ev.reqId, ev.behavior); status.waiting = false; statusPaint(); break;
+        case 'permission_resolved': resolvePermissionCard(ev.reqId, ev.behavior, ev.how); status.waiting = false; statusPaint(); break;
         case 'result':
-          if (ev.isError) authNote(ev.text);
+          // A turn stopped from here is an error result too: the Stop was the point, not a failure.
+          if (ev.isError && !ev.stopped) authNote(ev.text, ev.startupFailure);
+          fastNote(ev.fast);
           if (state.live) addActions(state.live, Date.now());
           state.live = null; refreshGit();
           // The answer is done. Unless another turn is already queued behind it, the composer
@@ -3566,8 +3601,14 @@
     es.onerror = () => { /* EventSource retries by itself with Last-Event-ID */ };
   }
   // An error that smells like a dead token gets a button straight to the account dialog.
-  function authNote(text) {
+  // A Claude Code too old for what the session needs gets the way to a newer one.
+  function authNote(text, startupFailure) {
     const n = el('div', 'note error', text || 'Something went wrong.');
+    if (startupFailure === 'cli_version_too_old') {
+      n.appendChild(document.createTextNode(' '));
+      const b = el('button', 'link-btn inline', 'Update Claude Code'); b.type = 'button';
+      b.addEventListener('click', () => openSettings('general')); n.appendChild(b);
+    }
     if (/401|invalid|expired|authenticat|not logged in|api key|oauth/i.test(text || '')) {
       n.appendChild(document.createTextNode(' '));
       const b = el('button', 'link-btn inline', 'Update token or switch account'); b.type = 'button';
@@ -3581,6 +3622,25 @@
     const live = state.live?.tools.get(id); if (live) return live;
     for (const d of thread.querySelectorAll('details.step.tool')) if (d._toolId === id) return d;
     return null;
+  }
+  // Fast mode was asked for and cannot serve: say why once, in Claude's words, rather than let
+  // the chip claim a speed the turn did not get.
+  const FAST_WHY = {
+    extra_usage_disabled: 'Fast mode requires usage credits. Turn them on under Usage.',
+    free: 'Fast mode requires usage credits. Turn them on under Usage.',
+    not_first_party: 'Fast mode is only available when using the Anthropic API directly.',
+    model_not_allowed: 'Fast mode isn’t available for your organization at this time.',
+    preference: 'Fast mode isn’t available for your organization at this time.',
+    disabled_by_env: 'Fast mode is not available.',
+    network_error: 'Fast mode couldn’t be applied. You can try again.',
+    unknown: 'Fast mode couldn’t be applied. You can try again.',
+  };
+  let fastSaid = '';
+  function fastNote(f) {
+    if (!f || !state.fast || f.state === 'on') { if (f?.state === 'on') fastSaid = ''; return; }
+    const why = f.state === 'cooldown' ? 'Fast mode is paused after a rate limit and comes back on by itself.' : FAST_WHY[f.reason];
+    if (!why || fastSaid === why) return;
+    fastSaid = why; thread.appendChild(el('div', 'note warning', why)); autoscroll();
   }
   function prettyModel(m) {
     if (!m) return 'Claude';
@@ -3641,7 +3701,7 @@
     // Once it is answered it is not a form any more: the options go and what you chose
     // stays under its question, the way the answer reads back in Claude Code itself.
     // Leaving the buttons there invites a second answer that nothing is listening for.
-    card.collapse = (answers, behavior) => {
+    card.collapse = (answers, behavior, how) => {
       if (card.classList.contains('answered')) return;
       card.classList.add('answered');
       head.lastChild.textContent = behavior === 'deny' ? 'Claude asked' : qs.length === 1 ? 'You answered' : 'You answered ' + qs.length + ' things';
@@ -3651,7 +3711,7 @@
         const given = answers && answers[q.question];
         const line = el('div', 'q-answer' + (given ? '' : ' none'));
         line.dir = 'auto';
-        line.textContent = given || (behavior === 'deny' ? 'Skipped' : 'Answered');
+        line.textContent = given || (how === 'replied_in_chat' ? 'Answered in the chat' : behavior === 'deny' ? 'Skipped' : 'Answered');
         wrap.appendChild(line);
       }
       actions.remove();
@@ -3700,10 +3760,10 @@
     }));
     thread.appendChild(t);
   }
-  function resolvePermissionCard(reqId, behavior) {
+  function resolvePermissionCard(reqId, behavior, how) {
     const card = thread.querySelector(`.permission[data-req-id="${reqId}"]`); if (!card) return;
     // Answered here, or on another device: either way it stops being a form.
-    if (card.collapse) return card.collapse(null, behavior);
+    if (card.collapse) return card.collapse(null, behavior, how);
     card.querySelector('.permission-actions').remove();
     const r = card.querySelector('.perm-result');
     const asked = card.classList.contains('question-card');
@@ -3860,7 +3920,12 @@
       if (state.current) subscribe(state.current); // back to following the session
     }
   }
-  async function stop() { if (state.current) await api(`/sessions/${state.current}/stop`, { method: 'POST' }); }
+  async function stop() {
+    if (!state.current) return;
+    const r = await api(`/sessions/${state.current}/stop`, { method: 'POST' });
+    const back = (r?.unqueued || []).map((x) => x.text).filter(Boolean);
+    if (back.length && !input.value.trim()) { input.value = back.join('\n\n'); input.dispatchEvent(new Event('input')); }
+  }
 
   // ---------- the sidebar and the right-hand panels drag wider or narrower ----------
   // The width goes into a CSS variable on <html>, so the stylesheet's phone rules keep

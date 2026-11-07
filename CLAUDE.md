@@ -170,6 +170,14 @@ await page.goto('http://127.0.0.1:7779/');
   leaving with the app, removing a worktree, the sidebar's dot) means `busy`. A resting
   process another window has written past is closed, never fed: it no longer knows the
   conversation.
+- **An SDK session's background commands have a deadline.** Since 2.1.285 Claude Code stops a
+  background Bash/PowerShell command at its `timeout` (30 min unless Claude asks: "stopped
+  after reaching its background time limit") unless the entrypoint is Desktop's or VS Code's;
+  there is no switch for other hosts. `lib/runs.mjs` raises the ceiling (`BASH_MAX_TIMEOUT_MS`)
+  so Claude can ask for a day. A dev server that dies at 30 minutes is this, not the proxy.
+- **A newer CLI behaviour is announced in `init`'s `capabilities`** (`interrupt_cancel_queued_v1`,
+  `ask_user_question_unanswered_v1`, …). Use one only where it is listed: an older CLI refuses
+  the whole answer that carries a field it does not know.
 - **A message's id is the page's.** The page draws its bubble under an id it made and sends
   it along; the server uses it for the `queued` and `prompt` events, and the CLI keeps it as
   the transcript line's uuid. Find a bubble by id, never by its words: matching dashed
