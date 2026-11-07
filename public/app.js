@@ -2065,26 +2065,18 @@
     }
     if (text) b.appendChild(el('div', 'msg-text', text));
     m.appendChild(b);
-    if (queued) m.appendChild(el('div', 'queued-label', 'Queued · Claude reads it after the current step'));
+    // A queued (dashed) bubble gets Desktop's row menu - Edit in composer / Send now / Remove -
+    // plus a drag handle once there are several (queueRowActions, below).
+    if (queued) { m.appendChild(el('div', 'queued-label', 'Queued · Claude reads it after the current step')); queueRowActions(m); }
     if (uuid && !queued) {
       // Rewind: a new session that stops just before this message, with the message back in the composer to change and resend.
       const row = el('div', 'msg-actions user-actions');
       const rw = el('button'); rw.type = 'button'; rw.title = 'Rewind to here'; rw.className = 'rewind';
       rw.innerHTML = '<svg viewBox="0 0 20 20" width="15" height="15"><path d="M4 10a6 6 0 1 1 1.8 4.3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M4 6v4h4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Rewind to here</span>';
-      rw.addEventListener('click', () => rewindTo(uuid, text));
+      rw.addEventListener('click', () => openRewindDialog(uuid, text));
       row.appendChild(rw); m.appendChild(row);
     }
     return m;
-  }
-  async function rewindTo(uuid, text) {
-    if (!state.current) return;
-    try {
-      const r = await api(`/sessions/${state.current}/rewind`, { method: 'POST', body: JSON.stringify({ uuid }) });
-      pendingPrefill = text || '';
-      await loadSessions();
-      if (r.sessionId) location.hash = '#/s/' + r.sessionId;
-      else { if (r.cwd) { state.cwd = r.cwd; localStorage.setItem('cr.cwd', r.cwd); } location.hash = '#/'; }
-    } catch (e) { toast(e.message); }
   }
   let pendingPrefill = '';
   async function markRead(id) { try { await api(`/sessions/${id}/read`, { method: 'POST' }); const s = state.sessions.find((x) => x.id === id); if (s && (s.unread || s.failed)) { s.unread = false; s.failed = false; renderSessions(); } } catch {} }
@@ -3486,20 +3478,23 @@
         }
         case 'queued': {
           const mine = bubbleFor(ev);
-          if (mine) { mine.dataset.promptId = ev.id; delete mine.dataset.pending; break; }
-          thread.appendChild(userMsg(ev.text, { queued: true, id: ev.id })); autoscroll(); break;
+          if (mine) { mine.dataset.promptId = ev.id; delete mine.dataset.pending; restackQueue(); break; }
+          thread.appendChild(userMsg(ev.text, { queued: true, id: ev.id })); autoscroll(); restackQueue(); break;
         }
         case 'prompt': {
           state.live = null;
           const q = bubbleFor(ev);
-          if (q) { q.classList.remove('queued'); q.querySelector('.queued-label')?.remove(); if (ev.id) q.dataset.promptId = ev.id; delete q.dataset.pending; }
+          if (q) { q.classList.remove('queued'); q.querySelector('.queued-label')?.remove(); q.querySelector('.queue-row-actions')?.remove(); q.draggable = false; if (ev.id) q.dataset.promptId = ev.id; delete q.dataset.pending; }
           else thread.appendChild(userMsg(ev.text, { id: ev.id, images: ev.images || [] }));
+          restackQueue();
           // A prompt being taken up is a turn starting - including a queued message that runs
           // after only a background task was left, when the composer had gone idle. Relight it.
           if (!replaying) { status.startedAt = ev.at || Date.now(); setAnswering(true); }
           else if (ev.at) { status.startedAt = ev.at; if (state.answering) statusStart(); }
           autoscroll(); break;
         }
+        // Drag-to-reorder: the ids keep their bubbles, only the order changes.
+        case 'reordered': reorderBubbles(ev.ids || []); break;
         case 'init':
           mode = 'run'; setRunning(true);
           if (ev.controls) { if (ev.controls.permissionMode) state.mode = ev.controls.permissionMode; if (ev.controls.model) state.model = ev.controls.model; state.effort = ev.controls.effort || ''; if (ev.controls.ultracode !== undefined) state.ultracode = !!ev.controls.ultracode; if (ev.controls.fast !== undefined) state.fast = !!ev.controls.fast; renderModeChip(); renderModelChip(); renderEffortChip(); }
@@ -3522,8 +3517,12 @@
         // session, say). Replace, as its own doc comment says to - never merged edge by edge.
         case 'commands': slashCommands = ev.commands || []; if (cpopMode === 'slash') openSlashMenu(cpopTrigger?.query || ''); break;
         case 'note': thread.appendChild(el('div', 'note' + (ev.level === 'warning' ? ' warning' : ''), ev.text)); statusPaint(); autoscroll(); break;
-        // Stop took back messages typed mid-turn: their dashed bubbles go, on every device.
-        case 'unqueued': for (const id of ev.ids || []) thread.querySelector('.msg.user.queued[data-prompt-id="' + CSS.escape(id) + '"]')?.remove(); break;
+        // Stop took back messages typed mid-turn (or Remove took one out): its dashed bubble goes, on every device.
+        case 'unqueued': for (const id of ev.ids || []) thread.querySelector('.msg.user.queued[data-prompt-id="' + CSS.escape(id) + '"]')?.remove(); restackQueue(); break;
+        // A plan limit was just hit: the usage popover's own numbers are stale until the next
+        // post-turn refresh, so ask for them now - this is also what flips the composer over to
+        // holding messages above it instead of sending them straight through.
+        case 'rate_limit': if (ev.status === 'rejected' && state.current) api(`/sessions/${state.current}/usage`).then((u) => { usage.context = u.context || usage.context; usage.limits = u.limits || usage.limits; paintUsage(); }).catch(() => {}); break;
         // /clear: Claude Code goes on in a new session, and the page goes with it. Only the page on
         // the old session moves: the new session's stream replays this same event while the /clear
         // turn is still under way, and acting on it there closed the stream it had just opened.
@@ -4322,6 +4321,9 @@
     try {
       if (state.current) {
         const r = await api(`/sessions/${state.current}/send`, { method: 'POST', body: JSON.stringify({ ...body, ...turnOptions() }) });
+        // A usage limit was already known to be hit: it waits above the composer instead - not a
+        // message in the thread, since Claude has not seen it (onHeldSend, below).
+        if (r.held) { mine.remove(); setRunning(false); onHeldSend(r); return; }
         if (r.id && r.id !== cid) mine.dataset.promptId = r.id;
         subscribe(state.current, { fromTurn: true }); // the turn from its prompt - this bubble, found by its id
       } else {
@@ -4346,6 +4348,244 @@
     const back = (r?.unqueued || []).map((x) => x.text).filter(Boolean);
     if (back.length && !input.value.trim()) { input.value = back.join('\n\n'); input.dispatchEvent(new Event('input')); }
   }
+
+  // ---------- queued message controls, the usage-limit queue, rewind that restores files, and automatic resume ----------
+  // House rule (CLAUDE.md): a message typed mid-turn is still yielded into Claude Code the instant
+  // it is typed - "steer" stays the default. Everything here only changes what can be done to a
+  // message AFTER it is already there, waiting its turn, or to files after Claude has changed them.
+  let lastEscAt = 0;
+  const autoResumed = new Set(); // 'sessionId:at' already auto-resumed this page load - never twice for the same interruption
+  const CONTINUE_TEXT = 'Continue where you left off. Check what was already done before redoing anything, then finish the task.';
+
+  // ---- queued message controls: Edit in composer / Send now / Remove (row menu + right-click),
+  // drag to reorder, and several collapse into a stack ----
+  const queueCtxMenu = el('div', 'menu hidden'); queueCtxMenu.id = 'queue-ctx-menu'; document.body.appendChild(queueCtxMenu);
+  document.addEventListener('click', (e) => { if (!queueCtxMenu.contains(e.target)) queueCtxMenu.classList.add('hidden'); });
+  const queueMsgText = (bubble) => bubble.querySelector('.msg-text')?.textContent || '';
+  async function removeQueuedMsg(bubble) {
+    const id = bubble.dataset.promptId; if (!id || !state.current) return;
+    if (!confirm('Discard queued message?\n\nCancelling a queued message no longer interrupts the turn in progress.')) return;
+    try {
+      const r = await api(`/sessions/${state.current}/queue/${id}/remove`, { method: 'POST' });
+      if (!r.ok) return toast('That message already started.');
+      bubble.remove(); restackQueue();
+    } catch (e) { toast(e.message); }
+  }
+  async function sendQueuedNow(bubble) {
+    const id = bubble.dataset.promptId; if (!id || !state.current) return;
+    try { await api(`/sessions/${state.current}/queue/${id}/send-now`, { method: 'POST' }); } catch (e) { toast(e.message); }
+  }
+  async function editQueuedInComposer(bubble) {
+    const id = bubble.dataset.promptId; if (!id || !state.current) return;
+    const text = queueMsgText(bubble);
+    try {
+      const r = await api(`/sessions/${state.current}/queue/${id}/remove`, { method: 'POST' });
+      if (!r.ok) return toast('That message already started.');
+      bubble.remove(); restackQueue();
+      input.value = text; input.dispatchEvent(new Event('input')); input.focus();
+    } catch (e) { toast(e.message); }
+  }
+  function showQueueMenu(bubble, x, y) {
+    queueCtxMenu.innerHTML = '';
+    const add = (label, fn) => queueCtxMenu.appendChild(item(label, '', false, () => { queueCtxMenu.classList.add('hidden'); fn(); }));
+    add('Edit in composer', () => editQueuedInComposer(bubble));
+    add('Send now', () => sendQueuedNow(bubble));
+    add('Remove', () => removeQueuedMsg(bubble));
+    queueCtxMenu.classList.remove('hidden');
+    if (window.matchMedia('(max-width: 860px)').matches) { queueCtxMenu.style.left = queueCtxMenu.style.top = ''; return; } // a bottom sheet there, like #ctx-menu
+    const r = queueCtxMenu.getBoundingClientRect();
+    queueCtxMenu.style.left = Math.min(x, window.innerWidth - r.width - 8) + 'px';
+    queueCtxMenu.style.top = Math.min(y, window.innerHeight - r.height - 8) + 'px';
+  }
+  // Added to every queued bubble (userMsg, above): the row menu button, right-click, and a drag
+  // handle - the last harmless with only one message in the stack.
+  function queueRowActions(bubble) {
+    const row = el('div', 'msg-actions user-actions queue-row-actions');
+    const kebab = el('button', 'icon-btn small'); kebab.type = 'button'; kebab.title = 'Queued message actions'; kebab.innerHTML = KEBAB_SVG;
+    kebab.addEventListener('click', (e) => { e.stopPropagation(); const r = kebab.getBoundingClientRect(); showQueueMenu(bubble, r.left, r.bottom + 4); });
+    row.appendChild(kebab);
+    bubble.appendChild(row);
+    bubble.addEventListener('contextmenu', (e) => { e.preventDefault(); showQueueMenu(bubble, e.clientX, e.clientY); });
+    // Drag-and-drop lives entirely client-side until the drop: only then is the new order sent
+    // (lib/runs.mjs reorderQueued), so a drag that is abandoned mid-way never touches the CLI.
+    bubble.draggable = true;
+    bubble.addEventListener('dragstart', (e) => { e.dataTransfer.setData('text/plain', bubble.dataset.promptId || ''); e.dataTransfer.effectAllowed = 'move'; bubble.classList.add('dragging'); });
+    bubble.addEventListener('dragend', () => bubble.classList.remove('dragging'));
+    bubble.addEventListener('dragover', (e) => {
+      if (!bubble.classList.contains('queued')) return;
+      e.preventDefault();
+      const dragging = thread.querySelector('.msg.user.queued.dragging');
+      if (!dragging || dragging === bubble) return;
+      const r = bubble.getBoundingClientRect();
+      e.clientY - r.top < r.height / 2 ? bubble.before(dragging) : bubble.after(dragging);
+    });
+    bubble.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      const body = thread.querySelector('.queue-stack-body') || thread;
+      const ids = [...body.querySelectorAll('.msg.user.queued')].map((n) => n.dataset.promptId).filter(Boolean);
+      if (ids.length < 2 || !state.current) return;
+      try { await api(`/sessions/${state.current}/queue/reorder`, { method: 'POST', body: JSON.stringify({ order: ids }) }); }
+      catch (e2) { toast("Couldn't reorder the queued messages. Try again."); }
+    });
+  }
+  function queueStackEl() {
+    const found = thread.querySelector('.queue-stack'); if (found) return found;
+    const s = el('div', 'queue-stack collapsed');
+    const head = el('button', 'queue-stack-head'); head.type = 'button';
+    head.addEventListener('click', () => { s.classList.toggle('collapsed'); paintQueueStackHead(s); });
+    s.appendChild(head); s.appendChild(el('div', 'queue-stack-body'));
+    return s;
+  }
+  function paintQueueStackHead(s) {
+    s.querySelector('.queue-stack-head').textContent = s.classList.contains('collapsed') ? 'Queued messages collapse into a stack — click to expand' : 'Collapse queued messages';
+  }
+  // Several queued messages collapse into a stack (Desktop's own words for it); one alone is a
+  // plain bubble, same as any other message in the thread.
+  function restackQueue() {
+    const bubbles = [...thread.querySelectorAll('.msg.user.queued')];
+    const existing = thread.querySelector('.queue-stack');
+    if (bubbles.length < 2) {
+      if (existing) { for (const b of [...existing.querySelectorAll('.msg.user.queued')]) existing.before(b); existing.remove(); }
+      return;
+    }
+    const s = queueStackEl();
+    if (!s.isConnected) bubbles[0].before(s);
+    const body = s.querySelector('.queue-stack-body');
+    for (const b of bubbles) body.appendChild(b); // a DOM move, not a clone - listeners and dataset ride along
+    paintQueueStackHead(s);
+  }
+  // A reorder lands as the new id order; the bubbles already exist (nothing here ever recreates
+  // one), so this only has to place them.
+  function reorderBubbles(ids) {
+    const body = thread.querySelector('.queue-stack-body') || thread;
+    for (const id of ids) { const n = body.querySelector('.msg.user.queued[data-prompt-id="' + CSS.escape(id) + '"]'); if (n) body.appendChild(n); }
+  }
+
+  // ---- the usage-limit queue: a message waits above the composer instead of failing, and goes
+  // in by itself when the limit resets; each can be edited, cancelled, or sent early ----
+  const heldQueue = $('#held-queue'), heldList = $('#held-list');
+  function onHeldSend() { toast("You hit your usage limit. Held messages will send when it resets."); refreshHeldQueue(); }
+  function heldRow(it) {
+    const row = el('div', 'held-row');
+    row.appendChild(el('div', 'held-text', it.text));
+    const actions = el('div', 'held-actions');
+    const editBtn = el('button', 'btn btn-ghost small', 'Edit'); editBtn.type = 'button';
+    editBtn.addEventListener('click', async () => {
+      try { await api(`/sessions/${state.current}/limit-queue/${it.id}/remove`, { method: 'POST' }); input.value = it.text; input.dispatchEvent(new Event('input')); input.focus(); refreshHeldQueue(); }
+      catch (e) { toast(e.message); }
+    });
+    const sendBtn = el('button', 'btn btn-ghost small', 'Send now'); sendBtn.type = 'button';
+    sendBtn.addEventListener('click', async () => {
+      sendBtn.disabled = true;
+      try { await api(`/sessions/${state.current}/limit-queue/${it.id}/send-now`, { method: 'POST' }); await refreshHeldQueue(); }
+      catch (e) { sendBtn.disabled = false; toast(e.message); }
+    });
+    const cancelBtn = el('button', 'btn btn-ghost small', 'Cancel'); cancelBtn.type = 'button';
+    cancelBtn.addEventListener('click', async () => {
+      try { await api(`/sessions/${state.current}/limit-queue/${it.id}/remove`, { method: 'POST' }); refreshHeldQueue(); } catch (e) { toast(e.message); }
+    });
+    actions.append(editBtn, sendBtn, cancelBtn);
+    row.appendChild(actions);
+    return row;
+  }
+  async function refreshHeldQueue() {
+    if (!state.current) { heldQueue.classList.add('hidden'); return; }
+    let r; try { r = await api(`/sessions/${state.current}/limit-queue`); } catch { return; }
+    const items = r.items || [];
+    if (!items.length) {
+      const wasShown = !heldQueue.classList.contains('hidden');
+      heldQueue.classList.add('hidden'); heldList.innerHTML = '';
+      if (wasShown) openSession(state.current); // they were just sent off: pick up the turn they started
+      return;
+    }
+    heldList.innerHTML = '';
+    for (const it of items) heldList.appendChild(heldRow(it));
+    $('#held-resets').textContent = r.resetsAt ? 'Resets ' + new Date(r.resetsAt).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
+    heldQueue.classList.remove('hidden');
+  }
+  setInterval(() => { if (state.current) refreshHeldQueue(); }, 8000);
+
+  // ---- rewind that restores files: a dry-run preview, the choice of scope, and Redo rewind ----
+  const rewindModal = (() => {
+    const m = el('div', 'modal hidden'); m.id = 'rewind-modal';
+    const card = el('div', 'modal-card');
+    const head = el('div', 'modal-head'); head.appendChild(el('span', null, 'Rewind to this message?'));
+    const close = el('button', 'icon-btn'); close.type = 'button'; close.setAttribute('aria-label', 'Close');
+    close.innerHTML = '<svg viewBox="0 0 20 20" width="16" height="16"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+    close.addEventListener('click', closeRewindDialog);
+    head.appendChild(close); card.appendChild(head);
+    card.appendChild(el('p', 'modal-hint rewind-preview'));
+    card.appendChild(el('div', 'rewind-choices'));
+    m.appendChild(card);
+    m.addEventListener('click', (e) => { if (e.target === m) closeRewindDialog(); });
+    document.body.appendChild(m);
+    return m;
+  })();
+  function closeRewindDialog() { rewindModal.classList.add('hidden'); }
+  function lastRewindableUuid() {
+    const nodes = [...thread.querySelectorAll('.msg.user[data-uuid]:not(.queued)')];
+    const n = nodes[nodes.length - 1];
+    return n ? { uuid: n.dataset.uuid, text: n.querySelector('.msg-text')?.textContent || '' } : null;
+  }
+  async function openRewindDialog(uuid, text) {
+    if (!state.current) return;
+    const hint = rewindModal.querySelector('.rewind-preview'), choices = rewindModal.querySelector('.rewind-choices');
+    hint.textContent = 'Looking at what would change…'; choices.innerHTML = '';
+    rewindModal.classList.remove('hidden');
+    let preview; try { preview = await api(`/sessions/${state.current}/rewind/preview`, { method: 'POST', body: JSON.stringify({ uuid }) }); } catch (e) { preview = { canRewind: false, error: e.message }; }
+    if (rewindModal.classList.contains('hidden')) return; // closed while the preview was in flight
+    const n = (preview.filesChanged || []).length;
+    hint.textContent = preview.canRewind
+      ? (n ? `${n} file${n === 1 ? '' : 's'} would be restored (+${preview.insertions || 0} −${preview.deletions || 0}).` : 'No tracked files changed after this point.')
+      : (preview.error || "This session doesn't support rewind.");
+    const addChoice = (label, scope, primary) => {
+      const b = el('button', 'btn ' + (primary ? 'btn-primary' : 'btn-ghost'), label); b.type = 'button';
+      b.addEventListener('click', () => confirmRewind(uuid, text, scope));
+      choices.appendChild(b);
+    };
+    addChoice('Conversation and code', 'both', true);
+    addChoice('Conversation only', 'conversation');
+    addChoice('Code only', 'code');
+    const cancel = el('button', 'btn btn-ghost', 'Cancel'); cancel.type = 'button'; cancel.addEventListener('click', closeRewindDialog);
+    choices.appendChild(cancel);
+  }
+  async function confirmRewind(uuid, text, scope) {
+    closeRewindDialog();
+    try {
+      const r = await api(`/sessions/${state.current}/rewind`, { method: 'POST', body: JSON.stringify({ uuid, scope }) });
+      if (r.filesOnly) { toast('Restored the code from this point.'); showRedoToast(); refreshGit(); if (changesOpen) loadChanges(); return; }
+      if (scope !== 'conversation') showRedoToast(); // the code side moved too ('both'); offer to undo just that part
+      pendingPrefill = text || '';
+      await loadSessions();
+      if (r.sessionId) location.hash = '#/s/' + r.sessionId;
+      else { if (r.cwd) { state.cwd = r.cwd; localStorage.setItem('cr.cwd', r.cwd); } location.hash = '#/'; }
+    } catch (e) { toast(e.message); }
+  }
+  function showRedoToast() {
+    const n = el('div', 'note redo-toast'); n.appendChild(document.createTextNode('Files restored. '));
+    const b = el('button', 'link-btn inline', 'Redo rewind'); b.type = 'button';
+    b.addEventListener('click', async () => {
+      try {
+        const r = await api(`/sessions/${state.current}/rewind/redo`, { method: 'POST' });
+        if (r.ok) { toast('Rewind undone.'); refreshGit(); if (changesOpen) loadChanges(); n.remove(); }
+        else toast("Couldn't undo this rewind. Try again.");
+      } catch (e) { toast(e.message); }
+    });
+    n.appendChild(b);
+    thread.appendChild(n); autoscroll();
+    setTimeout(() => n.remove(), 15 * 60 * 1000); // matches lib/rewind.mjs's own redo window
+  }
+  registerCommand('rewind', { description: 'Steps back to before your last message', run: () => { const l = lastRewindableUuid(); if (l) openRewindDialog(l.uuid, l.text); else toast('Nothing to rewind to yet'); } });
+  // Esc Esc opens rewind for the last message - but a lone Escape already means something else in
+  // most places (Stop, close a menu, clear a field), so this only arms once none of those apply.
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    if (!rewindModal.classList.contains('hidden')) { closeRewindDialog(); lastEscAt = 0; return; }
+    if (state.answering || !state.current || (document.activeElement === input && input.value)) { lastEscAt = 0; return; }
+    const now = Date.now();
+    if (now - lastEscAt < 600) { lastEscAt = 0; const l = lastRewindableUuid(); if (l) openRewindDialog(l.uuid, l.text); }
+    else lastEscAt = now;
+  });
 
   // ---------- the sidebar and the right-hand panels drag wider or narrower ----------
   // The width goes into a CSS variable on <html>, so the stylesheet's phone rules keep
@@ -4518,13 +4758,23 @@
       state.cwd = info.cwd || state.cwd; state.cwdIsChat = !!info.chat; renderProjectChip(); pvFollow(); $('#project-btn').classList.add('locked');
       renderHistory(messages);
       paintHistoryTop();
-      // The last turn never finished (the app or the PC restarted mid-work): say so, offer to go on.
+      // The last turn never finished (the app or the PC restarted mid-work). Desktop resumes by
+      // itself when that is safe and shows the manual banner only when it is not
+      // (info.interrupted.safe, computed server-side - server.mjs's safeToAutoResume).
       if (info.interrupted) {
-        const n = el('div', 'interrupted');
-        n.appendChild(el('span', null, info.interrupted.kind === 'tool_call' ? 'This turn stopped in the middle of a tool call' + (info.interrupted.at ? ' (' + relTime(Date.parse(info.interrupted.at)) + ' ago)' : '') + '. The app or the computer was restarted before Claude finished.' : 'This turn stopped before Claude answered' + (info.interrupted.at ? ' (' + relTime(Date.parse(info.interrupted.at)) + ' ago)' : '') + '.'));
-        const b = el('button', 'btn btn-ghost', 'Continue where it left off'); b.type = 'button';
-        b.addEventListener('click', () => { n.remove(); input.value = 'Continue where you left off. Check what was already done before redoing anything, then finish the task.'; input.dispatchEvent(new Event('input')); submit(); });
-        n.appendChild(b); thread.appendChild(n);
+        const key = id + ':' + info.interrupted.at;
+        if (info.interrupted.safe && !autoResumed.has(key)) {
+          autoResumed.add(key);
+          const n = el('div', 'note', 'Your computer went to sleep and paused this session. Resuming…');
+          thread.appendChild(n); setTimeout(() => n.remove(), 6000);
+          input.value = CONTINUE_TEXT; input.dispatchEvent(new Event('input')); submit();
+        } else {
+          const n = el('div', 'interrupted');
+          n.appendChild(el('span', null, info.interrupted.kind === 'tool_call' ? 'This turn stopped in the middle of a tool call' + (info.interrupted.at ? ' (' + relTime(Date.parse(info.interrupted.at)) + ' ago)' : '') + '. The app or the computer was restarted before Claude finished.' : 'This turn stopped before Claude answered' + (info.interrupted.at ? ' (' + relTime(Date.parse(info.interrupted.at)) + ' ago)' : '') + '.'));
+          const b = el('button', 'btn btn-ghost', 'Continue where it left off'); b.type = 'button';
+          b.addEventListener('click', () => { n.remove(); input.value = CONTINUE_TEXT; input.dispatchEvent(new Event('input')); submit(); });
+          n.appendChild(b); thread.appendChild(n);
+        }
       }
       stickToBottom = true; pinToBottom();
       requestAnimationFrame(fillTop); // a first page shorter than the window brings the next one
@@ -4532,6 +4782,7 @@
       markRead(id);
       subscribe(id, { fromTurn: byTurn }); // streams our own turn, or follows the file if another window is working
       restoreDraft(id);
+      refreshHeldQueue(); // messages still waiting above the composer for a usage limit to reset
       usage.context = info.context || null; paintUsage(); refreshGit(); watchPr(); $('#session-menu-btn').classList.remove('hidden'); $('#new-bar').classList.add('hidden');
       input.placeholder = 'Type / for commands';
       api(`/sessions/${id}/usage`).then((u) => { usage.context = u.context || usage.context; usage.limits = u.limits || usage.limits; paintUsage(); }).catch(() => {});
@@ -4551,6 +4802,7 @@
     $('#project-btn').classList.remove('locked'); renderProjectChip();
     setRunning(false); setElsewhere(false); renderSessions(); updatePinButton(); restoreDraft(null);
     $('#session-bar').classList.add('hidden'); $('#new-bar').classList.remove('hidden'); $('#session-menu-btn').classList.add('hidden'); usage.context = null; paintUsage();
+    heldQueue.classList.add('hidden'); heldList.innerHTML = '';
     input.placeholder = 'Describe a task or ask a question';
     const h = new Date().getHours();
     $('#greeting-text').textContent = (h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening') + (state.userName ? ', ' + state.userName : '');

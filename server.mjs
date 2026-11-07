@@ -20,9 +20,11 @@ import { execFile, spawn } from 'node:child_process';
 const SERVER_STARTED_AT = Date.now();
 import { promisify } from 'node:util';
 import { listSessions, getSessionMessages, getSessionInfo, renameSession, forkSession, deleteSession, tagSession } from '@anthropic-ai/claude-agent-sdk';
-import { runs, pendingPermissions, isLive, isBusy, startRun, answerPermission, bus, contextBySession, lastLimits } from './lib/runs.mjs';
+import { runs, pendingPermissions, isLive, isBusy, startRun, answerPermission, bus, contextBySession, lastLimits, ensureLive } from './lib/runs.mjs';
 import { historyPage, historyImage } from './lib/history.mjs';
 import * as runsMod from './lib/runs.mjs';
+import * as limitQueue from './lib/limit-queue.mjs';
+import * as rewindStore from './lib/rewind.mjs';
 const execFileP = promisify(execFile);
 import { tailSession, isWorkingElsewhere, WORKING_WINDOW_MS, sessionFile } from './lib/tail.mjs';
 import { parsePreviewUrl, portFromReferer, proxyRequest, proxyUpgrade, listLocalPorts, proxyAtRoot, upgradeAtRoot, listenOn, injectBridge } from './lib/preview.mjs';
@@ -627,21 +629,61 @@ app.get('/api/sessions/:id/changes/diff', async (req, res) => {
   } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
 });
 
-// Rewind: a new session that is this one up to just before the chosen message, so the
-// message can be edited and sent again. The original session is left as it was.
+// Rewind: Desktop's "Rewind to this message?", with the choice of conversation, code, or both.
+// The conversation side forks - a new session that is this one up to just before the chosen
+// message, so it can be edited and sent again; the original session is left as it was, which is
+// this app's own non-destructive stand-in for Desktop's in-place truncate-and-undo. The code side
+// is genuinely destructive (Query.rewindFiles overwrites tracked files on disk), so it is
+// snapshotted first - lib/rewind.mjs - which is what "Redo rewind" restores from.
+app.post('/api/sessions/:id/rewind/preview', async (req, res) => {
+  try {
+    const uuid = String(req.body?.uuid || '');
+    const info = await getSessionInfo(req.params.id).catch(() => null);
+    if (!info?.cwd) return res.json({ canRewind: false, error: "This session doesn't support rewind." });
+    const { run } = await ensureLive(req.params.id, info.cwd);
+    res.json(await run.rewindFiles(uuid, { dryRun: true }));
+  } catch (e) { res.status(500).json({ canRewind: false, error: String(e.message || e) }); }
+});
 app.post('/api/sessions/:id/rewind', async (req, res, next) => {
   try {
     const uuid = String(req.body?.uuid || '');
+    const scope = ['conversation', 'code', 'both'].includes(req.body?.scope) ? req.body.scope : 'conversation';
     const msgs = (await getSessionMessages(req.params.id)).filter((m) => !m.parent_tool_use_id);
     const idx = msgs.findIndex((m) => m.uuid === uuid);
     if (idx < 0) return res.status(404).json({ error: 'That message is not in the transcript.' });
     const info = await getSessionInfo(req.params.id).catch(() => null);
-    if (idx === 0) return res.json({ sessionId: null, cwd: info?.cwd || null }); // nothing before it: start fresh in the same folder
+
+    let filesOk = true, fileError = null, stats = null;
+    if (scope !== 'conversation') {
+      try {
+        const { run, created } = await ensureLive(req.params.id, info?.cwd);
+        // A fresh dry run right before the real one: the preview the dialog showed may be stale by
+        // the time the person confirmed it.
+        const preview = await run.rewindFiles(uuid, { dryRun: true });
+        if (preview.canRewind) rewindStore.snapshot(req.params.id, info?.cwd, preview.filesChanged || []);
+        const r = await run.rewindFiles(uuid, { dryRun: false });
+        filesOk = !!r.canRewind;
+        fileError = r.error || (filesOk ? null : "Couldn't restore the code from this point. Try again.");
+        stats = { filesChanged: r.filesChanged || [], insertions: r.insertions || 0, deletions: r.deletions || 0 };
+        if (created) run.maybeClose(); // this run only existed to make this one request
+      } catch (e) { filesOk = false; fileError = String(e.message || e); }
+    }
+    if (scope === 'code') return filesOk ? res.json({ sessionId: null, cwd: info?.cwd || null, filesOnly: true, stats }) : res.status(500).json({ error: fileError });
+    if (scope === 'both' && !filesOk) return res.status(500).json({ error: fileError }); // nothing forked yet: say so plainly, nothing to undo
+    if (idx === 0) return res.json({ sessionId: null, cwd: info?.cwd || null, stats }); // nothing before it: start fresh in the same folder
     const title = ((info?.customTitle || info?.summary || info?.firstPrompt || 'Session').slice(0, 160)) + ' · rewound';
-    const r = await forkSession(req.params.id, { upToMessageId: msgs[idx - 1].uuid, title });
-    res.json({ sessionId: r.sessionId, cwd: info?.cwd || null });
+    try {
+      const r = await forkSession(req.params.id, { upToMessageId: msgs[idx - 1].uuid, title });
+      res.json({ sessionId: r.sessionId, cwd: info?.cwd || null, stats });
+    } catch (e) {
+      // The code side already moved (scope 'both'): say exactly that, Desktop's own words, rather
+      // than the fork's raw error - the files are not in question, only the conversation branch.
+      if (scope === 'both' && filesOk) return res.status(500).json({ error: "Restored the code, but couldn't rewind the conversation. Try rewinding again.", filesOk: true });
+      throw e;
+    }
   } catch (e) { next(e); }
 });
+app.post('/api/sessions/:id/rewind/redo', (req, res) => { res.json({ ok: rewindStore.redo(req.params.id) }); });
 
 // Folder browser for "Open folder…" (the browser has no native folder dialog).
 app.get('/api/browse', (req, res) => {
@@ -765,6 +807,42 @@ app.delete('/api/worktrees', async (req, res) => {
   } catch (e) { res.status(500).json({ error: worktrees.cliError(e) }); }
 });
 
+// ---------- queued message controls, and the usage-limit queue ----------
+// Desktop's row menu on a dashed (queued) bubble: Edit in composer is Remove plus the page
+// putting the text back in the box itself, so only Remove, Send now and reorder need the CLI.
+app.post('/api/sessions/:id/queue/:msgId/remove', async (req, res) => {
+  const run = runs.get(req.params.id);
+  if (!run || run.done) return res.status(404).json({ error: 'No live turn.' });
+  try { res.json({ ok: await run.removeQueued(req.params.msgId) }); } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+});
+app.post('/api/sessions/:id/queue/:msgId/send-now', async (req, res) => {
+  const run = runs.get(req.params.id);
+  if (!run || run.done) return res.status(404).json({ error: 'No live turn.' });
+  try { res.json({ ok: await run.sendNowQueued(req.params.msgId) }); } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+});
+app.post('/api/sessions/:id/queue/reorder', async (req, res) => {
+  const run = runs.get(req.params.id);
+  if (!run || run.done) return res.status(404).json({ error: 'No live turn.' });
+  const order = Array.isArray(req.body?.order) ? req.body.order.map(String) : [];
+  try { res.json({ ok: await run.reorderQueued(order) }); } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+});
+
+// Messages typed after the plan's usage limit was reached: held above the composer (lib/limit-
+// queue.mjs) until it resets, each still editable, cancellable, or sendable right away.
+app.get('/api/sessions/:id/limit-queue', (req, res) => {
+  const limited = limitQueue.currentLimit();
+  res.json({ items: limitQueue.list(req.params.id), resetsAt: limited?.resetsAt || null });
+});
+app.post('/api/sessions/:id/limit-queue/:msgId/edit', (req, res) => {
+  const row = limitQueue.edit(req.params.id, req.params.msgId, req.body?.text);
+  if (!row) return res.status(404).json({ error: 'That message is gone.' });
+  res.json({ ok: true, item: row });
+});
+app.post('/api/sessions/:id/limit-queue/:msgId/remove', (req, res) => res.json({ ok: limitQueue.remove(req.params.id, req.params.msgId) }));
+app.post('/api/sessions/:id/limit-queue/:msgId/send-now', async (req, res) => {
+  try { res.json({ ok: await limitQueue.release(req.params.id, req.params.msgId) }); } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+});
+
 // ---------- the pull request for a session's branch ----------
 app.get('/api/sessions/:id/pr', async (req, res) => {
   const cwd = await sessionCwd(req.params.id);
@@ -862,6 +940,7 @@ function listPlugins() {
 // menu is right on the first paint and a refresh happens behind it.
 claudeCode.useDir(path.join(DATA_DIR, 'claude-code')); // first: asking for the menu starts Claude Code
 models.useCache(DATA_DIR);
+limitQueue.init(DATA_DIR); // messages held while the plan's usage limit is reached; survives a restart
 models.warm().catch(() => {});
 // Refresh waits: a background refresh would answer with the very list it was asked to
 // replace, and the menu would need a second press to show what changed.
@@ -1103,6 +1182,17 @@ function interruptedTurn(id) {
     return null;
   } catch { return null; }
 }
+// Desktop resumes a sleep-interrupted session by itself and shows the manual banner "only when
+// resuming isn't safe". A dangling tool_call is exactly the unsafe case either way: it is a
+// half-written tool call AND the only way a pending permission prompt (never itself written to
+// the transcript) would show up here, since Claude Code does not write the tool_use until it
+// asks, and does not write the tool_result until the prompt is answered. A dangling tool_result,
+// by contrast, is a clean stopping point - a step finished, nothing left open - so it is safe
+// once it is not too stale to trust (the person may well have fixed things by hand since).
+const SAFE_RESUME_MS = 30 * 60 * 1000;
+function safeToAutoResume(interrupted) {
+  return !!interrupted && interrupted.kind === 'tool_result' && interrupted.at && Date.now() - Date.parse(interrupted.at) < SAFE_RESUME_MS;
+}
 app.get('/api/sessions/:id', async (req, res, next) => {
   try {
     let s = await getSessionInfo(req.params.id);
@@ -1113,7 +1203,8 @@ app.get('/api/sessions/:id', async (req, res, next) => {
     }
     if (!s) return res.status(404).json({ error: 'Not found' });
     const base = shape(s, new Set(readPrefs().pinned));
-    const interrupted = !base.live && !base.working ? interruptedTurn(req.params.id) : null;
+    const interruptedRaw = !base.live && !base.working ? interruptedTurn(req.params.id) : null;
+    const interrupted = interruptedRaw && { ...interruptedRaw, safe: safeToAutoResume(interruptedRaw) };
     res.json({ ...base, settings: sessionSettings(req.params.id), interrupted });
   } catch (e) { next(e); }
 });
@@ -1175,6 +1266,14 @@ app.post('/api/sessions/:id/send', async (req, res, next) => {
     const info = await getSessionInfo(id);
     if (!info) return res.status(404).json({ error: 'Session not found' });
     const { model, permissionMode, effort, ultracode, fast } = req.body || {};
+    // Already known to be over a plan usage limit, with nothing live to fold it into: it waits
+    // above the composer (lib/limit-queue.mjs) instead of starting a turn that only comes back
+    // rejected, and goes in by itself once the limit resets.
+    const limited = limitQueue.currentLimit();
+    if (limited) {
+      const held = limitQueue.hold(id, { id: cid, text: prompt, images, cwd: info.cwd, model, permissionMode, effort, ultracode, fast });
+      return res.json({ held: true, id: held.id, sessionId: id, resetsAt: limited.resetsAt });
+    }
     const { run } = startRun({ sessionId: id, cwd: info.cwd, prompt, images, model, permissionMode, effort, ultracode, fast, disabledMcp: readPrefs().disabledMcp || [], promptId: cid });
     joinRun(id, run); // other devices with this session open watch the turn as it streams
     res.json({ runId: run.id, sessionId: id, id: cid });
