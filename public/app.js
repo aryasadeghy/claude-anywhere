@@ -2068,15 +2068,20 @@
     // A queued (dashed) bubble gets Desktop's row menu - Edit in composer / Send now / Remove -
     // plus a drag handle once there are several (queueRowActions, below).
     if (queued) { m.appendChild(el('div', 'queued-label', 'Queued · Claude reads it after the current step')); queueRowActions(m); }
-    if (uuid && !queued) {
-      // Rewind: a new session that stops just before this message, with the message back in the composer to change and resend.
-      const row = el('div', 'msg-actions user-actions');
-      const rw = el('button'); rw.type = 'button'; rw.title = 'Rewind to here'; rw.className = 'rewind';
-      rw.innerHTML = '<svg viewBox="0 0 20 20" width="15" height="15"><path d="M4 10a6 6 0 1 1 1.8 4.3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M4 6v4h4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Rewind to here</span>';
-      rw.addEventListener('click', () => openRewindDialog(uuid, text));
-      row.appendChild(rw); m.appendChild(row);
-    }
+    if (uuid && !queued) rewindRow(m, uuid, text);
     return m;
+  }
+  // Rewind: a new session that stops just before this message, with the message back in the composer
+  // to change and resend. A message sent in this visit gets it as Claude takes it up - the page's id
+  // for it is the transcript line's uuid - rather than only after a reload.
+  function rewindRow(m, uuid, text) {
+    if (m.querySelector('.user-actions')) return;
+    m.dataset.uuid = uuid;
+    const row = el('div', 'msg-actions user-actions');
+    const rw = el('button'); rw.type = 'button'; rw.title = 'Rewind to here'; rw.className = 'rewind';
+    rw.innerHTML = '<svg viewBox="0 0 20 20" width="15" height="15"><path d="M4 10a6 6 0 1 1 1.8 4.3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M4 6v4h4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Rewind to here</span>';
+    rw.addEventListener('click', () => openRewindDialog(uuid, text));
+    row.appendChild(rw); m.appendChild(row);
   }
   let pendingPrefill = '';
   async function markRead(id) { try { await api(`/sessions/${id}/read`, { method: 'POST' }); const s = state.sessions.find((x) => x.id === id); if (s && (s.unread || s.failed)) { s.unread = false; s.failed = false; renderSessions(); } } catch {} }
@@ -3484,8 +3489,8 @@
         case 'prompt': {
           state.live = null;
           const q = bubbleFor(ev);
-          if (q) { q.classList.remove('queued'); q.querySelector('.queued-label')?.remove(); q.querySelector('.queue-row-actions')?.remove(); q.draggable = false; if (ev.id) q.dataset.promptId = ev.id; delete q.dataset.pending; }
-          else thread.appendChild(userMsg(ev.text, { id: ev.id, images: ev.images || [] }));
+          if (q) { q.classList.remove('queued'); q.querySelector('.queued-label')?.remove(); q.querySelector('.queue-row-actions')?.remove(); q.draggable = false; if (ev.id) { q.dataset.promptId = ev.id; rewindRow(q, ev.id, ev.text || ''); } delete q.dataset.pending; }
+          else thread.appendChild(userMsg(ev.text, { id: ev.id, uuid: ev.id || null, images: ev.images || [] }));
           restackQueue();
           // A prompt being taken up is a turn starting - including a queued message that runs
           // after only a background task was left, when the composer had gone idle. Relight it.
