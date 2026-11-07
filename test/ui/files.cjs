@@ -53,7 +53,9 @@ async function main() {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ca-files-'));
   const cwd = path.join(tmp, 'project');
   const id = makeFilesSession(path.join(tmp, 'claude'), cwd);
-  const app = await fx.startApp({ port: await fx.freePort(), dataDir: path.join(tmp, 'data'), configDir: path.join(tmp, 'claude') });
+  // The fake API: no real account behind the app, and none in the screenshots.
+  const api = await fx.startFakeApi();
+  const app = await fx.startApp({ port: await fx.freePort(), dataDir: path.join(tmp, 'data'), configDir: path.join(tmp, 'claude'), env: fx.fakeApiEnv(api) });
   const browser = await chromium.launch({ channel });
   const errors = [];
   try {
@@ -96,7 +98,9 @@ async function main() {
     const head = async (name, extra = '') => page.evaluate(async ([u]) => { const r = await fetch(u); return { status: r.status, cd: r.headers.get('content-disposition') || '', csp: r.headers.get('content-security-policy') || '' }; }, [`/api/file?token=${encodeURIComponent(app.token)}&path=${encodeURIComponent(path.join(cwd, name))}${extra}`]);
     const h = await head('page.html');
     check('an HTML file from /api/file is an attachment, sandboxed', h.status === 200 && /attachment/.test(h.cd) && /sandbox/.test(h.csp), JSON.stringify(h));
-    check('a file outside the projects is still refused', (await page.evaluate(async (u) => (await fetch(u)).status, `/api/file?token=${encodeURIComponent(app.token)}&path=${encodeURIComponent('/etc/hosts')}`)) === 403);
+    // A system file that is there on every OS (Windows has no /etc/hosts, and a missing file is a 404).
+    const outside = process.platform === 'win32' ? path.join(process.env.SystemRoot || 'C:\\Windows', 'win.ini') : '/etc/hosts';
+    check('a file outside the projects is still refused', (await page.evaluate(async (u) => (await fetch(u)).status, `/api/file?token=${encodeURIComponent(app.token)}&path=${encodeURIComponent(outside)}`)) === 403);
 
     await open('page.html');
     check('a page opens rendered in the Browser', await until(async () => { for (const f of page.frames()) { try { if (await f.$('#hello')) return true; } catch {} } return false; }, 12000));
@@ -114,6 +118,7 @@ async function main() {
   } finally {
     await browser.close();
     await app.stop();
+    await api.close();
   }
   console.log(`\n${passed} passed, ${failed} failed · screenshots in test/ui/shots`);
   process.exit(failed ? 1 : 0);

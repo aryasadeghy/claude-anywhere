@@ -38,7 +38,9 @@ async function main() {
     const errors = []; page.on('pageerror', (e) => errors.push(e.message));
     await page.goto(app.base + '/');
     await page.waitForSelector('#account-btn', { state: 'attached' });
-    await page.waitForFunction(() => (document.querySelector('#sidebar-account')?.textContent || '').trim().length > 0, null, { timeout: 15000 }).catch(() => {});
+    // The account line starts as a placeholder (…), so its having text is no sign of anything: wait
+    // for the app to be shown and the line to say who is signed in. A slower machine clicked before.
+    await page.waitForFunction(() => !document.querySelector('#app')?.classList.contains('hidden') && (document.querySelector('#sidebar-account')?.textContent || '').replace('…', '').trim().length > 0, null, { timeout: 15000 }).catch(() => {});
     await wait(500);
     return { browser, page, errors };
   }
