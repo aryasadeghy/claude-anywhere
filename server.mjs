@@ -26,7 +26,7 @@ import * as runsMod from './lib/runs.mjs';
 const execFileP = promisify(execFile);
 import { tailSession, isWorkingElsewhere, WORKING_WINDOW_MS, sessionFile } from './lib/tail.mjs';
 import { parsePreviewUrl, portFromReferer, proxyRequest, proxyUpgrade, listLocalPorts, proxyAtRoot, upgradeAtRoot, listenOn, injectBridge } from './lib/preview.mjs';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { searchTranscripts } from './lib/search.mjs';
 import * as worktrees from './lib/worktrees.mjs';
 import * as pr from './lib/pr.mjs';
@@ -347,6 +347,9 @@ bus.on('permission_resolved', ({ sessionId }) => { if (sessionId && attention[se
 bus.on('turn_done', ({ sessionId, isError }) => { if (!sessionId) return; const a = attn(sessionId); a.unread = true; a.failed = !!isError; delete a.needsInput; a.at = Date.now(); saveAttention(); });
 const isWaiting = (id) => [...pendingPermissions.values()].some((p) => p.run.sessionId === id);
 
+// Where "No folder" chats keep what they make: ~/.claude-anywhere/chats/<session id>/.
+const CHATS_DIR = path.resolve(envOf('CHATS_DIR') || path.join(os.homedir(), '.claude-anywhere', 'chats'));
+const isChat = (cwd) => !!cwd && path.dirname(path.resolve(cwd)).toLowerCase() === CHATS_DIR.toLowerCase();
 const shape = (s, pinned) => ({
   id: s.sessionId,
   needsInput: isWaiting(s.sessionId) || (isLive(s.sessionId) && !!attention[s.sessionId]?.needsInput),
@@ -354,7 +357,9 @@ const shape = (s, pinned) => ({
   unread: !!attention[s.sessionId]?.unread,
   title: s.customTitle || s.summary || s.firstPrompt || 'Untitled',
   cwd: s.cwd || '',
-  project: s.cwd ? path.basename(s.cwd) : '',
+  // A chat's folder is named by its id, which is no name to show: they are "Chats", together.
+  project: isChat(s.cwd) ? 'Chats' : s.cwd ? path.basename(s.cwd) : '',
+  chat: isChat(s.cwd),
   branch: s.gitBranch || '',
   lastModified: s.lastModified,
   createdAt: s.createdAt,
@@ -853,7 +858,7 @@ function reachableAt() {
   const rank = (k) => (k === 'tailscale' ? 0 : k === 'lan' ? 1 : 2);
   return out.sort((a, b) => rank(a.kind) - rank(b.kind));
 }
-app.get('/api/me', (_req, res) => res.json({ version: appVersion, userName: USER_NAME, host: process.env.COMPUTERNAME || process.env.HOSTNAME || 'this machine', account: whoAmI(), active: activeAccount(), hasToken: getAuth().hasToken, port: PORT, listensEverywhere: HOST === '0.0.0.0' || HOST === '::', passwordRequired: access.passwordRequired(), passwordSource: access.source(), addresses: reachableAt() }));
+app.get('/api/me', (_req, res) => res.json({ version: appVersion, userName: USER_NAME, host: process.env.COMPUTERNAME || process.env.HOSTNAME || 'this machine', account: whoAmI(), active: activeAccount(), hasToken: getAuth().hasToken, port: PORT, listensEverywhere: HOST === '0.0.0.0' || HOST === '::', passwordRequired: access.passwordRequired(), passwordSource: access.source(), addresses: reachableAt(), credentialExpiresAt: activeAccount() === 'local' ? runsMod.credentialExpiresAt : null }));
 
 // ---------- remote access: the password, the signed-in devices, the failed attempts ----------
 app.get('/api/access', (req, res) => res.json({ source: access.source(), minLength: access.MIN_PASSWORD, listensEverywhere: HOST === '0.0.0.0' || HOST === '::', remoteOpen: access.remoteAllowed(), fromApp: access.isAppKey(bearer(req)), devices: access.devices(bearer(req)), failures: access.failures() }));
@@ -959,7 +964,8 @@ app.get('/api/sessions', async (req, res, next) => {
 app.get('/api/projects', async (_req, res, next) => {
   try {
     const seen = new Map();
-    for (const s of await listSessions({ limit: 500 })) { const k = s.cwd && path.normalize(s.cwd).toLowerCase(); if (k && !seen.has(k)) seen.set(k, { cwd: s.cwd, name: path.basename(s.cwd), lastModified: s.lastModified }); }
+    // Each chat's own folder is not a project to start another session in.
+    for (const s of await listSessions({ limit: 500 })) { const k = s.cwd && !isChat(s.cwd) && path.normalize(s.cwd).toLowerCase(); if (k && !seen.has(k)) seen.set(k, { cwd: s.cwd, name: path.basename(s.cwd), lastModified: s.lastModified }); }
     res.json([...seen.values()].sort((a, b) => b.lastModified - a.lastModified));
   } catch (e) { next(e); }
 });
@@ -987,7 +993,8 @@ function sessionSettings(id) {
       }
     }
   } catch {}
-  return { model: saved.model || model || '', permissionMode: saved.permissionMode || mode || '', effort: saved.effort ?? '' };
+  // Ultracode and Fast mode are remembered per session too; Ultracode was saved and never read back.
+  return { model: saved.model || model || '', permissionMode: saved.permissionMode || mode || '', effort: saved.effort ?? '', ultracode: !!saved.ultracode, ...(saved.fast !== undefined ? { fast: !!saved.fast } : {}) };
 }
 // The newest model and mode in bytes [from, to) of a transcript, a few MB at a time from the
 // end, stopping once both are found - prompt lines (the mode) are rare in a long transcript,
@@ -1057,7 +1064,7 @@ app.get('/api/sessions/:id', async (req, res, next) => {
 app.post('/api/sessions/:id/prefs', (req, res) => {
   const p = readPrefs(); p.sessionPrefs = p.sessionPrefs || {};
   const cur = p.sessionPrefs[req.params.id] || {};
-  for (const k of ['model', 'permissionMode', 'effort', 'ultracode']) if (req.body?.[k] !== undefined) cur[k] = req.body[k];
+  for (const k of ['model', 'permissionMode', 'effort', 'ultracode', 'fast']) if (req.body?.[k] !== undefined) cur[k] = req.body[k];
   p.sessionPrefs[req.params.id] = cur; writePrefs(p);
   res.json(cur);
 });
@@ -1111,8 +1118,8 @@ app.post('/api/sessions/:id/send', async (req, res, next) => {
     if (isLive(id)) { const qid = runs.get(id).enqueue(prompt, images, cid || undefined); if (qid) return res.json({ queued: true, id: qid, sessionId: id }); }
     const info = await getSessionInfo(id);
     if (!info) return res.status(404).json({ error: 'Session not found' });
-    const { model, permissionMode, effort } = req.body || {};
-    const { run } = startRun({ sessionId: id, cwd: info.cwd, prompt, images, model, permissionMode, effort, disabledMcp: readPrefs().disabledMcp || [], promptId: cid });
+    const { model, permissionMode, effort, ultracode, fast } = req.body || {};
+    const { run } = startRun({ sessionId: id, cwd: info.cwd, prompt, images, model, permissionMode, effort, ultracode, fast, disabledMcp: readPrefs().disabledMcp || [], promptId: cid });
     joinRun(id, run); // other devices with this session open watch the turn as it streams
     res.json({ runId: run.id, sessionId: id, id: cid });
   } catch (e) { next(e); }
@@ -1124,19 +1131,25 @@ app.post('/api/sessions/:id/controls', async (req, res, next) => {
   try {
     const run = runs.get(req.params.id);
     if (!run || run.done) return res.json({ applied: {}, live: false });
-    const { permissionMode, model, effort, ultracode } = req.body || {};
-    res.json({ applied: await run.setControls({ permissionMode, model, effort, ultracode }), live: true });
+    const { permissionMode, model, effort, ultracode, fast } = req.body || {};
+    res.json({ applied: await run.setControls({ permissionMode, model, effort, ultracode, fast }), live: true });
   } catch (e) { next(e); }
 });
 
 app.post('/api/sessions', async (req, res) => {
   const { text: prompt, images } = parseAttachments(req.body);
   let cwd = String(req.body?.cwd || '').trim();
-  if (!cwd || cwd === '~') cwd = os.homedir(); // "No folder": Desktop runs those from the home directory
+  // "No folder": a folder of the chat's own, named after its session id, in the app's chats
+  // folder. Desktop runs these from the home directory, and everything Claude made there was
+  // left lying in it - a page, a CSV, a script - mixed with the person's own files and with
+  // no way to tell which chat it came from. The id is chosen here and handed to the SDK, so
+  // the folder and the session are the same name.
   if (!prompt && !images.length) return res.status(400).json({ error: 'Empty message' });
+  let newId;
+  if (!cwd || cwd === '~') { newId = randomUUID(); cwd = path.join(CHATS_DIR, newId); fs.mkdirSync(cwd, { recursive: true }); }
   if (!fs.existsSync(cwd)) return res.status(400).json({ error: 'That folder does not exist on this machine.' });
-  const { model, permissionMode, effort } = req.body || {};
-  const { run, ready } = startRun({ cwd, prompt, images, model, permissionMode, effort, disabledMcp: readPrefs().disabledMcp || [], promptId: clientId(req.body?.cid) });
+  const { model, permissionMode, effort, ultracode, fast } = req.body || {};
+  const { run, ready } = startRun({ newId, cwd, prompt, images, model, permissionMode, effort, ultracode, fast, disabledMcp: readPrefs().disabledMcp || [], promptId: clientId(req.body?.cid) });
   try {
     const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('Claude Code did not start in time')), 60000));
     const sessionId = await Promise.race([ready, timeout]);
@@ -1146,10 +1159,11 @@ app.post('/api/sessions', async (req, res) => {
   }
 });
 
-app.post('/api/sessions/:id/stop', (req, res) => {
+app.post('/api/sessions/:id/stop', async (req, res) => {
   const run = runs.get(req.params.id);
-  if (run && !run.done) run.stop();
-  res.json({ ok: true });
+  // An interrupt Claude Code never answers must not hold the button: the turn is stopped either way.
+  const taken = run && !run.done ? await Promise.race([run.stop(), new Promise((r) => setTimeout(() => r([]), 3000))]) : [];
+  res.json({ ok: true, unqueued: (taken || []).map((x) => ({ id: x.id, text: x.text })) });
 });
 
 // Tasks: the commands, subagents and workflows a live turn is running (Desktop's tasks panel).
@@ -1295,9 +1309,16 @@ app.get('/api/file', async (req, res) => {
     let p = path.isAbsolute(raw) ? raw : (cwd ? path.resolve(cwd, raw) : '');
     if (!p) return res.status(400).json({ error: 'No path' });
     p = path.normalize(p);
-    if (!IMAGE_EXT.test(p) || !fs.existsSync(p) || !fs.statSync(p).isFile()) return res.status(404).json({ error: 'Not an image on this PC' });
+    if (!fs.existsSync(p) || !fs.statSync(p).isFile()) return res.status(404).json({ error: 'Not on this PC' });
     if (!(await insideProjectRoots(p))) return res.status(403).json({ error: 'Outside the project folders' });
-    res.sendFile(p, { headers: { 'Cache-Control': 'private, max-age=60' }, acceptRanges: true });
+    // Pictures, video and sound play inline. Anything else - a file Claude sent, the
+    // Download button in the Files panel - is handed over as a download only: served
+    // inline from the app's own origin, an HTML page would run as the app. (Pages render
+    // in the Browser, on an origin of their own.) Before, every other file was a 404
+    // reading "Not an image on this PC", which is what a sent .html opened to.
+    if (IMAGE_EXT.test(p) && !req.query.download) return res.sendFile(p, { headers: { 'Cache-Control': 'private, max-age=60' }, acceptRanges: true });
+    res.attachment(path.basename(p));
+    res.sendFile(p, { headers: { 'Cache-Control': 'private, max-age=60', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': 'sandbox' }, acceptRanges: true });
   } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
 });
 

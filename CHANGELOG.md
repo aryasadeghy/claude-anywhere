@@ -7,6 +7,68 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Fast mode**, as Claude has it: a switch at the foot of the model menu for a model that
+  offers it (Opus 5.5 does), *Fast* on the chip while it is on, and remembered per session
+  like effort. It reaches Claude Code the one way an SDK session can ask for it, and when it
+  cannot serve - no usage credits, a provider in between, an organisation that has it off -
+  the chat says so in Claude's words instead of the chip promising a speed the turn did not get.
+- **Stop gives back what you typed mid-turn.** A message written while Claude works goes into
+  Claude Code at once, so after a Stop it ran anyway, as a turn of its own. Now Stop takes it
+  back, the dashed bubble goes, and its words return to the box - as Esc does in the CLI.
+- **A question from Claude can go unanswered without being a refusal.** *Skip* used to deny
+  the tool, which Claude reads as "no"; now it hears the question was skipped and goes on.
+  Writing in the chat while a question is open is the answer, as in Desktop: the card closes
+  as *Answered in the chat* and Claude reads the message next.
+- **/clear follows Claude Code into its new session.** The page used to stay on the old one
+  while the conversation went on in another transcript.
+- **The sign-in on this computer is said before it ends.** Claude Code now reports when a
+  claude.ai login stops for good; three days ahead the strip above the composer says so,
+  because renewing it takes the computer itself (`claude login`), not a phone.
+
+### Changed
+
+- **Claude Code 2.1.319** (Agent SDK 0.3.319), from 2.1.280. The daily job had a branch
+  ready for each version since October but could not open the pull request (the repository
+  does not let GitHub Actions do that), so the app stayed on September's Claude Code.
+- **A background command may be given a day.** Since 2.1.285 Claude Code stops a background
+  command at its `timeout` - 30 minutes unless Claude asks for more - in every session but
+  Desktop's and VS Code's. The ceiling it may ask for is now a day (`BASH_MAX_TIMEOUT_MS`, unless
+  set on the computer), so a dev server for the Browser or a long render can be kept when the
+  work needs it; one stopped at its limit says so in the Tasks panel.
+- **A "No folder" chat has a folder of its own.** It ran from the home directory, as
+  Desktop's do, and everything Claude made there - a page, a CSV, a script - was left in
+  the home folder with no way to tell which chat it came from. Each one now works in
+  `~/.claude-anywhere/chats/<session id>/` (`CLAUDE_ANYWHERE_CHATS_DIR` moves it): the id
+  is chosen before the session starts and handed to the SDK, so folder and session share a
+  name. In the sidebar they are one group, *Chats*; the folder chip says *Chats* inside one,
+  and New goes back to the folder that was picked rather than into that chat's.
+
+### Fixed
+
+- **A failed turn says what failed.** Every error used to read "Something went wrong.": the
+  words are in `errors`, not `result`, on an error result. A Claude Code too old for the
+  session offers *Update Claude Code*, and a turn you stopped shows no error at all - the
+  Stop was the point.
+- **Claude Code's own notices reach the chat** - a hook's reason for blocking a turn, a
+  warning - which were all dropped (they are `content`, not `message`). A full disk that cost
+  the transcript lines is said too.
+- **Ultracode reaches a turn that starts Claude Code.** It was only applied to a session
+  already running; picked first and then sent, it was left behind. A session's own Ultracode
+  was saved and never read back, so opening the session forgot it.
+- **The usage check after each turn no longer reads a week of transcripts** for advice the
+  app does not show.
+- **Settings › Claude Code's test waits for the app**, not for the "…" the account line starts
+  with, which a slower machine clicked through.
+- **A file Claude sends opens, whatever it is.** Anything that was not a picture or a
+  recording linked to `/api/file`, which serves pictures only, so a sent `.html` opened to
+  "Not an image on this PC". Each is now a card saying what it is, and a click opens it the
+  way it reads: a page or a PDF in the Browser, Markdown rendered (with *Source*), CSV as a
+  table, JSON indented, code as code, a recording playing - and *Download* for all of it,
+  including what cannot be shown. `/api/file` hands those out as downloads only, so a page
+  never runs on the app's own origin.
+
 ## [0.10.5] — 2026-10-02
 
 ## [0.10.4] — 2026-10-02

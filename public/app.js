@@ -497,6 +497,8 @@
   async function refreshMe() {
     const me = await api('/me');
     state.userName = me.userName; state.host = me.host;
+    state.signInEnds = Date.parse(me.credentialExpiresAt || '') || 0;
+    if (typeof paintLimitBanner === 'function') try { paintLimitBanner(); } catch {}
     const acc = me.account || {};
     $('#sidebar-name').textContent = me.userName;
     $('#sidebar-account').innerHTML = '';
@@ -814,7 +816,8 @@
   // new sessions to the top of their project, once; after that only drag-and-drop
   // (or Move up / Move down on the phone) changes the order. Saved on the server.
   state.order = { projects: [], sessions: {}, pinned: [] };
-  const groupKey = (s) => (s.cwd || s.project || 'Other').replace(/[\\/]+$/, '').toLowerCase();
+  // "No folder" chats each have a folder of their own (named by id); they group as one, Chats.
+  const groupKey = (s) => (s.chat ? '__chats' : (s.cwd || s.project || 'Other').replace(/[\\/]+$/, '').toLowerCase());
   function applyOrder() {
     const o = state.order; let changed = false;
     const groups = new Map();
@@ -908,7 +911,8 @@
         // "+" on the project row: a new session in that folder, like Desktop
         const add = el('button', 'proj-add'); add.type = 'button'; add.title = 'New session in ' + name;
         add.innerHTML = '<svg viewBox="0 0 20 20" width="14" height="14"><path d="M10 4v12M4 10h12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
-        add.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); state.cwd = items[0].cwd; localStorage.setItem('cr.cwd', state.cwd); location.hash = '#/'; renderProjectChip(); });
+        // On Chats, "+" is a new chat of its own - not one more in an earlier chat's folder.
+        add.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); state.cwd = items[0].chat ? '' : items[0].cwd; if (state.cwd) localStorage.setItem('cr.cwd', state.cwd); else localStorage.removeItem('cr.cwd'); location.hash = '#/'; renderProjectChip(); });
         sm.appendChild(add);
         sm.title = items[0].cwd + (manual ? '\nDrag to reorder projects' : '');
       }
@@ -1016,7 +1020,7 @@
   const folderName = (p) => (p || '').replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p;
   async function renderProjectChip() {
     const p = state.projects.find((x) => x.cwd === state.cwd);
-    const name = state.cwd ? (p ? p.name : folderName(state.cwd)) : 'No folder';
+    const name = state.cwdIsChat ? 'Chats' : state.cwd ? (p ? p.name : folderName(state.cwd)) : 'No folder';
     $('#project-name').textContent = name;
     $('#nb-folder-name').textContent = name;
     // branch of the chosen folder, for the chip next to it
@@ -1129,7 +1133,11 @@
   state.model = localStorage.getItem('cr.model') || MODELS[0].value;
   state.effort = localStorage.getItem('cr.effort') || '';
   state.ultracode = !!localStorage.getItem('cr.ultracode');
+  state.fast = !!localStorage.getItem('cr.fast');
   state.mode = localStorage.getItem('cr.mode') || 'default';
+  // Fast mode is the model's to offer (Opus 5.5 does), and a switch of its own in the model menu.
+  const fastFor = (id) => !!modelRow(id)?.supportsFastMode;
+  const FAST_ABOUT = 'Fast mode has the same intelligence with significantly faster output. It uses more credits and is billed via usage credits.';
 
   // A saved `claude-sonnet-5` is the wire id of the CLI's `sonnet` row; the CLI wants
   // its own value back, so the answer is also a migration of what this device saved.
@@ -1167,7 +1175,7 @@
     const name = (modelRow(state.model)?.displayName || 'Model').replace(/\s*\([^)]*\)\s*$/, '');
     // The effort only when the model has levels and this is not its default one.
     const shown = effortsFor(state.model).includes(state.effort) && state.effort !== DEFAULT_EFFORT ? state.effort : '';
-    $('#model-label').textContent = name + (shown ? ' · ' + (EFFORT_NAMES[shown] || shown) : '');
+    $('#model-label').textContent = name + (shown ? ' · ' + (EFFORT_NAMES[shown] || shown) : '') + (state.fast && fastFor(state.model) ? ' · Fast' : '');
   }
   function renderModeChip() { $('#mode-name').textContent = (MODES.find((x) => x.id === state.mode) || MODES[0]).name; }
   // Model, mode and effort belong to the session, like Desktop: a change is remembered for
@@ -1188,12 +1196,14 @@
     if (s.permissionMode && MODES.some((m) => m.id === s.permissionMode)) state.mode = s.permissionMode;
     state.effort = s.effort || '';
     state.ultracode = !!s.ultracode;
+    if (s.fast !== undefined) state.fast = !!s.fast;
     renderModelChip(); renderModeChip(); renderEffortChip();
   }
   function restoreDeviceDefaults() {
     state.model = modelRow(localStorage.getItem('cr.model')).value;
     state.effort = localStorage.getItem('cr.effort') || '';
     state.ultracode = !!localStorage.getItem('cr.ultracode');
+    state.fast = !!localStorage.getItem('cr.fast');
     state.mode = localStorage.getItem('cr.mode') || 'default';
     renderModelChip(); renderModeChip(); renderEffortChip();
   }
@@ -1213,8 +1223,18 @@
       const patch = { model: x.value };
       if (state.effort && !effortsFor(x.value).includes(state.effort)) { state.effort = ''; localStorage.removeItem('cr.effort'); patch.effort = ''; }
       if (state.ultracode && !effortStops(x.value).includes('ultracode')) { state.ultracode = false; localStorage.removeItem('cr.ultracode'); patch.ultracode = false; }
+      if (state.fast && !fastFor(x.value)) { state.fast = false; localStorage.removeItem('cr.fast'); patch.fast = false; }
       renderModelChip(); renderEffortChip(); m.classList.add('hidden'); pushControls(patch);
     }, { hint: x.value === state.model ? '' : String(i + 1), tag: x.discount ? '−' + x.discount + '%' : '' })))));
+    if (fastFor(state.model)) {
+      m.appendChild(el('div', 'menu-sep'));
+      const row = el('div', 'menu-item menu-switch'); row.title = FAST_ABOUT;
+      const t = el('span', 'menu-label'); t.appendChild(document.createTextNode('Fast mode')); row.appendChild(t);
+      row.appendChild(el('span', 'desc', FAST_ABOUT));
+      const sw = toggleEl(state.fast, async (on) => { state.fast = on; try { if (on) localStorage.setItem('cr.fast', '1'); else localStorage.removeItem('cr.fast'); } catch {} renderModelChip(); await pushControls({ fast: on }); });
+      sw.setAttribute('aria-label', 'Toggle fast mode'); row.appendChild(sw);
+      m.appendChild(row);
+    }
     // Where the list came from, and how to ask again. A model can arrive between two
     // page loads — Claude publishes it, and the CLI offers it as soon as it is new
     // enough — so opening the menu is itself a reason to re-ask.
@@ -1348,7 +1368,7 @@
     }
   });
   renderModelChip(); renderModeChip();
-  const turnOptions = () => ({ model: state.model, permissionMode: state.mode, ...(state.effort ? { effort: state.effort } : {}), ...(state.ultracode ? { ultracode: true } : {}) });
+  const turnOptions = () => ({ model: state.model, permissionMode: state.mode, ...(state.effort ? { effort: state.effort } : {}), ...(state.ultracode ? { ultracode: true } : {}), ...(state.fast && fastFor(state.model) ? { fast: true } : {}) });
 
   // ---------- session bar (project · branch · +added −removed · Create PR), session ⋮ menu, usage popover ----------
   async function refreshGit() {
@@ -1742,6 +1762,16 @@
     const L = usage.limits?.rate_limits; const bar = $('#limit-banner');
     let worst = null;
     if (L) for (const [name, lim] of [['weekly', L.seven_day], ['5-hour', L.five_hour], ...((L.model_scoped || []).map((m) => [m.display_name, m]))]) { if (!lim || lim.utilization == null) continue; const u = lim.utilization * (lim.utilization <= 1 ? 100 : 1); if (u >= 85 && (!worst || u > worst.u)) worst = { name, u, resets: lim.resets_at }; }
+    // With no limit to warn about, the same strip says when this computer's Claude sign-in ends -
+    // three days ahead, because renewing it takes the computer itself (claude login), not a phone.
+    const ends = state.signInEnds, soon = ends && ends - Date.now() < 3 * 86400000;
+    if (!worst && soon && sessionStorage.getItem('cr.limitDismissed') !== 'signin:' + ends) {
+      bar.classList.remove('hidden');
+      $('#lb-text').textContent = ends <= Date.now() ? 'The Claude sign-in on this computer has probably ended' : 'The Claude sign-in on this computer ends ' + new Date(ends).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+      $('#lb-resets').textContent = 'Sign in again there with claude login';
+      $('#lb-close').onclick = () => { try { sessionStorage.setItem('cr.limitDismissed', 'signin:' + ends); } catch {} bar.classList.add('hidden'); };
+      return;
+    }
     if (!worst || sessionStorage.getItem('cr.limitDismissed') === String(worst.resets)) { bar.classList.add('hidden'); return; }
     bar.classList.remove('hidden');
     $('#lb-text').textContent = (worst.u >= 100 ? 'Reached ' : 'Approaching ') + worst.name + ' usage limit';
@@ -1903,6 +1933,37 @@
     const d = groupDiff(g._names, g._inputs);
     if (d.add || d.del) { const st = el('span', 'group-diff'); st.innerHTML = `<span class="add">+${d.add.toLocaleString()}</span> <span class="del">−${d.del.toLocaleString()}</span>`; s.appendChild(st); }
   }
+  // A file Claude sent that is not a picture or a recording: a card, as Claude shows one -
+  // what it is, and a click that opens it in the side panel, rendered the way it reads.
+  // (It was a link to /api/file, which serves pictures only: a sent .html opened to
+  // "Not an image on this PC".)
+  const FILE_KINDS = [
+    [/\.(html?)$/i, 'Web page'], [/\.pdf$/i, 'PDF'], [/\.svg$/i, 'Image'], [/\.(md|markdown|mdx)$/i, 'Document'],
+    [/\.(csv|tsv)$/i, 'Table'], [/\.(json|jsonl|ya?ml|toml|xml)$/i, 'Data'], [/\.(txt|log|rtf)$/i, 'Text'],
+    [/\.(docx?|odt|pages)$/i, 'Word document'], [/\.(xlsx?|ods|numbers)$/i, 'Spreadsheet'], [/\.(pptx?|odp|key)$/i, 'Presentation'],
+    [/\.(zip|tar|gz|tgz|7z|rar)$/i, 'Archive'],
+    [/\.(m?[jt]sx?|py|rb|go|rs|java|kt|swift|c|h|cc|cpp|hpp|cs|php|sh|ps1|sql|css|scss|lua|r|dart|vue|svelte)$/i, 'Code'],
+  ];
+  const fileKind = (p) => (FILE_KINDS.find(([re]) => re.test(p)) || [null, 'File'])[1];
+  const fileExt = (p) => (String(p).match(/\.([A-Za-z0-9]{1,8})$/) || [, ''])[1].toUpperCase();
+  function fileCard(p) {
+    const b = el('button', 'sent-file'); b.type = 'button'; b.title = p;
+    const ic = el('span', 'sent-file-ic'); ic.innerHTML = FX_FILE; b.appendChild(ic);
+    const tx = el('span', 'sent-file-text');
+    tx.appendChild(el('span', 'sent-file-name', baseName(p)));
+    tx.appendChild(el('span', 'sent-file-kind', fileKind(p) + (fileExt(p) ? ' · ' + fileExt(p) : '')));
+    b.appendChild(tx);
+    b.addEventListener('click', () => openSentFile(p));
+    return b;
+  }
+  function openSentFile(p) {
+    const sep = String(state.cwd || '').includes('\\') ? '\\' : '/';
+    const abs = /^([A-Za-z]:[\\/]|\/)/.test(p) || !state.cwd ? p : state.cwd.replace(/[\\/]+$/, '') + sep + p;
+    if (/\.(html?|pdf|svg)$/i.test(abs)) return openFileInBrowser(abs);
+    if (!filesOpen) openFiles();
+    openFileAt(abs, baseName(p));
+  }
+
   // What SendUserFile delivered, shown the way Desktop shows it: caption, then the files inline.
   function sentCard(input) {
     const card = el('div', 'sent-card');
@@ -1914,7 +1975,7 @@
       if (isVideo(p)) media.appendChild(videoEl(src));
       else if (isAudio(p)) { const a = el('audio', 'md-audio'); a.controls = true; a.src = src; media.appendChild(a); }
       else if (/\.(png|jpe?g|gif|webp|svg|bmp|avif)$/i.test(p)) { const im = el('img', 'md-img sent-img'); im.src = src; im.alt = baseName(p); im.loading = 'lazy'; im.addEventListener('click', () => openImage(src, baseName(p))); media.appendChild(im); }
-      else { const chip = el('a', 'sent-file'); chip.textContent = baseName(p); chip.title = p; chip.href = src; chip.target = '_blank'; media.appendChild(chip); }
+      else media.appendChild(fileCard(p));
     }
     if (files.length) card.appendChild(media);
     return card;
@@ -2976,13 +3037,13 @@
   $('#fx-close').addEventListener('click', closeFiles);
   $('#fx-home').addEventListener('click', () => loadDir(fxHome || state.cwd || ''));
   $('#fx-up').addEventListener('click', () => { if (!fxView.classList.contains('hidden')) return showDir(); const up = fxDir.replace(/[\\/]+$/, '').replace(/[\\/][^\\/]+$/, ''); if (up) loadDir(up); });
-  const showDir = () => { fxView.classList.add('hidden'); fxView.textContent = ''; fxList.classList.remove('hidden'); $('#fx-path').textContent = fxDir; };
+  const showDir = () => { fxView.classList.add('hidden'); fxView.classList.remove('fx-rich'); fxView.textContent = ''; fxList.classList.remove('hidden'); $('#fx-path').textContent = fxDir; };
   async function loadDir(dir) {
     if (!dir) { fxList.innerHTML = ''; fxList.appendChild(el('div', 'muted small pad', 'This session has no folder.')); return; }
     showDir();
     try {
       const d = await api('/browse?files=1&path=' + encodeURIComponent(dir));
-      fxDir = d.path; $('#fx-path').textContent = d.path;
+      fxDir = d.path; if (fxView.classList.contains('hidden')) $('#fx-path').textContent = d.path; // a file opened over the list keeps its own path
       fxList.innerHTML = '';
       for (const x of d.dirs) {
         const b = el('button', 'fx-row'); b.type = 'button';
@@ -3007,14 +3068,11 @@
     // than being printed as text here. (Clicking one used to show its markup, which read as
     // the file failing to open.)
     if (/\.(html?|pdf|svg)$/i.test(p)) return openFileInBrowser(p);
-    fxList.classList.add('hidden'); fxView.classList.remove('hidden'); fxView.textContent = 'Opening…'; $('#fx-path').textContent = p;
+    fxList.classList.add('hidden'); fxView.classList.remove('hidden', 'fx-rich'); fxView.textContent = 'Opening…'; $('#fx-path').textContent = p;
     try {
       const r = await api('/fs/read?path=' + encodeURIComponent(p));
       fxView.textContent = '';
-      // An image is shown, not printed: the same route the chat uses for local pictures.
-      if (r.image) { const img = el('img'); img.src = localFileUrl(p); img.alt = name; img.addEventListener('click', () => openImage(img.src, name)); fxView.appendChild(img); return; }
-      if (r.binary) { fxView.textContent = name + ' is not text (' + fxSize(r.size) + ').'; return; }
-      fxView.textContent = r.text + (r.truncated ? '\n\n… the first 512 KB of ' + fxSize(r.size) + '.' : '');
+      renderFile(p, name, r);
     } catch (e) {
       // The server's machine does not have this file. In the app it may sit on the machine
       // this window is on instead (a file you have locally while the session runs on another
@@ -3023,6 +3081,69 @@
       fxView.textContent = notThere(e.message);
     }
   }
+  // A file in the side panel the way Claude shows one: a document rendered, a table as a
+  // table, data indented, code as code, a recording playing - with Source to see the text
+  // behind a rendered one, and Download for anything, including what cannot be shown.
+  function renderFile(p, name, r) {
+    fxView.classList.add('fx-rich');
+    const bar = el('div', 'fx-bar');
+    bar.appendChild(el('span', 'fx-kind', fileKind(p) + (r.size != null ? ' · ' + fxSize(r.size) : '')));
+    bar.appendChild(el('span', 'fx-spacer'));
+    const dl = el('button', 'link-btn small', 'Download'); dl.type = 'button'; dl.addEventListener('click', () => downloadFile(p)); 
+    fxView.appendChild(bar);
+    const body = el('div', 'fx-body'); fxView.appendChild(body);
+    const src = localFileUrl(p);
+    const code = (text) => { const pre = el('pre', 'fx-code'); pre.textContent = text; return pre; };
+    if (r.image) {
+      if (isVideo(p)) body.appendChild(videoEl(src));
+      else if (isAudio(p)) { const a = el('audio', 'md-audio'); a.controls = true; a.src = src; body.appendChild(a); }
+      else { const img = el('img'); img.src = src; img.alt = name; img.addEventListener('click', () => openImage(src, name)); body.appendChild(img); }
+      bar.appendChild(dl); return;
+    }
+    if (r.binary) {
+      body.appendChild(el('div', 'fx-note', name + ' can\u2019t be shown here' + (/Word|Spreadsheet|Presentation/.test(fileKind(p)) ? ' yet' : '') + '. Download it to open it with its own app.'));
+      bar.appendChild(dl); return;
+    }
+    const text = r.text + (r.truncated ? '\n\n… the first 512 KB of ' + fxSize(r.size) + '.' : '');
+    let rendered = null;
+    if (/\.(md|markdown|mdx)$/i.test(p)) { rendered = el('div', 'prose fx-md'); rendered.dir = 'auto'; rendered.innerHTML = md(r.text); }
+    else if (/\.(csv|tsv)$/i.test(p)) rendered = csvTable(r.text, /\.tsv$/i.test(p) ? '\t' : ',');
+    else if (/\.json$/i.test(p)) { try { rendered = code(JSON.stringify(JSON.parse(r.text), null, 2)); } catch {} }
+    if (rendered && !/\.json$/i.test(p)) {
+      const raw = code(text); raw.classList.add('hidden');
+      const tog = el('button', 'link-btn small', 'Source'); tog.type = 'button';
+      tog.addEventListener('click', () => { const showRaw = raw.classList.toggle('hidden') === false; rendered.classList.toggle('hidden', showRaw); tog.textContent = showRaw ? 'Preview' : 'Source'; });
+      bar.appendChild(tog); body.appendChild(rendered); body.appendChild(raw);
+    } else body.appendChild(rendered || code(text));
+    bar.appendChild(dl);
+  }
+  // CSV as a table: quoted fields, doubled quotes and line breaks inside quotes, as
+  // spreadsheets write them. The first 500 rows; the rest is in Source and Download.
+  function csvTable(text, sep) {
+    const rows = []; let row = [], f = '', q = false;
+    for (let i = 0; i < text.length && rows.length < 501; i++) {
+      const c = text[i];
+      if (q) { if (c === '"') { if (text[i + 1] === '"') { f += '"'; i++; } else q = false; } else f += c; }
+      else if (c === '"') q = true;
+      else if (c === sep) { row.push(f); f = ''; }
+      else if (c === '\n' || c === '\r') { if (c === '\r' && text[i + 1] === '\n') i++; row.push(f); rows.push(row); row = []; f = ''; }
+      else f += c;
+    }
+    if (f || row.length) { row.push(f); rows.push(row); }
+    const wrap = el('div', 'fx-table-wrap'), t = el('table', 'fx-table');
+    rows.slice(0, 501).forEach((cells, i) => { const tr = el('tr'); for (const v of cells) tr.appendChild(el(i ? 'td' : 'th', null, v)); t.appendChild(tr); });
+    wrap.appendChild(t);
+    if (rows.length > 500) wrap.appendChild(el('div', 'fx-note', 'The first 500 rows.'));
+    return wrap;
+  }
+  // Download by the server's /api/file?download: in the app, the system browser saves it
+  // (a webview does not always save a download); in a browser, an ordinary download.
+  function downloadFile(p) {
+    const url = localFileUrl(p) + '&download=1';
+    if (window.__TAURI__?.opener?.openUrl) return openExternal(location.origin + url);
+    const a = el('a'); a.href = url; a.download = baseName(p); document.body.appendChild(a); a.click(); a.remove();
+  }
+
   // A file the server's machine cannot see, read from the window's machine through the shell.
   // Only in the app (a plain browser has no shell) and only as a fallback, so the ordinary
   // path is untouched.
@@ -3381,10 +3502,11 @@
         }
         case 'init':
           mode = 'run'; setRunning(true);
-          if (ev.controls) { if (ev.controls.permissionMode) state.mode = ev.controls.permissionMode; if (ev.controls.model) state.model = ev.controls.model; state.effort = ev.controls.effort || ''; if (ev.controls.ultracode !== undefined) state.ultracode = !!ev.controls.ultracode; renderModeChip(); renderModelChip(); renderEffortChip(); }
+          if (ev.controls) { if (ev.controls.permissionMode) state.mode = ev.controls.permissionMode; if (ev.controls.model) state.model = ev.controls.model; state.effort = ev.controls.effort || ''; if (ev.controls.ultracode !== undefined) state.ultracode = !!ev.controls.ultracode; if (ev.controls.fast !== undefined) state.fast = !!ev.controls.fast; renderModeChip(); renderModelChip(); renderEffortChip(); }
+          fastNote(ev.fast);
           break;
         case 'controls':
-          if (ev.permissionMode) state.mode = ev.permissionMode; if (ev.model) state.model = ev.model; if (ev.effort !== undefined) state.effort = ev.effort; if (ev.ultracode !== undefined) state.ultracode = !!ev.ultracode;
+          if (ev.permissionMode) state.mode = ev.permissionMode; if (ev.model) state.model = ev.model; if (ev.effort !== undefined) state.effort = ev.effort; if (ev.ultracode !== undefined) state.ultracode = !!ev.ultracode; if (ev.fast !== undefined) state.fast = !!ev.fast;
           renderModeChip(); renderModelChip(); break;
         case 'status': if (ev.permissionMode) { state.mode = ev.permissionMode; renderModeChip(); } break;
         case 'context': usage.context = ev; paintUsage(); break;
@@ -3396,7 +3518,13 @@
           break;
         }
         case 'tasks': state.tasks = ev.tasks || []; paintTasks(); break;
-        case 'note': thread.appendChild(el('div', 'note', ev.text)); statusPaint(); break;
+        case 'note': thread.appendChild(el('div', 'note' + (ev.level === 'warning' ? ' warning' : ''), ev.text)); statusPaint(); autoscroll(); break;
+        // Stop took back messages typed mid-turn: their dashed bubbles go, on every device.
+        case 'unqueued': for (const id of ev.ids || []) thread.querySelector('.msg.user.queued[data-prompt-id="' + CSS.escape(id) + '"]')?.remove(); break;
+        // /clear: Claude Code goes on in a new session, and the page goes with it. Only the page on
+        // the old session moves: the new session's stream replays this same event while the /clear
+        // turn is still under way, and acting on it there closed the stream it had just opened.
+        case 'reset': if (state.current === sessionId && ev.from === sessionId && ev.sessionId && ev.sessionId !== sessionId) { es.close(); location.hash = '#/s/' + ev.sessionId; loadSessions().catch(() => {}); } break;
         // One assistant row for the whole turn; each API message gets its own key space.
         case 'msg_start':
           msgNo += 1; partial.clear();
@@ -3444,9 +3572,11 @@
           status.tool = null; status.toolSince = 0; statusPaint();
           autoscroll(); break;
         case 'permission': showPermission(ev); status.waiting = true; statusPaint(); autoscroll(); break;
-        case 'permission_resolved': resolvePermissionCard(ev.reqId, ev.behavior); status.waiting = false; statusPaint(); break;
+        case 'permission_resolved': resolvePermissionCard(ev.reqId, ev.behavior, ev.how); status.waiting = false; statusPaint(); break;
         case 'result':
-          if (ev.isError) authNote(ev.text);
+          // A turn stopped from here is an error result too: the Stop was the point, not a failure.
+          if (ev.isError && !ev.stopped) authNote(ev.text, ev.startupFailure);
+          fastNote(ev.fast);
           if (state.live) addActions(state.live, Date.now());
           state.live = null; refreshGit();
           // The answer is done. Unless another turn is already queued behind it, the composer
@@ -3473,8 +3603,14 @@
     es.onerror = () => { /* EventSource retries by itself with Last-Event-ID */ };
   }
   // An error that smells like a dead token gets a button straight to the account dialog.
-  function authNote(text) {
+  // A Claude Code too old for what the session needs gets the way to a newer one.
+  function authNote(text, startupFailure) {
     const n = el('div', 'note error', text || 'Something went wrong.');
+    if (startupFailure === 'cli_version_too_old') {
+      n.appendChild(document.createTextNode(' '));
+      const b = el('button', 'link-btn inline', 'Update Claude Code'); b.type = 'button';
+      b.addEventListener('click', () => openSettings('general')); n.appendChild(b);
+    }
     if (/401|invalid|expired|authenticat|not logged in|api key|oauth/i.test(text || '')) {
       n.appendChild(document.createTextNode(' '));
       const b = el('button', 'link-btn inline', 'Update token or switch account'); b.type = 'button';
@@ -3488,6 +3624,25 @@
     const live = state.live?.tools.get(id); if (live) return live;
     for (const d of thread.querySelectorAll('details.step.tool')) if (d._toolId === id) return d;
     return null;
+  }
+  // Fast mode was asked for and cannot serve: say why once, in Claude's words, rather than let
+  // the chip claim a speed the turn did not get.
+  const FAST_WHY = {
+    extra_usage_disabled: 'Fast mode requires usage credits. Turn them on under Usage.',
+    free: 'Fast mode requires usage credits. Turn them on under Usage.',
+    not_first_party: 'Fast mode is only available when using the Anthropic API directly.',
+    model_not_allowed: 'Fast mode isn’t available for your organization at this time.',
+    preference: 'Fast mode isn’t available for your organization at this time.',
+    disabled_by_env: 'Fast mode is not available.',
+    network_error: 'Fast mode couldn’t be applied. You can try again.',
+    unknown: 'Fast mode couldn’t be applied. You can try again.',
+  };
+  let fastSaid = '';
+  function fastNote(f) {
+    if (!f || !state.fast || f.state === 'on') { if (f?.state === 'on') fastSaid = ''; return; }
+    const why = f.state === 'cooldown' ? 'Fast mode is paused after a rate limit and comes back on by itself.' : FAST_WHY[f.reason];
+    if (!why || fastSaid === why) return;
+    fastSaid = why; thread.appendChild(el('div', 'note warning', why)); autoscroll();
   }
   function prettyModel(m) {
     if (!m) return 'Claude';
@@ -3548,7 +3703,7 @@
     // Once it is answered it is not a form any more: the options go and what you chose
     // stays under its question, the way the answer reads back in Claude Code itself.
     // Leaving the buttons there invites a second answer that nothing is listening for.
-    card.collapse = (answers, behavior) => {
+    card.collapse = (answers, behavior, how) => {
       if (card.classList.contains('answered')) return;
       card.classList.add('answered');
       head.lastChild.textContent = behavior === 'deny' ? 'Claude asked' : qs.length === 1 ? 'You answered' : 'You answered ' + qs.length + ' things';
@@ -3558,7 +3713,7 @@
         const given = answers && answers[q.question];
         const line = el('div', 'q-answer' + (given ? '' : ' none'));
         line.dir = 'auto';
-        line.textContent = given || (behavior === 'deny' ? 'Skipped' : 'Answered');
+        line.textContent = given || (how === 'replied_in_chat' ? 'Answered in the chat' : behavior === 'deny' ? 'Skipped' : 'Answered');
         wrap.appendChild(line);
       }
       actions.remove();
@@ -3607,10 +3762,10 @@
     }));
     thread.appendChild(t);
   }
-  function resolvePermissionCard(reqId, behavior) {
+  function resolvePermissionCard(reqId, behavior, how) {
     const card = thread.querySelector(`.permission[data-req-id="${reqId}"]`); if (!card) return;
     // Answered here, or on another device: either way it stops being a form.
-    if (card.collapse) return card.collapse(null, behavior);
+    if (card.collapse) return card.collapse(null, behavior, how);
     card.querySelector('.permission-actions').remove();
     const r = card.querySelector('.perm-result');
     const asked = card.classList.contains('question-card');
@@ -3767,7 +3922,12 @@
       if (state.current) subscribe(state.current); // back to following the session
     }
   }
-  async function stop() { if (state.current) await api(`/sessions/${state.current}/stop`, { method: 'POST' }); }
+  async function stop() {
+    if (!state.current) return;
+    const r = await api(`/sessions/${state.current}/stop`, { method: 'POST' });
+    const back = (r?.unqueued || []).map((x) => x.text).filter(Boolean);
+    if (back.length && !input.value.trim()) { input.value = back.join('\n\n'); input.dispatchEvent(new Event('input')); }
+  }
 
   // ---------- the sidebar and the right-hand panels drag wider or narrower ----------
   // The width goes into a CSS variable on <html>, so the stylesheet's phone rules keep
@@ -3934,7 +4094,9 @@
       applySessionSettings(info.settings);
       $('#chat-meta').textContent = info.project || '';
       $('#chat-meta').title = [info.cwd, info.branch && 'Branch: ' + info.branch].filter(Boolean).join('\n');
-      state.cwd = info.cwd || state.cwd; renderProjectChip(); pvFollow(); $('#project-btn').classList.add('locked');
+      // A chat's own folder is where it works (the Files panel, the Browser, relative paths), but
+      // it is not a folder to start the next session in: New goes back to what was picked.
+      state.cwd = info.cwd || state.cwd; state.cwdIsChat = !!info.chat; renderProjectChip(); pvFollow(); $('#project-btn').classList.add('locked');
       renderHistory(messages);
       paintHistoryTop();
       // The last turn never finished (the app or the PC restarted mid-work): say so, offer to go on.
@@ -3959,6 +4121,7 @@
   }
   function openNew() {
     openSeq++; // a session still loading must not paint over the new-chat screen
+    if (state.cwdIsChat) { state.cwdIsChat = false; state.cwd = localStorage.getItem('cr.cwd') || ''; renderProjectChip(); }
     hist.id = null; hist.more = false;
     state.current = null; state.live = null; state.tasks = []; hiddenTasks.clear(); paintTasks(); if (changesOpen) closeChanges(); if (filesOpen) closeFiles(); stopPrWatch(); $("#sb-pr-state").classList.add("hidden");
     if (state.es) { state.es.close(); state.es = null; }
