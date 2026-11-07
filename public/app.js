@@ -3775,6 +3775,18 @@
 
   // ---------- composer ----------
   const input = $('#input'), send = $('#send');
+  // Commands the app runs itself when typed as /name in the box (/rename, /usage, /btw…), as
+  // Desktop does; any other /name goes to Claude Code. Features add theirs with registerCommand.
+  const appCommands = new Map(); // name -> { description, argumentHint, run(args) }
+  function registerCommand(name, spec) { appCommands.set(String(name).replace(/^\//, ''), spec); }
+  // "Attach as context": a message, a selection, lines of a file, a terminal's output - quoted in
+  // the next message. Everything that offers it calls this one function.
+  function attachContext({ label, text }) {
+    if (!text) return;
+    const quoted = (label ? label + ':\n' : '') + String(text).split('\n').map((l) => '> ' + l).join('\n');
+    input.value = (input.value.trim() ? input.value.replace(/\s+$/, '') + '\n\n' : '') + quoted + '\n\n';
+    input.dispatchEvent(new Event('input')); input.focus();
+  }
   // Unsent text survives a refresh, per chat.
   const draftKey = (id) => 'cr.draft.' + (id || 'new');
   function applyPrefill() { if (!pendingPrefill) return false; input.value = pendingPrefill; pendingPrefill = ''; input.dispatchEvent(new Event('input')); input.focus(); return true; }
