@@ -74,8 +74,10 @@ async function main() {
     await open('notes.md');
     check('Markdown opens rendered', await until(() => page.$eval('#fx-view .fx-md h1', (h) => h.textContent === 'Plan')));
     await page.screenshot({ path: path.join(SHOTS, 'files-markdown.png') });
-    await page.click('#fx-view .fx-bar button:has-text("Source")');
-    check('Source shows the text behind it', await until(() => page.$eval('#fx-view .fx-code:not(.hidden)', (p) => p.textContent.startsWith('# Plan'))));
+    // Rendered previews are kept (PR #30); "Source" is now "Edit" — clicking it edits the
+    // file in place instead of only showing the text behind the rendering.
+    await page.click('#fx-view .fx-bar button:has-text("Edit")');
+    check('Edit shows the text behind it, editable', await until(() => page.$eval('#fx-view .fx-editor-ta', (t) => t.value.startsWith('# Plan'))));
 
     await open('data.csv');
     const cells = await page.$$eval('#fx-view .fx-table tr', (rows) => rows.map((r) => [...r.children].map((c) => c.textContent)));
@@ -85,9 +87,14 @@ async function main() {
     await open('config.json');
     check('JSON is indented', await until(() => page.$eval('#fx-view .fx-code', (p) => p.textContent.includes('\n  "nested": {'))));
 
+    // A plain code file has no rendered alternative, so it opens straight into the editor —
+    // "click any file in the file panel to edit it in place."
     await open('script.py');
-    check('code is shown as code', await until(() => page.$eval('#fx-view .fx-code', (p) => p.textContent.startsWith('def main():'))));
+    check('code opens editable, in place', await until(() => page.$eval('#fx-view .fx-editor-ta', (t) => t.value.startsWith('def main():'))));
 
+    // This fixture's "report.docx" is a few raw zip-signature bytes, not a real document (the
+    // Office preview parser is exercised for real in test/ui/files-pane.cjs); not a valid zip,
+    // it still falls back to the plain "can't be shown" message, same as any other binary.
     await open('report.docx');
     check('a file that cannot be shown says so, with Download', await until(() => page.$eval('#fx-view', (v) => /can.t be shown here/.test(v.textContent) && !!v.querySelector('.fx-bar button'))));
     await page.screenshot({ path: path.join(SHOTS, 'files-docx.png') });
