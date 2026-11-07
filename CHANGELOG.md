@@ -7,6 +7,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-11-07
+
 ### Added
 
 - **Fast mode**, as Claude has it: a switch at the foot of the model menu for a model that
@@ -551,7 +553,8 @@ settings across.
   from a browser, with live streaming, permission prompts and a new-session
   flow.
 
-[Unreleased]: https://github.com/aryasadeghy/claude-anywhere/compare/v0.10.5...HEAD
+[Unreleased]: https://github.com/aryasadeghy/claude-anywhere/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/aryasadeghy/claude-anywhere/compare/v0.10.5...v0.11.0
 [0.10.5]: https://github.com/aryasadeghy/claude-anywhere/compare/v0.10.4...v0.10.5
 [0.10.4]: https://github.com/aryasadeghy/claude-anywhere/compare/v0.10.3...v0.10.4
 [0.10.3]: https://github.com/aryasadeghy/claude-anywhere/compare/v0.10.2...v0.10.3
