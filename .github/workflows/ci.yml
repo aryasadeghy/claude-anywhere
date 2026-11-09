@@ -44,10 +44,23 @@ jobs:
         run: npm test
 
   browser:
-    name: Browser pane, in a browser
+    name: In a browser (${{ matrix.part }})
     runs-on: ubuntu-latest
-    # The suites take a few minutes; a stuck one would otherwise hold the job for six hours.
+    # A stuck suite would otherwise hold the job for six hours.
     timeout-minutes: 25
+    # A dozen walkthroughs one after another took longer than the rest of CI together; three
+    # runners each take a share. Every suite in a share runs even when one fails - chained with
+    # && an early failure hid every later suite, which then looked as if it had never failed.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - part: browser, history, settings
+            suites: browser history claude-code
+          - part: turns and the box
+            suites: realtime queue controls composer queue-controls
+          - part: files, terminal, conversation
+            suites: files files-pane terminal conversation
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -59,13 +72,19 @@ jobs:
       # so it is fetched for this job alone.
       - run: npm i --no-save playwright@1.63.0
       - run: npx playwright install --with-deps chromium webkit
-      - name: Walk through the Browser pane, desktop and phone
-        run: npm run test:ui
+      - name: Walk through the app, desktop and phone
+        run: |
+          fail=0
+          for s in ${{ matrix.suites }}; do
+            [ -f "test/ui/$s.cjs" ] || continue
+            echo "::group::$s"; node "test/ui/$s.cjs" || { fail=1; echo "::error::$s failed"; }; echo "::endgroup::"
+          done
+          exit $fail
       - name: Keep the screenshots
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: browser-pane-screenshots
+          name: screenshots-${{ strategy.job-index }}
           path: test/ui/shots/
 
   shell:
