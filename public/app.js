@@ -3118,6 +3118,9 @@
     if (e.ctrlKey || e.metaKey) { fxSelected.has(row.path) ? fxSelected.delete(row.path) : fxSelected.add(row.path); fxLastClicked = row.path; paintTree(); return; }
     fxSelected.clear(); fxSelected.add(row.path); fxLastClicked = row.path;
     if (row.isDir) { fxExpanded.has(row.path) ? fxExpanded.delete(row.path) : fxExpanded.add(row.path); ensureChildren(row.path); paintTree(); }
+    // A page, a PDF or an SVG is more than its source: a click renders it in the Browser, as it did
+    // before the pane had tabs. Its source is a double-click away, for editing.
+    else if (/\.(html?|pdf|svg)$/i.test(row.path)) openFileInBrowser(row.path);
     else openPreviewTab(row.path, row.name);
   }
   // ---------- right-click: Open, Copy path, Attach as context, Open in terminal, Open in editor ----------
@@ -3209,7 +3212,7 @@
       b.appendChild(el('span', 'fx-tab-name', tab.name));
       if (tab.dirty) b.appendChild(el('span', 'fx-tab-dot', '●'));
       const x = el('button', 'fx-tab-x', '×'); x.type = 'button'; x.title = 'Close';
-      x.addEventListener('click', (e) => { e.stopPropagation(); closeTab(tab.path); });
+      x.addEventListener('click', (e) => { e.stopPropagation(); closeFxTab(tab.path); });
       b.appendChild(x);
       b.addEventListener('click', () => activateTab(tab.path));
       b.addEventListener('dblclick', () => { tab.preview = false; renderTabs(); });
@@ -3232,7 +3235,7 @@
     activateTab(p);
   }
   function activateTab(p) { fxActivePath = p; fxPanel.classList.toggle('fx-file-open', true); renderTabs(); loadTabContent(p); }
-  function closeTab(p) {
+  function closeFxTab(p) {
     const tab = fxOpen.find((t) => t.path === p); if (!tab) return;
     if (tab.dirty && !tab.shellOnly) saveTab(tab, { explicit: true }).catch(() => {});
     fxOpen = fxOpen.filter((t) => t.path !== p);
@@ -4657,7 +4660,16 @@
     if (!composerPopOpen()) return;
     if (e.key === 'ArrowDown') { e.preventDefault(); cpopAt = Math.min(cpopAt + 1, cpopRows.length - 1); paintComposerPop(); }
     else if (e.key === 'ArrowUp') { e.preventDefault(); cpopAt = Math.max(cpopAt - 1, 0); paintComposerPop(); }
-    else if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); if (cpopRows.length) pickComposerPop(cpopAt); else closeComposerPop(); }
+    else if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault();
+      if (!cpopRows.length) return closeComposerPop();
+      const row = cpopRows[cpopAt], slash = cpopMode === 'slash', typed = cpopTrigger?.query || '';
+      pickComposerPop(cpopAt);
+      // Typed out in full, a command that takes nothing more runs on Enter, as in Desktop and the
+      // CLI: "/clear" and Enter clears. A half-typed one is completed first (Enter again runs it),
+      // Tab only completes, and a command with an argument waits for it.
+      if (e.key === 'Enter' && slash && typed.toLowerCase() === row.name.toLowerCase() && !(row.argumentHint || '').trim()) submit();
+    }
     else if (e.key === 'Escape') { e.preventDefault(); closeComposerPop(); }
   });
 
