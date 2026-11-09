@@ -355,6 +355,13 @@
       <div id="ch-file" class="ch-file hidden"><span id="ch-file-name"></span><button id="ch-open-editor" class="link-btn small hidden" type="button">Open in editor</button></div>
       <div id="ch-list" class="tp-list ch-list"></div>
       <div id="ch-diff" class="ch-diffwrap hidden"></div>
+      <!-- Git actions: Desktop's own wording. Hidden until the folder's git state says which apply. -->
+      <div id="ch-actions" class="ch-actions hidden">
+        <button id="ch-commit-wip" class="link-btn small" type="button">Commit as WIP</button>
+        <span class="sb-spacer"></span>
+        <button id="ch-create-pr" class="link-btn small hidden" type="button">Create draft PR</button>
+        <button id="ch-commit-push" class="btn btn-primary small" type="button">Commit and push</button>
+      </div>
     </aside>
 
     <aside id="tasks-panel" class="tasks-panel hidden" aria-label="Tasks">

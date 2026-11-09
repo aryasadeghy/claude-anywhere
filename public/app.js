@@ -1397,6 +1397,7 @@
     m.appendChild(item('Changes', '', false, () => { m.classList.add('hidden'); openChanges(); }));
     m.appendChild(item('Files', 'Look through this session\'s folder', false, () => { m.classList.add('hidden'); openFiles(); }));
     m.appendChild(item('Browser', 'Dev servers and the project\'s pages and PDFs, here and on your phone', false, () => { m.classList.add('hidden'); openPreview(); }));
+    if (state.cwd) m.appendChild(item('Open in editor', '', false, () => { m.classList.add('hidden'); openInEditor(state.cwd); }));
     m.appendChild(item('Worktrees…', 'A second checkout on its own branch', false, () => { m.classList.add('hidden'); showWorktrees(state.cwd); }));
     m.appendChild(item('Keep computer awake', (AWAKE.find((a) => a[0] === awakeMode) || AWAKE[0])[1], false, () => {
       m.classList.add('hidden');
@@ -3670,7 +3671,9 @@
     chip.classList.remove('hidden');
     $('#sb-pr').classList.add('hidden'); // there is already one: no point offering to make another
   }
-  menuFor('#sb-pr-state', '#pr-menu', (m) => {
+  // A PR row for the Related / Stacked lists below: "#123 title", a draft tag, opens on GitHub.
+  const prRow = (p) => item('#' + p.number + ' ' + (p.title || ''), '', false, () => window.open(p.url, '_blank', 'noopener'), { tag: p.draft ? 'draft' : '' });
+  function renderPrMenu(m) {
     m.innerHTML = '';
     if (!prData?.has) return;
     const row = (k, v) => { const r = el('div', 'row'); r.appendChild(el('span', 'k', k)); r.appendChild(el('span', 'v', v)); m.appendChild(r); };
@@ -3692,15 +3695,44 @@
       m.appendChild(d);
     }
     if (prData.commentCount > 3) m.appendChild(el('div', 'cmt muted', prData.commentCount - 3 + ' more on GitHub'));
+    if (prData.related?.length || prData.stack?.length) {
+      m.appendChild(el('div', 'menu-sep'));
+      if (prData.stack?.length) { m.appendChild(el('div', 'menu-title', 'Stacked on')); for (const p of prData.stack) m.appendChild(prRow(p)); }
+      if (prData.related?.length) { m.appendChild(el('div', 'menu-title', 'Related')); for (const p of prData.related) m.appendChild(prRow(p)); }
+    }
     m.appendChild(el('div', 'menu-sep'));
-    m.appendChild(item(prData.autoMerge ? 'Turn off auto-merge' : 'Merge when the checks pass', '', false, async () => {
-      m.classList.add('hidden');
-      try { prData = await api(`/sessions/${state.current}/pr/auto-merge`, { method: 'POST', body: JSON.stringify({ on: !prData.autoMerge, method: 'squash' }) }); refreshPr(); }
+    if (prData.state === 'OPEN' && prData.draft) {
+      m.appendChild(item('Mark ready for review', '', false, async () => {
+        try { await api(`/sessions/${state.current}/git/mark-ready`, { method: 'POST' }); toast('Marked ready for review.'); refreshPr(true); }
+        catch (e) { alert(e.message); }
+      }));
+    } else if (prData.state === 'OPEN' && !prData.autoMerge) {
+      m.appendChild(item('Confirm merge', '', false, async () => {
+        if (!confirm(`Merge pull request #${prData.number}?`)) return;
+        m.classList.add('hidden');
+        try { await api(`/sessions/${state.current}/git/merge`, { method: 'POST' }); toast('Merged.'); refreshPr(true); }
+        catch (e) { alert(e.message); }
+      }));
+    }
+    // Merge when ready, Auto-fix and Auto-archive: checkmark toggles, same item left open so
+    // more than one can be flipped without reopening the menu each time.
+    m.appendChild(item('Merge when ready', '', !!prData.autoMerge, async () => {
+      try { prData = await api(`/sessions/${state.current}/pr/auto-merge`, { method: 'POST', body: JSON.stringify({ on: !prData.autoMerge, method: 'squash' }) }); renderPrMenu(m); refreshPr(); }
       catch (e) { alert(e.message); }
     }));
+    m.appendChild(item('Auto-fix', 'Wakes Claude in this session to fix failing checks, merge conflicts and review comments.', !!prData.autoFix, async () => {
+      try { const r = await api(`/sessions/${state.current}/pr/auto-fix`, { method: 'POST', body: JSON.stringify({ on: !prData.autoFix }) }); prData.autoFix = r.on; renderPrMenu(m); }
+      catch (e) { alert(e.message); }
+    }));
+    m.appendChild(item('Auto-archive after PR merge or close', '', !!prData.autoArchive, async () => {
+      try { const r = await api(`/sessions/${state.current}/pr/auto-archive`, { method: 'POST', body: JSON.stringify({ on: !prData.autoArchive }) }); prData.autoArchive = r.on; renderPrMenu(m); }
+      catch (e) { alert(e.message); }
+    }));
+    m.appendChild(el('div', 'menu-sep'));
     m.appendChild(item('Open on GitHub', '', false, () => { m.classList.add('hidden'); window.open(prData.url, '_blank', 'noopener'); }));
     m.appendChild(item('Refresh', '', false, () => { m.classList.add('hidden'); refreshPr(true); }));
-  });
+  }
+  menuFor('#sb-pr-state', '#pr-menu', renderPrMenu);
 
   // ---------- keep this computer awake ----------
   // It holds a system request while it is on, and lets go when it is off; nothing in
@@ -3709,6 +3741,61 @@
   let awakeMode = 'off';
   async function loadAwake() { try { awakeMode = (await api('/awake')).mode; } catch {} }
   async function setAwake(mode) { try { awakeMode = (await api('/awake', { method: 'POST', body: JSON.stringify({ mode }) })).mode; toast('Keep awake: ' + (AWAKE.find((a) => a[0] === awakeMode) || [])[1]); } catch (e) { alert(e.message); } }
+
+  // ---------- git actions: commit, push, draft PR, ready for review, merge ----------
+  // A short subject line from what changed, in this repo's own style (CONTRIBUTING.md: lower
+  // case, no trailing period) - a starting point to edit, not a message anyone has to accept.
+  function summarizeChangedFiles(files) {
+    if (!files?.length) return '';
+    if (files.length <= 3) return 'update ' + files.map((f) => f.path.split(/[\\/]/).pop()).join(', ').replace(/, ([^,]*)$/, ' and $1');
+    const added = files.filter((f) => f.status === 'A' || f.status === '?').length;
+    const removed = files.filter((f) => f.status === 'D').length;
+    const changed = files.length - added - removed;
+    const bits = [changed && changed + ' changed', added && added + ' added', removed && removed + ' removed'].filter(Boolean);
+    return `update ${files.length} files (${bits.join(', ')})`;
+  }
+  // Dynamically built, like #rewind-modal below: one dialog, reused for every commit.
+  const commitModal = (() => {
+    const m = el('div', 'modal hidden'); m.id = 'commit-modal';
+    const card = el('div', 'modal-card');
+    const head = el('div', 'modal-head'); head.appendChild(el('span', null, 'Commit changes'));
+    const close = el('button', 'icon-btn'); close.type = 'button'; close.setAttribute('aria-label', 'Close');
+    close.innerHTML = '<svg viewBox="0 0 20 20" width="16" height="16"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+    close.addEventListener('click', () => m.classList.add('hidden'));
+    head.appendChild(close); card.appendChild(head);
+    card.appendChild(el('p', 'modal-hint', 'Stages every change in this folder and pushes the branch (setting its upstream if it has none).'));
+    const ta = el('textarea', 'commit-msg'); ta.rows = 3; card.appendChild(ta);
+    const row = el('div', 'commit-row');
+    const err = el('span', 'note error hidden'); row.appendChild(err);
+    const go = el('button', 'btn btn-primary small', 'Commit and push'); go.type = 'button';
+    go.addEventListener('click', async () => {
+      const message = ta.value.trim(); if (!message) return;
+      go.disabled = true; err.classList.add('hidden');
+      try {
+        await api(`/sessions/${state.current}/git/commit-push`, { method: 'POST', body: JSON.stringify({ message }) });
+        m.classList.add('hidden'); toast('Committed and pushed.'); loadChanges(); refreshGit(); refreshPr(true);
+      } catch (e) { err.textContent = e.message; err.classList.remove('hidden'); }
+      go.disabled = false;
+    });
+    row.appendChild(go); card.appendChild(row);
+    m.appendChild(card); document.body.appendChild(m);
+    return m;
+  })();
+  function openCommitDialog() {
+    commitModal.querySelector('.commit-msg').value = summarizeChangedFiles(changesData?.files || []);
+    commitModal.querySelector('.note').classList.add('hidden');
+    commitModal.classList.remove('hidden');
+    commitModal.querySelector('.commit-msg').focus();
+  }
+  $('#ch-commit-push').addEventListener('click', openCommitDialog);
+  $('#ch-commit-wip').addEventListener('click', async () => {
+    try { await api(`/sessions/${state.current}/git/commit-wip`, { method: 'POST' }); toast('Committed as WIP.'); loadChanges(); refreshGit(); }
+    catch (e) { alert(e.message); }
+  });
+  $('#ch-create-pr').addEventListener('click', async () => {
+    try { const r = await api(`/sessions/${state.current}/git/create-draft-pr`, { method: 'POST' }); toast('Draft PR created.'); refreshPr(true); if (r.url) window.open(r.url, '_blank', 'noopener'); }
+    catch (e) { alert(e.message); }
+  });
 
   // ---------- Changes: the files this folder has changed, and their diffs (Desktop's Changes pane) ----------
   const changesPanel = $('#changes-panel'), chList = $('#ch-list'), chDiff = $('#ch-diff');
@@ -3731,6 +3818,8 @@
   const fmtN = (n) => Number(n || 0).toLocaleString();
   function paintChanges() {
     const d = changesData; chList.innerHTML = '';
+    $('#ch-actions').classList.toggle('hidden', !d?.git);
+    $('#ch-create-pr').classList.toggle('hidden', !!prData?.has);
     if (!d || !d.git) { $('#ch-meta').textContent = ''; chList.appendChild(el('div', 'muted small pad', 'This folder is not a git repository.')); return; }
     $('#ch-meta').textContent = d.branch + ' · ' + d.files.length + (d.files.length === 1 ? ' file' : ' files');
     $('#ch-stat').innerHTML = d.files.length ? `<span class="add">+${fmtN(d.added)}</span> <span class="del">−${fmtN(d.removed)}</span>` : '';

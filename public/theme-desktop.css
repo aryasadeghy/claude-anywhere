@@ -1162,3 +1162,24 @@ audio.lb-media { width: min(520px, 90vw); height: auto; }
   .files-panel.fx-file-open #fx-back { display: inline-flex; }
   .fx-tab { max-width: 120px; }
 }
+
+/* ---------- v62: git actions, PR auto-fix/auto-archive, related & stacked PRs, worktree sessions ---------- */
+.ch-actions { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-top: 1px solid var(--line); flex: none; }
+#commit-modal .modal-card { max-width: 440px; }
+.commit-msg { width: 100%; box-sizing: border-box; margin-top: 10px; padding: 8px 10px; border-radius: 9px; border: 1px solid var(--line-2); background: var(--bg-2); color: var(--ink); font: inherit; font-size: 13.5px; resize: vertical; }
+.commit-row { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 12px; }
+.commit-row .note.error { margin: 0; flex: 1; font-size: 12.5px; }
+.pr-pop .menu-item .tag { margin-inline-start: 6px; }
+/* a Worktree choice at the bottom of the folder menu, and the progress dialog while one is made */
+#wt-setup-modal .modal-card { max-width: 380px; }
+.wt-steps { margin: 12px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.wt-steps li { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-3); }
+.wt-steps li.done { color: var(--ink-2); }
+.wt-steps li.active { color: var(--ink); font-weight: 500; }
+.wt-steps li .dot { width: 7px; height: 7px; border-radius: 50%; border: 1.4px solid var(--ink-3); flex: none; }
+.wt-steps li.done .dot { background: var(--success); border-color: var(--success); }
+.wt-steps li.active .dot { background: #d9a757; border-color: #d9a757; animation: pulse 1.4s infinite; }
+.wt-setup-row { display: flex; justify-content: flex-end; margin-top: 14px; }
+@media (max-width: 860px) {
+  .ch-actions { flex-wrap: wrap; }
+}

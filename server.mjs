@@ -32,6 +32,8 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { searchTranscripts } from './lib/search.mjs';
 import * as worktrees from './lib/worktrees.mjs';
 import * as pr from './lib/pr.mjs';
+import * as gitActions from './lib/git-actions.mjs';
+import * as autofix from './lib/autofix.mjs';
 import * as awake from './lib/awake.mjs';
 import * as update from './lib/update.mjs';
 import * as models from './lib/models.mjs';
@@ -479,6 +481,7 @@ app.delete('/api/sessions/:id', async (req, res, next) => {
     const info = await getSessionInfo(id).catch(() => null);
     const kept = trashSession(id, info);
     if (!kept) await deleteSession(id); // nothing to move, or the move failed: do as asked
+    autofix.forgetSession(id); // gone from the sidebar: stop polling GitHub for it
     res.json({ ok: true, recoverable: !!kept });
   } catch (e) { next(e); }
 });
@@ -853,7 +856,8 @@ app.post('/api/sessions/:id/limit-queue/:msgId/send-now', async (req, res) => {
 app.get('/api/sessions/:id/pr', async (req, res) => {
   const cwd = await sessionCwd(req.params.id);
   if (!cwd || !fs.existsSync(cwd)) return res.json({ has: false });
-  res.json(req.query.fresh === '1' ? (pr.forget(cwd), await pr.cached(cwd)) : await pr.cached(cwd));
+  const data = req.query.fresh === '1' ? (pr.forget(cwd), await pr.cached(cwd)) : await pr.cached(cwd);
+  res.json({ ...data, autoFix: autofix.isAutoFix(req.params.id), autoArchive: autofix.isAutoArchive(req.params.id) });
 });
 app.post('/api/sessions/:id/pr/auto-merge', async (req, res) => {
   try {
@@ -1011,6 +1015,7 @@ function listPlugins() {
 claudeCode.useDir(path.join(DATA_DIR, 'claude-code')); // first: asking for the menu starts Claude Code
 models.useCache(DATA_DIR);
 limitQueue.init(DATA_DIR); // messages held while the plan's usage limit is reached; survives a restart
+autofix.init(DATA_DIR); // per-PR auto-fix and auto-archive switches, and the watcher behind them
 models.warm().catch(() => {});
 // Refresh waits: a background refresh would answer with the very list it was asked to
 // replace, and the menu would need a second press to show what changed.
@@ -1555,6 +1560,54 @@ app.get('/api/addresses', (_req, res) => {
   }
   res.json(out.sort((a, b) => Number(b.tailscale) - Number(a.tailscale)));
 });
+
+// ---------- git actions: commit, push, draft PR, ready for review, merge, auto-fix, auto-archive ----------
+app.post('/api/sessions/:id/git/commit-push', async (req, res) => {
+  try {
+    const cwd = await sessionCwd(req.params.id);
+    if (!cwd) return res.status(400).json({ error: 'No folder for this session.' });
+    const r = await gitActions.commitAndPush(cwd, String(req.body?.message || '').trim());
+    res.json({ ok: true, ...r });
+  } catch (e) { res.status(500).json({ error: gitActions.cliError(e) }); }
+});
+app.post('/api/sessions/:id/git/commit-wip', async (req, res) => {
+  try {
+    const cwd = await sessionCwd(req.params.id);
+    if (!cwd) return res.status(400).json({ error: 'No folder for this session.' });
+    res.json({ ok: true, ...(await gitActions.commitWip(cwd)) });
+  } catch (e) { res.status(500).json({ error: gitActions.cliError(e) }); }
+});
+app.post('/api/sessions/:id/git/create-draft-pr', async (req, res) => {
+  try {
+    const cwd = await sessionCwd(req.params.id);
+    if (!cwd) return res.status(400).json({ error: 'No folder for this session.' });
+    const r = await gitActions.createDraftPr(cwd);
+    pr.forget(cwd);
+    res.json({ ok: true, ...r });
+  } catch (e) { res.status(500).json({ error: gitActions.cliError(e) }); }
+});
+app.post('/api/sessions/:id/git/mark-ready', async (req, res) => {
+  try {
+    const cwd = await sessionCwd(req.params.id);
+    if (!cwd) return res.status(400).json({ error: 'No folder for this session.' });
+    await gitActions.markReady(cwd);
+    pr.forget(cwd);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: gitActions.cliError(e) }); }
+});
+app.post('/api/sessions/:id/git/merge', async (req, res) => {
+  try {
+    const cwd = await sessionCwd(req.params.id);
+    if (!cwd) return res.status(400).json({ error: 'No folder for this session.' });
+    const method = await gitActions.mergePr(cwd);
+    pr.forget(cwd);
+    res.json({ ok: true, method });
+  } catch (e) { res.status(500).json({ error: gitActions.cliError(e) }); }
+});
+// Per-PR switches in the PR menu: Auto-fix (lib/autofix.mjs's watcher wakes the session when
+// GitHub reports trouble) and auto-archive (that watcher archives the session once the PR is done).
+app.post('/api/sessions/:id/pr/auto-fix', (req, res) => res.json({ on: autofix.setAutoFix(req.params.id, req.body?.on !== false) }));
+app.post('/api/sessions/:id/pr/auto-archive', (req, res) => res.json({ on: autofix.setAutoArchive(req.params.id, req.body?.on !== false) }));
 
 // ---------- updating from anywhere: what is running, restart the server, rebuild the app ----------
 // Runs at work. One resting between turns holds nothing up - not a restart, not leaving.
