@@ -1080,3 +1080,12 @@ audio.lb-media { width: min(520px, 90vw); height: auto; }
 
 /* The message context menu disables what a message with no uuid (a queued bubble) cannot do. */
 .menu-item:disabled { opacity: .4; cursor: default; pointer-events: none; }
+
+/* A code block's own head bar (language + copy); .prose pre keeps its border and background,
+   just with the top corners squared off to meet the bar instead of rounded under it. */
+.code-block { margin: 10px 0; }
+.code-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 6px 4px 10px; font-size: 11px; color: var(--ink-3); background: var(--bg-2); border: 1px solid var(--line); border-bottom: 0; border-radius: 10px 10px 0 0; }
+.code-lang { text-transform: uppercase; letter-spacing: .04em; }
+.code-copy { display: inline-flex; padding: 4px; border: 0; background: none; color: var(--ink-3); cursor: pointer; border-radius: 6px; }
+.code-copy:hover { color: var(--ink); background: var(--bg-3); }
+.code-block pre { margin: 0; border-radius: 0 0 10px 10px; }

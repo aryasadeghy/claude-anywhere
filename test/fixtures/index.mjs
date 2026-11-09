@@ -239,6 +239,10 @@ export async function startFakeApi({ delay = 15 } = {}) {
       : /\[background\]/.test(said) || asking || toolTag ? null
       : /\[math\]/.test(said) ? 'The area under the curve is $\\int_0^1 x\\,dx = \\frac{1}{2}$ and the price is $5 or $10, not a range.\n\n$$E = mc^2$$'
       : /\[secret\]/.test(said) ? 'Found it in .env: ANTHROPIC_API_KEY=sk-ant-api03-fakeFAKEfakeFAKEfakeFAKEfakeFAKEfakeFAKE and a GitHub token ghp_FAKEfakeFAKEfakeFAKEfakeFAKEfake1234.'
+      : /\[code\]/.test(said) ? 'Here:\n\n```js\nfunction add(a, b) {\n  return a + b;\n}\n```\n'
+      // A data: URI (isWebUrl) renders directly, unlike a bare path, which the app reads from
+      // the session's own folder through /api/file - this tag needs no project file on disk.
+      : /\[img\]/.test(said) ? `Here is the chart: ![chart](data:image/png;base64,${pngOf(64, 64).toString('base64')})`
       : `Answer to: ${(said.match(/Q\d+/) || ['it'])[0]}. Done.`;
     if (!j.stream) {
       res.writeHead(200, { 'content-type': 'application/json' });

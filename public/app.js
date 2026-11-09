@@ -49,6 +49,7 @@
     v.controls = true; btn.parentElement.classList.add('playing'); v.play().catch(() => {});
   });
   document.addEventListener('pause', (e) => { if (e.target.tagName === 'VIDEO' && e.target.ended) e.target.parentElement?.classList.remove('playing'); }, true);
+  const COPY_SVG = '<svg viewBox="0 0 20 20" width="14" height="14"><rect x="7" y="7" width="9" height="9" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M13 7V5.5A1.5 1.5 0 0 0 11.5 4h-6A1.5 1.5 0 0 0 4 5.5v6A1.5 1.5 0 0 0 5.5 13H7" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>';
   marked.use({ renderer: {
     image({ href, title, text }) {
       if (isVideo(href)) return videoHtml(mediaSrc(href));
@@ -69,6 +70,11 @@
       return looksLikePath(raw)
         ? `<a href="#" class="file-link code" data-path="${escapeAttr(raw)}">${shown}</a>`
         : `<code>${shown}</code>`;
+    },
+    // A copy button on every fenced block; the language shows if the fence named one.
+    code({ text, lang }) {
+      const language = String(lang || '').trim().split(/\s+/)[0] || '';
+      return `<div class="code-block"><div class="code-head"><span class="code-lang">${escapeAttr(language)}</span><button type="button" class="code-copy" title="Copy code">${COPY_SVG}</button></div><pre><code${language ? ` class="language-${escapeAttr(language)}"` : ''}>${escapeAttr(String(text ?? ''))}</code></pre></div>`;
     },
   } });
   // Math: $...$ and \(...\) inline, $$...$$ and \[...\] as their own block, rendered with KaTeX.
@@ -2492,6 +2498,13 @@
   const msgPlainText = (m) => [...m.querySelectorAll('.prose, .msg-text')].map((n) => n.innerText).join('\n\n').trim();
   const msgMarkdownText = (m) => { const p = [...m.querySelectorAll('.prose')]; return p.length ? p.map((n) => n._raw ?? n.innerText).join('\n\n').trim() : msgPlainText(m); };
   async function copyText(text, label) { try { await navigator.clipboard.writeText(text); toast((label || 'Copied') + '.'); } catch { toast('Could not copy.'); } }
+  function placeCtxMenu(x, y) {
+    msgCtx.classList.remove('hidden');
+    if (window.matchMedia('(max-width: 860px)').matches) { msgCtx.style.left = msgCtx.style.top = ''; return; } // a bottom sheet on the phone, like the session row's menu
+    const r = msgCtx.getBoundingClientRect();
+    msgCtx.style.left = Math.min(x, window.innerWidth - r.width - 8) + 'px';
+    msgCtx.style.top = Math.min(y, window.innerHeight - r.height - 8) + 'px';
+  }
   function showMsgCtxMenu(msgEl, x, y) {
     const uuid = msgEl.dataset.uuid || null;
     msgCtx.innerHTML = '';
@@ -2501,14 +2514,47 @@
     add('Copy link', () => uuid && state.current && copyText(location.origin + '/#/s/' + state.current + '/m/' + uuid, 'Link copied'), !uuid);
     add('Attach as context', () => attachContext({ label: msgEl.classList.contains('user') ? 'You said' : 'Claude said', text: msgPlainText(msgEl) }));
     add('Pin as chapter', async () => { const t = prompt('Chapter title', msgPlainText(msgEl).slice(0, 60)); if (t && t.trim()) await registerChapter(uuid, t.trim()); }, !uuid);
-    msgCtx.classList.remove('hidden');
-    if (window.matchMedia('(max-width: 860px)').matches) { msgCtx.style.left = msgCtx.style.top = ''; return; } // a bottom sheet on the phone, like the session row's menu
-    const r = msgCtx.getBoundingClientRect();
-    msgCtx.style.left = Math.min(x, window.innerWidth - r.width - 8) + 'px';
-    msgCtx.style.top = Math.min(y, window.innerHeight - r.height - 8) + 'px';
+    placeCtxMenu(x, y);
+  }
+  // A code block or an inline codespan gets its own short menu instead of the message's one -
+  // what you right-clicked is what "Copy code" copies, not the whole bubble around it.
+  function showCodeCtxMenu(codeEl, isBlock, x, y) {
+    msgCtx.innerHTML = '';
+    msgCtx.appendChild(item(isBlock ? 'Copy code' : 'Copy inline code', '', false, () => { msgCtx.classList.add('hidden'); copyText(codeEl.innerText, 'Code copied'); }));
+    placeCtxMenu(x, y);
+  }
+  async function copyImage(src) {
+    try { const blob = await (await fetch(src)).blob(); await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]); toast('Image copied.'); }
+    catch { toast('Could not copy the image.'); }
+  }
+  function saveImage(src, name) {
+    const a = el('a'); a.href = src; a.download = name || 'image'; document.body.appendChild(a); a.click(); a.remove();
+  }
+  function showImageCtxMenu(img, x, y) {
+    msgCtx.innerHTML = '';
+    msgCtx.appendChild(item('Copy image', '', false, () => { msgCtx.classList.add('hidden'); copyImage(img.src); }));
+    msgCtx.appendChild(item('Save image', '', false, () => { msgCtx.classList.add('hidden'); saveImage(img.src, img.alt); }));
+    placeCtxMenu(x, y);
   }
   document.addEventListener('click', (e) => { if (!msgCtx.contains(e.target)) msgCtx.classList.add('hidden'); });
-  thread.addEventListener('contextmenu', (e) => { const m = e.target.closest('.msg'); if (!m) return; e.preventDefault(); showMsgCtxMenu(m, e.clientX, e.clientY); });
+  thread.addEventListener('contextmenu', (e) => {
+    const codeBlock = e.target.closest('pre code');
+    const inlineCode = !codeBlock && e.target.closest('code');
+    const img = !codeBlock && !inlineCode && e.target.closest('img');
+    if (codeBlock || inlineCode) { e.preventDefault(); showCodeCtxMenu(codeBlock || inlineCode, !!codeBlock, e.clientX, e.clientY); return; }
+    if (img && img.src) { e.preventDefault(); showImageCtxMenu(img, e.clientX, e.clientY); return; }
+    const m = e.target.closest('.msg'); if (!m) return;
+    e.preventDefault(); showMsgCtxMenu(m, e.clientX, e.clientY);
+  });
+  // A copy button on every fenced code block (marked's own `code` renderer builds it).
+  thread.addEventListener('click', (e) => { const b = e.target.closest('.code-copy'); if (b) copyText(b.closest('.code-block')?.querySelector('pre code')?.innerText || '', 'Code copied'); });
+  // Triple-click selects the whole block, not just the line under the cursor.
+  thread.addEventListener('click', (e) => {
+    if (e.detail !== 3) return;
+    const pre = e.target.closest('pre'); if (!pre) return;
+    const range = document.createRange(); range.selectNodeContents(pre);
+    const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
+  });
   let msgPressTimer = null, msgPressed = false;
   thread.addEventListener('touchstart', (e) => {
     const m = e.target.closest('.msg'); if (!m) return;

@@ -222,6 +222,35 @@ async function main() {
   check('opening it scrolls to and highlights the message', await until(() => page.isVisible('.jump-flash'), 10000));
   await page.screenshot({ path: path.join(SHOTS, 'conversation-deeplink.png') });
 
+  // 11. Code blocks: a copy button, triple-click selects the whole block, right-click "Copy code".
+  await send(page, '[code] show me');
+  check('a code block with a copy button appears', await until(() => page.isVisible('.code-block .code-copy'), 20000));
+  await page.click('.code-copy');
+  check('the button copies the code', await until(async () => (await page.evaluate(() => navigator.clipboard.readText())).includes('return a + b;'), 3000));
+  await page.click('.code-block pre code', { clickCount: 3 });
+  check('triple-click selects the whole block', (await page.evaluate(() => window.getSelection().toString())).includes('function add'));
+  { const box = await page.locator('.code-block pre code').boundingBox(); await page.mouse.click(box.x + 10, box.y + 10, { button: 'right' }); }
+  check('right-click on code offers Copy code, not the message menu', await until(async () => {
+    const items = await page.$$eval('#msg-ctx-menu .menu-item', (ns) => ns.map((n) => n.textContent.trim()));
+    return items.length === 1 && items[0] === 'Copy code';
+  }, 5000));
+  await page.mouse.click(5, 5);
+
+  // 12. Images: right-click Copy / Save.
+  await send(page, '[img] show me');
+  await until(async () => (await page.locator('.md-img').boundingBox())?.width > 0, 20000);
+  { const box = await page.locator('.md-img').boundingBox(); await page.mouse.click(box.x + 5, box.y + 5, { button: 'right' }); }
+  check('right-click on an image offers Copy image / Save image', await until(async () => {
+    const items = await page.$$eval('#msg-ctx-menu .menu-item', (ns) => ns.map((n) => n.textContent.trim()));
+    return items.includes('Copy image') && items.includes('Save image');
+  }, 5000));
+  await page.click('#msg-ctx-menu .menu-item:has-text("Copy image")');
+  check('Copy image puts a real image on the clipboard', await until(async () => {
+    const items = await page.evaluate(async () => { try { return (await navigator.clipboard.read()).flatMap((i) => i.types); } catch { return []; } });
+    return items.includes('image/png');
+  }, 3000));
+  await page.screenshot({ path: path.join(SHOTS, 'conversation-code-image.png') });
+
   check('no errors in the app', !errors.length, errors.join(' | '));
   await browser.close();
 
