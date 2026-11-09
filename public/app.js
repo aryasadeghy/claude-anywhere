@@ -1022,13 +1022,20 @@
     const p = state.projects.find((x) => x.cwd === state.cwd);
     const name = state.cwdIsChat ? 'Chats' : state.cwd ? (p ? p.name : folderName(state.cwd)) : 'No folder';
     $('#project-name').textContent = name;
-    $('#nb-folder-name').textContent = name;
+    $('#nb-folder-name').textContent = name + (state.cwdWorktreePending ? ' · Worktree' : '');
     // branch of the chosen folder, for the chip next to it
     const br = $('#nb-branch'); br.classList.add('hidden');
-    if (state.cwd) { try { const g = await api('/git?cwd=' + encodeURIComponent(state.cwd)); if (g.git && !state.current) { br.textContent = g.branch; br.classList.remove('hidden'); } } catch {} }
+    state.cwdIsGit = false;
+    if (state.cwd) {
+      try {
+        const g = await api('/git?cwd=' + encodeURIComponent(state.cwd));
+        state.cwdIsGit = g.git;
+        if (g.git && !state.current) { br.textContent = state.cwdWorktreePending ? 'new worktree' : g.branch; br.classList.remove('hidden'); }
+      } catch {}
+    }
   }
-  function pickFolder(cwd) { state.cwd = cwd || ''; localStorage.setItem('cr.cwd', state.cwd); renderProjectChip(); pvFollow(); }
-  // Desktop's folder menu: No folder / Recent / Open folder…
+  function pickFolder(cwd) { state.cwd = cwd || ''; state.cwdWorktreePending = false; localStorage.setItem('cr.cwd', state.cwd); renderProjectChip(); pvFollow(); }
+  // Desktop's folder menu: No folder / Recent / Open folder… / (a Git folder) Worktree
   function renderProjectMenu(menu) {
     menu.innerHTML = '';
     menu.appendChild(item('No folder', '', !state.cwd, () => { pickFolder(''); menu.classList.add('hidden'); }));
@@ -1037,6 +1044,14 @@
     for (const p of state.projects.slice(0, 8)) menu.appendChild(item(p.name, '', p.cwd === state.cwd, () => { pickFolder(p.cwd); menu.classList.add('hidden'); }));
     menu.appendChild(el('div', 'menu-sep'));
     menu.appendChild(item('Open folder…', '', false, () => { menu.classList.add('hidden'); openFolderBrowser(state.cwd); }));
+    // "For a Git folder, Branch and Worktree are at the bottom of the folder menu" (Desktop) -
+    // only before a session exists: once started, the folder (and any worktree) is fixed.
+    if (state.cwd && state.cwdIsGit && !state.current) {
+      menu.appendChild(el('div', 'menu-sep'));
+      menu.appendChild(item('Worktree', 'A fresh branch for this session, named from what you ask', !!state.cwdWorktreePending, () => {
+        state.cwdWorktreePending = !state.cwdWorktreePending; renderProjectChip(); menu.classList.add('hidden');
+      }));
+    }
   }
   menuFor('#project-btn', '#project-menu', renderProjectMenu);
   menuFor('#nb-folder', '#nb-folder-menu', renderProjectMenu);
@@ -3797,6 +3812,58 @@
     catch (e) { alert(e.message); }
   });
 
+  // A worktree for a brand-new session (chosen in the folder menu, below): "step-by-step
+  // progress and a Stop button while a session's worktree is being set up" (Desktop). The job
+  // itself runs server-side (lib/worktrees.mjs addForSession via /api/worktrees/begin) since a
+  // big repository's `git worktree add` is minutes, not a request this page can just await.
+  const WT_STEPS = [['branch', 'Naming a branch from your message'], ['worktree', 'Setting up the worktree']];
+  const wtModal = (() => {
+    const m = el('div', 'modal hidden'); m.id = 'wt-setup-modal';
+    const card = el('div', 'modal-card');
+    const head = el('div', 'modal-head'); head.appendChild(el('span', null, 'Setting up the worktree'));
+    card.appendChild(head);
+    const steps = el('ul', 'wt-steps');
+    for (const [key, label] of WT_STEPS) { const li = el('li'); li.dataset.step = key; li.appendChild(el('span', 'dot')); li.appendChild(document.createTextNode(label)); steps.appendChild(li); }
+    card.appendChild(steps);
+    const err = el('p', 'modal-hint note error hidden'); card.appendChild(err);
+    const row = el('div', 'wt-setup-row');
+    const stop = el('button', 'btn small', 'Stop'); stop.type = 'button';
+    row.appendChild(stop); card.appendChild(row);
+    m.appendChild(card); document.body.appendChild(m);
+    return { m, steps, err, stop };
+  })();
+  function paintWtSteps(step) {
+    const order = WT_STEPS.map((s) => s[0]), at = order.indexOf(step);
+    wtModal.steps.querySelectorAll('li').forEach((li) => {
+      const i = order.indexOf(li.dataset.step);
+      li.classList.toggle('done', step === 'done' || at > i);
+      li.classList.toggle('active', step !== 'done' && i === at);
+    });
+  }
+  // Resolves to { path, branch } once the worktree is ready, or null if it was stopped or
+  // failed (either way the caller's own message is left untouched, to send or edit again).
+  async function setUpSessionWorktree(cwd, message) {
+    wtModal.err.classList.add('hidden'); paintWtSteps('branch'); wtModal.m.classList.remove('hidden');
+    let jobId = null, stopped = false;
+    wtModal.stop.disabled = false; wtModal.stop.textContent = 'Stop';
+    wtModal.stop.onclick = async () => { stopped = true; wtModal.stop.disabled = true; if (jobId) try { await api('/worktrees/begin/' + jobId + '/cancel', { method: 'POST' }); } catch {} };
+    const giveUp = async (msg) => {
+      if (!stopped && msg) { wtModal.err.textContent = msg; wtModal.err.classList.remove('hidden'); await new Promise((r) => setTimeout(r, 1800)); }
+      wtModal.m.classList.add('hidden');
+      return null;
+    };
+    try {
+      jobId = (await api('/worktrees/begin', { method: 'POST', body: JSON.stringify({ cwd, message }) })).jobId;
+      paintWtSteps('worktree');
+      let job;
+      do { job = await api('/worktrees/begin/' + jobId); if (!job.done) await new Promise((r) => setTimeout(r, 400)); } while (!job.done);
+      if (job.error) return giveUp(job.error);
+      paintWtSteps('done'); await new Promise((r) => setTimeout(r, 250));
+      wtModal.m.classList.add('hidden');
+      return job.result;
+    } catch (e) { return giveUp(e.message); }
+  }
+
   // ---------- Changes: the files this folder has changed, and their diffs (Desktop's Changes pane) ----------
   const changesPanel = $('#changes-panel'), chList = $('#ch-list'), chDiff = $('#ch-diff');
   let changesOpen = false, changesData = null, changesFile = null;
@@ -4853,6 +4920,16 @@
     // Context chips are quoted ahead of what you typed, the same shape "Attach as context" used
     // to drop straight into the box - just kept out of it, as chips, while you are still typing.
     const text = contextChips.length ? contextChips.map((c) => quoteContext(c)).join('\n\n') + (typed ? '\n\n' + typed : '') : typed;
+    // A Worktree was chosen for this new session: make it now, from this very message, before
+    // anything else about the message is touched - a Stop here must leave the box exactly as
+    // typed, same as never having sent it.
+    if (!state.current && state.cwdWorktreePending) {
+      const made = await setUpSessionWorktree(state.cwd, text);
+      if (!made) return;
+      state.cwd = made.path; state.cwdWorktreePending = false;
+      try { localStorage.setItem('cr.cwd', made.path); } catch {}
+      renderProjectChip();
+    }
     const attachments = pending.filter((a) => a.kind === 'image').map((a) => ({ media_type: a.media_type, data: a.data }));
     const files = pending.filter((a) => a.kind === 'file').map((a) => ({ name: a.name, media_type: a.media_type, data: a.data }));
     const images = pending.filter((a) => a.kind === 'image').map((a) => a.dataUrl);

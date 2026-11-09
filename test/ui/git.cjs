@@ -225,6 +225,30 @@ async function walkthrough(open, sid, repo, origin, gh, bustCache, app) {
   check('Open in editor is in the session menu', await page.isVisible('#session-menu >> text=Open in editor'));
   await page.keyboard.press('Escape');
 
+  // 9. Worktree for a brand-new session: a choice in the folder menu, a branch named from the
+  // first message, .worktreeinclude files copied over.
+  fs.writeFileSync(path.join(repo, '.worktreeinclude'), '.env\n');
+  fs.writeFileSync(path.join(repo, '.env'), 'SECRET=local\n');
+  const wtCtx = await browser.newContext({ viewport: { width: 1380, height: 860 } });
+  await wtCtx.addInitScript((r) => { localStorage.setItem('cr.accountChosen', '1'); localStorage.setItem('cr.cwd', r); }, repo);
+  const wtPage = await wtCtx.newPage();
+  await wtPage.goto(app.base + '/#/');
+  await wtPage.waitForSelector('#nb-folder');
+  await wtPage.click('#nb-folder');
+  await until(() => wtPage.isVisible('#nb-folder-menu .menu-item'), 5000);
+  check('Worktree is offered at the bottom of the folder menu', await wtPage.isVisible('#nb-folder-menu >> text=Worktree'));
+  await wtPage.click('#nb-folder-menu >> text=Worktree');
+  await wtPage.fill('#input', 'Add a dark mode toggle to the settings page');
+  await wtPage.press('#input', 'Enter');
+  check('the worktree setup dialog shows its steps', await until(() => wtPage.isVisible('#wt-setup-modal:not(.hidden)'), 3000));
+  check('the worktree finishes and the session starts', await until(async () => !(await wtPage.isVisible('#wt-setup-modal:not(.hidden)')), 20000));
+  const worktreesRoot = path.join(path.dirname(repo), path.basename(repo) + '-worktrees');
+  const made = fs.existsSync(worktreesRoot) ? fs.readdirSync(worktreesRoot) : [];
+  check('a worktree folder was made beside the repo, named for the message', made.some((d) => /dark-mode/.test(d)));
+  const wtDir = made.find((d) => /dark-mode/.test(d));
+  check('.worktreeinclude copied .env into the new worktree', wtDir && fs.readFileSync(path.join(worktreesRoot, wtDir, '.env'), 'utf8') === 'SECRET=local\n');
+  await wtCtx.close();
+
   // Phone / WebKit: the Changes panel and PR menu still have to work at 390px.
   await browser.close();
   const { browser: wbrowser, page: wpage, errors: werrors } = await open(webkit, devices['iPhone 15 Pro Max']);

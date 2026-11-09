@@ -444,7 +444,24 @@ app.post('/api/sessions/:id/fork', async (req, res, next) => {
   try { const r = await forkSession(req.params.id, req.body?.title ? { title: String(req.body.title).slice(0, 200) } : {}); res.json({ sessionId: r.sessionId }); } catch (e) { next(e); }
 });
 app.post('/api/sessions/:id/archive', async (req, res, next) => {
-  try { await tagSession(req.params.id, req.body?.archived ? 'archived' : null); res.json({ ok: true, archived: !!req.body?.archived }); } catch (e) { next(e); }
+  try {
+    const archived = !!req.body?.archived;
+    await tagSession(req.params.id, archived ? 'archived' : null);
+    // "A session's worktree is kept until the session is archived" - then removed, but only one
+    // this app made for it (forSession), never a manual one from the Worktrees… menu, and never
+    // while a turn is still using it.
+    if (archived) {
+      const cwd = await sessionCwd(req.params.id);
+      const known = cwd && listWorktrees().find((w) => w.forSession && worktrees.sameDir(w.path, cwd));
+      if (known && !isBusy(req.params.id)) {
+        try {
+          await worktrees.remove(known, {});
+          const p = readPrefs(); p.worktrees = listWorktrees().filter((w) => !worktrees.sameDir(w.path, known.path)); writePrefs(p);
+        } catch {} // the session itself is archived either way; the worktree just outlives it this once
+      }
+    }
+    res.json({ ok: true, archived });
+  } catch (e) { next(e); }
 });
 // ---------- deleting a session puts it aside, it does not destroy it ----------
 // Sessions are the only thing here that cannot be made again, and deleting several
@@ -814,6 +831,48 @@ app.delete('/api/worktrees', async (req, res) => {
     const p = readPrefs(); p.worktrees = listWorktrees().filter((w) => !worktrees.sameDir(w.path, dir)); writePrefs(p);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: worktrees.cliError(e) }); }
+});
+// A worktree for a brand-new session: made from the first message, before the session itself
+// exists, so the client cannot just wait on one request for it - `git worktree add` on a big
+// repository is minutes, and Desktop's own "step-by-step progress and a Stop button" needs
+// something to poll and something to cancel while that runs. A job, not a Run: nothing here
+// talks to Claude yet.
+const wtJobs = new Map(); // jobId -> { step, done, error, result, controller }
+app.post('/api/worktrees/begin', async (req, res) => {
+  const cwd = String(req.body?.cwd || '');
+  if (!cwd || !fs.existsSync(cwd)) return res.status(400).json({ error: 'That folder is not on this machine.' });
+  const jobId = randomUUID();
+  const controller = new AbortController();
+  const job = { step: 'branch', done: false, error: null, result: null, controller };
+  wtJobs.set(jobId, job);
+  (async () => {
+    try {
+      job.step = 'worktree';
+      const made = await worktrees.addForSession(cwd, String(req.body?.message || ''), { signal: controller.signal });
+      job.step = 'done'; job.result = made;
+      // forSession: true marks this apart from one made through the Worktrees… menu, so
+      // archiving the session can remove it and nothing else mistakes it for a manual one.
+      const p = readPrefs();
+      p.worktrees = [...listWorktrees().filter((w) => !worktrees.sameDir(w.path, made.path)), { ...made, createdAt: Date.now(), forSession: true }];
+      writePrefs(p);
+    } catch (e) {
+      job.error = controller.signal.aborted ? 'Cancelled.' : worktrees.cliError(e);
+      if (e.root && e.dir) await worktrees.abandon(e.root, e.dir).catch(() => {});
+    } finally { job.done = true; }
+    setTimeout(() => wtJobs.delete(jobId), 5 * 60 * 1000); // kept a while so a slow poll still sees the result
+  })();
+  res.json({ jobId });
+});
+app.get('/api/worktrees/begin/:jobId', (req, res) => {
+  const job = wtJobs.get(req.params.jobId);
+  if (!job) return res.status(404).json({ error: 'Gone.' });
+  res.json({ step: job.step, done: job.done, error: job.error, result: job.result });
+});
+app.post('/api/worktrees/begin/:jobId/cancel', (req, res) => {
+  const job = wtJobs.get(req.params.jobId);
+  if (!job) return res.status(404).json({ error: 'Gone.' });
+  job.controller.abort();
+  res.json({ ok: true });
 });
 
 // ---------- queued message controls, and the usage-limit queue ----------
