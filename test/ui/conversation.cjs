@@ -177,9 +177,20 @@ async function main() {
   await until(() => page.isVisible('#session-menu .menu-item:has-text("Verbose")'), 5000);
   await page.click('#session-menu .menu-item:has-text("Verbose")');
   await until(async () => (await page.evaluate(() => location.hash)) === sessionHash2, 10000);
-  await send(page, '[background] one more');
+  // [todo] (TodoWrite) rather than [background]: a tool call that fails fast here, not a real
+  // 20-second sleep to wait out before the next step can send its own message.
+  await send(page, '[todo] one more');
   check('Verbose opens a new tool step by itself', await until(() => page.$eval('.tool-group', (g) => g.open).catch(() => false), 15000));
   await idle(page);
+
+  // 8. Math: $...$ and $$...$$ render with KaTeX; "$5 or $10" (Pandoc's own rule: a space before
+  // a closing $, or a digit right after it, is not a close) stays plain text, not a formula.
+  await send(page, '[math] show me');
+  check('inline and block math render with KaTeX', await until(() => page.isVisible('.katex'), 20000));
+  await idle(page); // the block formula and the plain-text price only resolve once streaming ends
+  check('two separate formulas rendered (inline + block)', await page.$$eval('.katex', (ns) => ns.length) >= 2);
+  check('"$5 or $10" is not read as math', (await threadText(page)).includes('$5 or $10'));
+  await page.screenshot({ path: path.join(SHOTS, 'conversation-math.png') });
 
   check('no errors in the app', !errors.length, errors.join(' | '));
   await browser.close();

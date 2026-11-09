@@ -144,6 +144,8 @@ app.use((req, res, next) => {
 
 app.use('/vendor/marked.js', express.static(path.join(here, 'node_modules/marked/lib/marked.umd.js')));
 app.use('/vendor/purify.js', express.static(path.join(here, 'node_modules/dompurify/dist/purify.min.js')));
+// The whole dist, not one file: katex.min.css pulls its fonts from a `fonts/` next to it.
+app.use('/vendor/katex', express.static(path.join(here, 'node_modules/katex/dist')));
 // The app's own WebView caches hard: without this it keeps serving the page it
 // first loaded, so "Restart server" and a rebuild would look like nothing happened.
 // `no-cache` still allows 304s - it only forces a revalidation.

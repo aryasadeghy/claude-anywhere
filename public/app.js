@@ -71,7 +71,33 @@
         : `<code>${shown}</code>`;
     },
   } });
-  const md = (text) => DOMPurify.sanitize(marked.parse(text || ''), { USE_PROFILES: { html: true, svg: true }, ADD_TAGS: ['video', 'audio', 'button', 'svg', 'path'], ADD_ATTR: ['loading', 'controls', 'preload', 'target', 'playsinline', 'aria-label', 'viewBox', 'fill', 'd'] });
+  // Math: $...$ and \(...\) inline, $$...$$ and \[...\] as their own block, rendered with KaTeX.
+  // The inline $ rule is Pandoc's: the opening $ needs a non-space right after it, the closing
+  // one a non-space right before and no digit right after - "$5 and $10" is two prices, read as
+  // plain text, not a range read as one formula ("5 and $10").
+  const katexHtml = (tex, displayMode) => { try { return katex.renderToString(tex, { throwOnError: false, displayMode }); } catch { return escapeAttr(tex); } };
+  marked.use({ extensions: [
+    {
+      name: 'mathBlock', level: 'block',
+      start(src) { const m = /\${2}|\\\[/.exec(src); return m?.index; },
+      tokenizer(src) {
+        const m = /^\$\$([\s\S]+?)\$\$/.exec(src) || /^\\\[([\s\S]+?)\\\]/.exec(src);
+        if (m) return { type: 'mathBlock', raw: m[0], text: m[1].trim() };
+      },
+      renderer(token) { return `<p>${katexHtml(token.text, true)}</p>`; },
+    },
+    {
+      name: 'mathInline', level: 'inline',
+      start(src) { const m = /\$(?!\s)|\\\(/.exec(src); return m?.index; },
+      tokenizer(src) {
+        let m = /^\\\(([\s\S]+?)\\\)/.exec(src);
+        if (!m) m = /^\$(?!\s)([^\n$]+?)(?<!\\)(?<!\s)\$(?!\d)/.exec(src);
+        if (m) return { type: 'mathInline', raw: m[0], text: m[1].trim() };
+      },
+      renderer(token) { return katexHtml(token.text, false); },
+    },
+  ] });
+  const md = (text) => DOMPurify.sanitize(marked.parse(text || ''), { USE_PROFILES: { html: true, svg: true, mathMl: true }, ADD_TAGS: ['video', 'audio', 'button', 'svg', 'path'], ADD_ATTR: ['loading', 'controls', 'preload', 'target', 'playsinline', 'aria-label', 'viewBox', 'fill', 'd'] });
   const stripHarness = (t) => String(t || '')
     .replace(/<(system-reminder|ide_opened_file|ide_selection|local-command-stdout|local-command-stderr|command-name|command-message|command-args|task-notification|function_results)[\s\S]*?<\/\1>/g, '')
     .replace(/<local-command-caveat>[\s\S]*?<\/local-command-caveat>/g, '')

@@ -235,7 +235,10 @@ export async function startFakeApi({ delay = 15 } = {}) {
     // The conversation package's own tags, each asking for one Claude-facing tool call (or
     // ExitPlanMode) instead of a Bash command - a fixed name and input, not the real model's.
     const toolTag = (said.match(/\[(suggest|chapter|sugtask|status|plan|todo|tasktool)\]/) || [])[1];
-    const words = afterTool ? (askedBefore ? `Noted: ${toolText.replace(/\s+/g, ' ').slice(0, 160)}` : 'Started it in the background.') : /\[background\]/.test(said) || asking || toolTag ? null : `Answer to: ${(said.match(/Q\d+/) || ['it'])[0]}. Done.`;
+    const words = afterTool ? (askedBefore ? `Noted: ${toolText.replace(/\s+/g, ' ').slice(0, 160)}` : 'Started it in the background.')
+      : /\[background\]/.test(said) || asking || toolTag ? null
+      : /\[math\]/.test(said) ? 'The area under the curve is $\\int_0^1 x\\,dx = \\frac{1}{2}$ and the price is $5 or $10, not a range.\n\n$$E = mc^2$$'
+      : `Answer to: ${(said.match(/Q\d+/) || ['it'])[0]}. Done.`;
     if (!j.stream) {
       res.writeHead(200, { 'content-type': 'application/json' });
       return res.end(JSON.stringify({ id: 'msg_' + requests.length, type: 'message', role: 'assistant', model: j.model, content: [{ type: 'text', text: words || 'ok' }], stop_reason: 'end_turn', stop_sequence: null, usage: { input_tokens: 12, output_tokens: 6 } }));
