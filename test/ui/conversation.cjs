@@ -30,7 +30,8 @@ async function main() {
 
   async function open(type, opts) {
     const browser = await type.launch({ headless: true, ...(type === chromium && channel ? { channel } : {}) });
-    const ctx = await browser.newContext({ colorScheme: 'dark', ...opts });
+    // WebKit has no clipboard-read/write permission names (Playwright throws asking for them).
+    const ctx = await browser.newContext({ colorScheme: 'dark', ...(type === chromium ? { permissions: ['clipboard-read', 'clipboard-write'] } : {}), ...opts });
     await ctx.addInitScript((token) => { if (window.top === window) { localStorage.setItem('cr.accountChosen', '1'); localStorage.setItem('cr.token', token); } }, app.token);
     const page = await ctx.newPage();
     const errors = []; page.on('pageerror', (e) => errors.push(e.message));
@@ -204,6 +205,22 @@ async function main() {
   check('the eye reveals just that one', await until(async () => (await threadText(page)).includes('sk-ant-api03-fakeFAKE'), 3000));
   check('...the other stays masked', !(await threadText(page)).includes('ghp_FAKEfakeFAKE'));
   await page.screenshot({ path: path.join(SHOTS, 'conversation-secrets.png') });
+
+  // 10. Message right-click menu: Copy, Copy as Markdown, Copy link (a deep link that opens and
+  // highlights the message), Attach as context, Pin as chapter.
+  const amsg = page.locator('.msg.assistant').last();
+  { const box = await amsg.boundingBox(); await page.mouse.click(box.x + 20, box.y + 10, { button: 'right' }); }
+  check('the menu offers all five actions', await until(async () => {
+    const items = await page.$$eval('#msg-ctx-menu .menu-item', (ns) => ns.map((n) => n.textContent.trim()));
+    return ['Copy', 'Copy as Markdown', 'Copy link', 'Attach as context', 'Pin as chapter'].every((t) => items.includes(t));
+  }, 5000));
+  await page.click('#msg-ctx-menu .menu-item:has-text("Copy link")');
+  const link = await page.evaluate(() => navigator.clipboard.readText());
+  check('Copy link gives a deep link to this message', /#\/s\/[0-9a-f-]+\/m\/[0-9a-f-]+$/.test(link), link);
+  const deepHash = link.slice(link.indexOf('#'));
+  await page.goto(app.base + '/?r=' + Date.now() + deepHash);
+  check('opening it scrolls to and highlights the message', await until(() => page.isVisible('.jump-flash'), 10000));
+  await page.screenshot({ path: path.join(SHOTS, 'conversation-deeplink.png') });
 
   check('no errors in the app', !errors.length, errors.join(' | '));
   await browser.close();

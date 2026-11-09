@@ -2050,6 +2050,7 @@
       // They are not the answer and Desktop does not show them either.
       const shown = stripHarness(block.text);
       node.innerHTML = md(shown);
+      node._raw = shown; // the source Markdown, for "Copy as Markdown" - innerText would be the rendered text
       node.classList.toggle('hidden', !shown);
     } else if (block.type === 'thinking' || block.type === 'redacted_thinking') {
       // Thinking/Verbose only: Normal never lets one of these reach renderBlock at all
@@ -2483,6 +2484,41 @@
       else if (node.nodeType === Node.ELEMENT_NODE) maskSecretsIn(node);
     }
   }).observe(thread, { childList: true, subtree: true });
+
+  // ---------- message context menu: Copy, Copy as Markdown, Copy link, Attach as context, Pin as chapter ----------
+  const msgCtx = $('#msg-ctx-menu');
+  // Assistant text can be several .prose blocks around tool groups; a user bubble is plain text,
+  // never Markdown, so Copy and Copy as Markdown only differ for Claude's own messages.
+  const msgPlainText = (m) => [...m.querySelectorAll('.prose, .msg-text')].map((n) => n.innerText).join('\n\n').trim();
+  const msgMarkdownText = (m) => { const p = [...m.querySelectorAll('.prose')]; return p.length ? p.map((n) => n._raw ?? n.innerText).join('\n\n').trim() : msgPlainText(m); };
+  async function copyText(text, label) { try { await navigator.clipboard.writeText(text); toast((label || 'Copied') + '.'); } catch { toast('Could not copy.'); } }
+  function showMsgCtxMenu(msgEl, x, y) {
+    const uuid = msgEl.dataset.uuid || null;
+    msgCtx.innerHTML = '';
+    const add = (label, fn, disabled) => { const b = item(label, '', false, () => { msgCtx.classList.add('hidden'); fn(); }); b.disabled = !!disabled; msgCtx.appendChild(b); };
+    add('Copy', () => copyText(msgPlainText(msgEl)));
+    add('Copy as Markdown', () => copyText(msgMarkdownText(msgEl), 'Copied as Markdown'));
+    add('Copy link', () => uuid && state.current && copyText(location.origin + '/#/s/' + state.current + '/m/' + uuid, 'Link copied'), !uuid);
+    add('Attach as context', () => attachContext({ label: msgEl.classList.contains('user') ? 'You said' : 'Claude said', text: msgPlainText(msgEl) }));
+    add('Pin as chapter', async () => { const t = prompt('Chapter title', msgPlainText(msgEl).slice(0, 60)); if (t && t.trim()) await registerChapter(uuid, t.trim()); }, !uuid);
+    msgCtx.classList.remove('hidden');
+    if (window.matchMedia('(max-width: 860px)').matches) { msgCtx.style.left = msgCtx.style.top = ''; return; } // a bottom sheet on the phone, like the session row's menu
+    const r = msgCtx.getBoundingClientRect();
+    msgCtx.style.left = Math.min(x, window.innerWidth - r.width - 8) + 'px';
+    msgCtx.style.top = Math.min(y, window.innerHeight - r.height - 8) + 'px';
+  }
+  document.addEventListener('click', (e) => { if (!msgCtx.contains(e.target)) msgCtx.classList.add('hidden'); });
+  thread.addEventListener('contextmenu', (e) => { const m = e.target.closest('.msg'); if (!m) return; e.preventDefault(); showMsgCtxMenu(m, e.clientX, e.clientY); });
+  let msgPressTimer = null, msgPressed = false;
+  thread.addEventListener('touchstart', (e) => {
+    const m = e.target.closest('.msg'); if (!m) return;
+    msgPressed = false;
+    const t = e.touches[0];
+    msgPressTimer = setTimeout(() => { msgPressed = true; showMsgCtxMenu(m, t.clientX, t.clientY); if (navigator.vibrate) navigator.vibrate(10); }, 450);
+  }, { passive: true });
+  for (const evn of ['touchend', 'touchmove', 'touchcancel']) thread.addEventListener(evn, () => clearTimeout(msgPressTimer), { passive: true });
+  // The tap that ends a long-press must not also open a file link or play a video under it.
+  thread.addEventListener('click', (e) => { if (msgPressed) { e.preventDefault(); e.stopPropagation(); msgPressed = false; } }, true);
 
   // ---------- live status line (the Desktop "✱ Thinking… 12s · 1.2k tokens" row) ----------
   const VERBS = ['Thinking', 'Pondering', 'Considering', 'Working', 'Reasoning', 'Composing', 'Sketching', 'Puzzling', 'Brewing', 'Cooking', 'Musing', 'Mulling'];
@@ -4486,7 +4522,7 @@
   // every await once a newer open (or the new-chat screen) has started. Without this the
   // slow one finished last and painted its messages under the other session's name.
   let openSeq = 0;
-  async function openSession(id) {
+  async function openSession(id, { jumpTo } = {}) {
     const seq = ++openSeq;
     state.current = id; state.live = null; state.tasks = []; hiddenTasks.clear(); paintTasks(); if (changesOpen) closeChanges(); if (previewOpen) closePreview(); if (filesOpen) closeFiles();
     planTodos = null; planTasks.clear(); planBoxClosedByUser = false; paintPlanBox();
@@ -4532,7 +4568,8 @@
         b.addEventListener('click', () => { n.remove(); input.value = 'Continue where you left off. Check what was already done before redoing anything, then finish the task.'; input.dispatchEvent(new Event('input')); submit(); });
         n.appendChild(b); thread.appendChild(n);
       }
-      stickToBottom = true; pinToBottom();
+      // A deep link to one message is not asking to land at the end - don't pin there first.
+      if (jumpTo) jumpToMessage(jumpTo); else { stickToBottom = true; pinToBottom(); }
       requestAnimationFrame(fillTop); // a first page shorter than the window brings the next one
       setRunning(false); setElsewhere(false);
       markRead(id);
@@ -4568,8 +4605,9 @@
   let cameBack = false, hadSession = false;
   window.addEventListener('popstate', () => { cameBack = true; });
   function route() {
-    const m = location.hash.match(/^#\/s\/([0-9a-f-]{36})$/i);
-    if (m) { openSession(m[1]); hadSession = true; }
+    // #/s/<id>/m/<uuid>: a deep link (Copy link, a chapter jump elsewhere, a pin) to one message.
+    const m = location.hash.match(/^#\/s\/([0-9a-f-]{36})(?:\/m\/([0-9a-f-]{36}))?$/i);
+    if (m) { openSession(m[1], { jumpTo: m[2] || null }); hadSession = true; }
     else {
       openNew();
       // Back from a session on the phone lands on the session list, like the mobile app.

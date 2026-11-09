@@ -1077,3 +1077,6 @@ audio.lb-media { width: min(520px, 90vw); height: auto; }
 .secret-mask.revealed .secret-mask-text { letter-spacing: normal; word-break: break-all; }
 .secret-eye { flex: none; display: inline-flex; padding: 1px; border: 0; background: none; color: var(--ink-3); cursor: pointer; border-radius: 4px; }
 .secret-eye:hover { color: var(--ink); background: var(--bg-3); }
+
+/* The message context menu disables what a message with no uuid (a queued bubble) cannot do. */
+.menu-item:disabled { opacity: .4; cursor: default; pointer-events: none; }
