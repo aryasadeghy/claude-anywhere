@@ -10,6 +10,10 @@ const os = require('os');
 const path = require('path');
 const { pathToFileURL } = require('url');
 
+// Attached context is a chip above the box (the message box group); its title is what will be sent.
+const chipsText = (page) => page.$$eval('#context-chips .ctx-chip', (cs) => cs.map((c) => c.title).join('\n---\n'));
+const clearChips = async (page) => { while (await page.$('#context-chips .ctx-chip-x')) await page.click('#context-chips .ctx-chip-x'); };
+
 const SHOTS = path.join(__dirname, 'shots');
 const channel = process.env.PW_CHANNEL || undefined;
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -111,7 +115,8 @@ async function main() {
   const menuText = await page.$eval('#ctx-menu', (n) => n.innerText).catch(() => '');
   check('the right-click menu offers Copy, Paste and Attach selection as context', /Copy/.test(menuText) && /Paste/.test(menuText) && /Attach selection as context/.test(menuText), menuText);
   await page.click('#ctx-menu .menu-item:has-text("Attach selection as context")');
-  check('...and attaches the selection into the composer', await until(async () => /attach-me-please/.test(await page.inputValue('#input')), 4000), await page.inputValue('#input'));
+  check('...and attaches the selection as a chip', await until(async () => /attach-me-please/.test(await chipsText(page)), 4000), await chipsText(page));
+  await clearChips(page);
   await page.fill('#input', '');
 
   // 7. Minimize.

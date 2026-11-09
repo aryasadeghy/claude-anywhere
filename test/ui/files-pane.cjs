@@ -15,6 +15,10 @@ const zlib = require('zlib');
 const { execFileSync } = require('child_process');
 const { pathToFileURL } = require('url');
 
+// Attached context is a chip above the box (the message box group); its title is what will be sent.
+const chipsText = (page) => page.$$eval('#context-chips .ctx-chip', (cs) => cs.map((c) => c.title).join('\n---\n'));
+const clearChips = async (page) => { while (await page.$('#context-chips .ctx-chip-x')) await page.click('#context-chips .ctx-chip-x'); };
+
 const SHOTS = path.join(__dirname, 'shots');
 const channel = process.env.PW_CHANNEL || undefined;
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -207,10 +211,10 @@ async function main() {
   await page.fill('.fx-comment-ta', 'please add a type check here');
   await page.click('.fx-comment-row button:has-text("Add comment")');
   check('the comment is attached to the next message', await until(async () => {
-    const v = await page.inputValue('#input');
+    const v = await chipsText(page);
     return v.includes('helpers.js#L2') && v.includes('please add a type check here');
-  }), await page.inputValue('#input'));
-  await page.fill('#input', '');
+  }), await chipsText(page));
+  await clearChips(page);
   await page.screenshot({ path: path.join(SHOTS, 'files-pane-comment.png') });
 
   // 6. Office previews: docx, xlsx, pptx — no viewer, the zip read with zlib.
@@ -227,9 +231,10 @@ async function main() {
   await page.click('#fx-tree .fx-row:has-text("helpers.js")', { button: 'right' });
   check('the menu offers Open, Copy path, Attach as context, Open in editor', await until(() => page.isVisible('.menu .menu-item:has-text("Open in editor")')));
   const menuText = await page.$eval('body > .menu:last-of-type', (m) => m.textContent);
-  check('...and no Open in terminal (the terminal package is not in this build)', !/Open in terminal/.test(menuText), menuText);
+  check('...and Open in terminal, now that the terminal is in this build', /Open in terminal/.test(menuText), menuText);
   await page.click('.menu .menu-item:has-text("Attach as context")');
-  check('Attach as context quotes the file into the box', await until(async () => (await page.inputValue('#input')).includes('function add')));
+  check('Attach as context attaches the file as a chip', await until(async () => (await chipsText(page)).includes('function add')));
+  await clearChips(page);
   await page.fill('#input', '');
 
   // 8. A `#L5-L20` link in a message opens the file and highlights those lines.
@@ -258,7 +263,8 @@ async function main() {
     check('a + on a diff line opens a review comment box', await until(() => page.isVisible('.fx-comment-pop')));
     await page.fill('.fx-comment-ta', 'why 999?');
     await page.click('.fx-comment-row button:has-text("Add comment")');
-    check('the review comment is attached to the next message', await until(async () => (await page.inputValue('#input')).includes('why 999?')));
+    check('the review comment is attached to the next message', await until(async () => (await chipsText(page)).includes('why 999?')));
+    await clearChips(page);
     check('...and shown under the line', await until(() => page.isVisible('.dl-comment')));
     await page.screenshot({ path: path.join(SHOTS, 'files-pane-review-comment.png') });
     await page.click('.dl-comment button:has-text("Resolve")');

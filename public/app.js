@@ -4520,6 +4520,7 @@
     strip.innerHTML = ''; strip.classList.toggle('hidden', !contextChips.length);
     contextChips.forEach((c, i) => {
       const chip = el('div', 'ctx-chip');
+      chip.title = quoteContext(c).slice(0, 2000); // what will be sent, on hover: the label alone does not say
       chip.appendChild(el('span', 'ctx-chip-label', c.label || c.text.replace(/\s+/g, ' ').trim().slice(0, 60)));
       const x = el('button', 'ctx-chip-x'); x.type = 'button'; x.title = 'Remove'; x.textContent = '×';
       x.addEventListener('click', () => { contextChips.splice(i, 1); renderContextChips(); });
