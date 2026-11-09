@@ -40,6 +40,7 @@ import * as filesearch from './lib/filesearch.mjs';
 import * as shell from './lib/shell.mjs';
 import * as claudeCode from './lib/claude-code.mjs';
 import * as access from './lib/access.mjs';
+import * as terminal from './lib/terminal.mjs';
 import { getAuth, activeAccount, setActive, setToken, clearToken, setProvider, clearProvider, classifyToken, envFor, localSource, verifyEnv, candidateEnv, candidateProviderEnv } from './lib/auth.mjs';
 import { findByName, searchContents, officePreview, writeFileChecked } from './lib/files.mjs';
 
@@ -151,6 +152,11 @@ app.use((req, res, next) => {
 
 app.use('/vendor/marked.js', express.static(path.join(here, 'node_modules/marked/lib/marked.umd.js')));
 app.use('/vendor/purify.js', express.static(path.join(here, 'node_modules/dompurify/dist/purify.min.js')));
+// The terminal pane's xterm.js, loaded only once a tab is actually opened (dynamic import),
+// so every other page load is none the heavier for it.
+app.use('/vendor/xterm/', express.static(path.join(here, 'node_modules/@xterm/xterm/lib')));
+app.use('/vendor/xterm/', express.static(path.join(here, 'node_modules/@xterm/xterm/css')));
+app.use('/vendor/xterm-fit/', express.static(path.join(here, 'node_modules/@xterm/addon-fit/lib')));
 // The app's own WebView caches hard: without this it keeps serving the page it
 // first loaded, so "Restart server" and a rebuild would look like nothing happened.
 // `no-cache` still allows 304s - it only forces a revalidation.
@@ -942,6 +948,33 @@ app.post('/api/awake', (req, res) => {
 // that ended without saying so.
 bus.on('turn_done', () => syncAwake());
 setInterval(() => syncAwake(), 30000).unref();
+
+// ---------- terminal: a shell pane like Desktop's, several tabs, streamed over a websocket ----------
+// Authenticated the same way the rest of /api is (the app.use('/api', ...) gate above already
+// covers everything under here); the websocket itself cannot carry that header, so it rides
+// on the query string, the same compromise EventSource already uses for /sessions/:id/events.
+app.get('/api/sessions/:id/terminal/tabs', (req, res) => res.json({ tabs: terminal.listTabs(req.params.id), status: terminal.status() }));
+app.post('/api/sessions/:id/terminal/tabs', async (req, res) => {
+  try {
+    const cwd = req.body?.cwd || await sessionCwd(req.params.id) || os.homedir();
+    res.json(await terminal.createTab(req.params.id, { cwd, cols: Number(req.body?.cols) || undefined, rows: Number(req.body?.rows) || undefined }));
+  } catch (e) { res.status(500).json({ error: String(e?.message || e) }); }
+});
+app.delete('/api/sessions/:id/terminal/tabs/:tabId', (req, res) => res.json({ ok: terminal.closeTab(req.params.id, req.params.tabId) }));
+app.post('/api/sessions/:id/terminal/tabs/:tabId/restart', async (req, res) => {
+  const tab = await terminal.restartTab(req.params.id, req.params.tabId);
+  if (!tab) return res.status(404).json({ error: 'No such tab.' });
+  res.json(tab);
+});
+// "Run in terminal and send output to Claude" and Claude's own run_in_terminal tool both
+// end up here: one command, written to the tab and awaited to the shell's next prompt.
+app.post('/api/sessions/:id/terminal/tabs/:tabId/run', async (req, res) => {
+  const tab = terminal.getTab(req.params.id, req.params.tabId);
+  if (!tab) return res.status(404).json({ error: 'No such tab.' });
+  const command = String(req.body?.command || '');
+  if (!command.trim()) return res.status(400).json({ error: 'No command.' });
+  res.json(await terminal.runCommand(tab, command, { timeoutMs: Number(req.body?.timeoutMs) || undefined }));
+});
 
 // ---------- plan limits straight from the account (no turn needed) ----------
 // Same endpoint the CLI uses for the usage popover; works for claude.ai logins and
@@ -1739,6 +1772,11 @@ export function startServer({ host = HOST, port = PORT } = {}) {
     const server = app.listen(port, host, () => {
       // Hot reload is a WebSocket, and express never sees an upgrade.
       server.on('upgrade', (req, socket, head) => {
+        if ((req.url || '').split('?')[0] === '/api/terminal/ws') {
+          const q = new URL(req.url, 'http://x').searchParams;
+          if ((!access.remoteAllowed() && !access.isLocal(req)) || !knownToken(q.get('token') || '')) return socket.destroy();
+          return terminal.handleUpgrade(req, socket, head, { sessionId: q.get('session') || '', tabId: q.get('tab') || '' });
+        }
         const hit = parsePreviewUrl((req.url || '').split('?')[0]);
         if (!hit) return;
         if (!validPreviewKey(cookieOf(req, PREVIEW_COOKIE)) || (!access.remoteAllowed() && !access.isLocal(req))) return socket.destroy();

@@ -212,6 +212,7 @@ export function makeLongSession(configDir, cwd, { id = 'eeeeeeee-1111-2222-3333-
 // "[ask]" with a question for the person (AskUserQuestion); "[slow]" streams at 150 ms a word;
 // "[write:<path>] <content>" with a real Write tool call - the CLI executes it for real, which is
 // what gives file checkpointing (and so rewind) something genuine to have tracked.
+// "[terminal]" opens a terminal tab (the app's own open_terminal_tab, which runs without asking).
 // `requests` lists what the CLI asked for, `bodies` what it sent.
 export async function startFakeApi({ delay = 15 } = {}) {
   const requests = [], bodies = [];
@@ -233,7 +234,8 @@ export async function startFakeApi({ delay = 15 } = {}) {
     const toolText = (last.content || []).filter((b) => b.type === 'tool_result').map((b) => (typeof b.content === 'string' ? b.content : (b.content || []).map((c) => c.text || '').join(''))).join(' ');
     const asking = /\[ask\]/.test(said);
     const writeMatch = said.match(/\[write:([^\]]+)\]\s*([\s\S]*)/);
-    const words = afterTool ? (askedBefore ? `Noted: ${toolText.replace(/\s+/g, ' ').slice(0, 160)}` : wroteBefore ? 'Done writing it.' : 'Started it in the background.') : /\[background\]/.test(said) || asking || writeMatch ? null : `Answer to: ${(said.match(/Q\d+/) || ['it'])[0]}. Done.`;
+    const opensTerminal = /\[terminal\]/.test(said);
+    const words = afterTool ? (askedBefore ? `Noted: ${toolText.replace(/\s+/g, ' ').slice(0, 160)}` : wroteBefore ? 'Done writing it.' : 'Started it in the background.') : /\[background\]/.test(said) || asking || writeMatch || opensTerminal ? null : `Answer to: ${(said.match(/Q\d+/) || ['it'])[0]}. Done.`;
     if (!j.stream) {
       res.writeHead(200, { 'content-type': 'application/json' });
       return res.end(JSON.stringify({ id: 'msg_' + requests.length, type: 'message', role: 'assistant', model: j.model, content: [{ type: 'text', text: words || 'ok' }], stop_reason: 'end_turn', stop_sequence: null, usage: { input_tokens: 12, output_tokens: 6 } }));
@@ -248,10 +250,11 @@ export async function startFakeApi({ delay = 15 } = {}) {
       send('content_block_stop', { type: 'content_block_stop', index: 0 });
       send('message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 6 } });
     } else {
-      const toolName = asking ? 'AskUserQuestion' : writeMatch ? 'Write' : 'Bash';
+      const toolName = asking ? 'AskUserQuestion' : writeMatch ? 'Write' : opensTerminal ? 'mcp__claude-anywhere__open_terminal_tab' : 'Bash';
       const input = JSON.stringify(
         asking ? { questions: [{ question: 'Which colour should the button be?', header: 'Colour', options: [{ label: 'Red', description: 'Warm' }, { label: 'Blue', description: 'Calm' }], multiSelect: false }] }
         : writeMatch ? { file_path: writeMatch[1].trim(), content: writeMatch[2] }
+        : opensTerminal ? {}
         : { command: 'sleep 20', description: 'Render the long video', run_in_background: true },
       );
       send('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'toolu_fake_' + requests.length, name: toolName, input: {} } });

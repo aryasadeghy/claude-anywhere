@@ -1161,4 +1161,35 @@ audio.lb-media { width: min(520px, 90vw); height: auto; }
   .files-panel.fx-file-open .fx-main { display: flex; }
   .files-panel.fx-file-open #fx-back { display: inline-flex; }
   .fx-tab { max-width: 120px; }
+
+/* ---------- v58: the terminal pane - tabs, a shell per tab, Claude's own commands too ---------- */
+.terminal-panel { width: 520px; } /* .tasks-panel already gives it flex column and the phone full-screen rule */
+@media (min-width: 861px) { .terminal-panel { width: var(--terminal-w, 520px); } }
+.term-head { gap: 6px; }
+.term-stage { position: relative; flex: 1; min-height: 0; background: var(--bg-000); }
+.term-stage > .term-view { position: absolute; inset: 0; display: flex; flex-direction: column; }
+.term-xterm { flex: 1; min-height: 0; padding: 6px 4px 6px 10px; }
+.term-xterm .xterm { height: 100%; }
+.term-xterm .xterm-viewport { overflow-y: auto; } /* xterm.css leaves this to the host */
+.term-banner { flex: none; display: flex; align-items: center; gap: 10px; padding: 8px 14px; background: var(--bg-2); border-bottom: 1px solid var(--line); font-size: 13px; color: var(--ink-2); }
+.term-banner .btn.small { font-size: 12.5px; padding: 4px 10px; border-radius: 8px; }
+/* Tabs reuse the Browser's own .pv-tab - a running dot and a dimmed, exited tab are this
+   feature's only additions. */
+.term-tab.term-dead { color: var(--ink-3); }
+.term-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--success); animation: tb-pulse 1.4s ease-in-out infinite; }
+/* Minimized: the tabs and buttons go, a small pill at the corner stands in for the pane -
+   still on the page, just out of the way, the same running dot it would show on a tab. */
+/* On the phone, .tasks-panel's own full-screen rule (position: fixed; inset: 0) does not
+   care what width says - without pointer-events: none here, an "invisible" minimized pane
+   would still sit over the whole screen and swallow every tap. */
+.terminal-panel.minimized { width: auto !important; border: 0; background: none; overflow: visible; pointer-events: none; }
+.terminal-panel.minimized .term-head, .terminal-panel.minimized .term-stage { display: none; }
+.term-pill { position: absolute; inset-inline-end: 16px; bottom: 16px; z-index: 10; display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-radius: 999px; border: 1px solid var(--line-2); background: var(--bg-2); color: var(--ink); font: inherit; font-size: 13px; box-shadow: 0 4px 16px rgba(0, 0, 0, .18); pointer-events: auto; }
+.term-pill:hover { background: var(--bg-3); }
+.term-pill-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-3); flex: none; }
+.term-pill-dot.running { background: var(--success); animation: tb-pulse 1.4s ease-in-out infinite; }
+.menu-item.disabled { opacity: .45; pointer-events: none; }
+@media (max-width: 860px) {
+  .terminal-panel { width: auto; }
+  .term-pill { inset-inline-end: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); }
 }
