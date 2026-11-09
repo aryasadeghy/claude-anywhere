@@ -1089,3 +1089,10 @@ audio.lb-media { width: min(520px, 90vw); height: auto; }
 .code-copy { display: inline-flex; padding: 4px; border: 0; background: none; color: var(--ink-3); cursor: pointer; border-radius: 6px; }
 .code-copy:hover { color: var(--ink); background: var(--bg-3); }
 .code-block pre { margin: 0; border-radius: 0 0 10px 10px; }
+
+/* Find in the session: a bar over the thread, like a browser's own. */
+.find-bar { display: flex; align-items: center; gap: 8px; max-width: 48rem; width: 100%; margin: 8px auto 0; padding: 7px 12px; border-radius: 12px; background: var(--bg-2); border: 1px solid var(--line); color: var(--ink-3); }
+.find-bar input { flex: 1; min-width: 0; font: inherit; font-size: 13.5px; border: 0; background: none; color: var(--ink); outline: none; }
+.find-count { font-size: 12px; white-space: nowrap; }
+mark.find-hit { background: color-mix(in srgb, var(--accent) 35%, transparent); color: inherit; border-radius: 3px; }
+mark.find-hit.current { background: var(--accent); color: var(--accent-ink); }

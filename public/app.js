@@ -2491,6 +2491,75 @@
     }
   }).observe(thread, { childList: true, subtree: true });
 
+  // ---------- find in the session (Ctrl/Cmd+F with a session open) ----------
+  // The server reads the whole transcript (lib/history.mjs's searchSession, the same file a
+  // history page comes from), not just what this page has loaded - jumpToMessage already knows
+  // how to load older pages until a given message is on screen, so an older hit reuses it.
+  const findBar = $('#find-bar'), findInput = $('#find-input'), findCountEl = $('#find-count');
+  let findQuery = '', findHits = [], findIndex = -1, findSeq = 0;
+  function clearFindHighlights() { thread.querySelectorAll('mark.find-hit').forEach((m) => m.replaceWith(document.createTextNode(m.textContent))); }
+  function highlightFindIn(root) {
+    if (!findQuery) return;
+    const needle = findQuery.toLowerCase();
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, { acceptNode(n) {
+      return n.nodeValue?.toLowerCase().includes(needle) && !n.parentElement?.closest('mark.find-hit, textarea, input, script, style') ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+    } });
+    const nodes = []; let n; while ((n = walker.nextNode())) nodes.push(n);
+    for (const node of nodes) {
+      const text = node.nodeValue, lower = text.toLowerCase();
+      const frag = document.createDocumentFragment();
+      let last = 0, idx;
+      while ((idx = lower.indexOf(needle, last)) >= 0) {
+        if (idx > last) frag.appendChild(document.createTextNode(text.slice(last, idx)));
+        frag.appendChild(el('mark', 'find-hit', text.slice(idx, idx + needle.length)));
+        last = idx + needle.length;
+      }
+      if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+      node.parentNode?.replaceChild(frag, node);
+    }
+  }
+  function paintFindCount() { findCountEl.textContent = findHits.length ? (findIndex + 1) + ' of ' + findHits.length : (findQuery ? 'No results' : ''); }
+  async function gotoFindHit(i) {
+    if (!findHits.length) return;
+    findIndex = ((i % findHits.length) + findHits.length) % findHits.length;
+    paintFindCount();
+    const hit = findHits[findIndex];
+    await jumpToMessage(hit.uuid);
+    highlightFindIn(thread);
+    thread.querySelectorAll('mark.find-hit.current').forEach((m) => m.classList.remove('current'));
+    // A message from before a compaction has no uuid to anchor a jump to (the same reason it
+    // offers no rewind) - the text is on screen regardless once the page loads, just not
+    // addressable by id, so the first mark now in the thread is shown instead of none at all.
+    const mark = thread.querySelector(`[data-uuid="${CSS.escape(hit.uuid || '')}"] mark.find-hit`) || thread.querySelector('mark.find-hit');
+    if (mark) { mark.classList.add('current'); mark.scrollIntoView({ block: 'center' }); }
+  }
+  async function runFind(q) {
+    const seq = ++findSeq;
+    findQuery = q; clearFindHighlights(); highlightFindIn(thread);
+    if (!q || !state.current) { findHits = []; findIndex = -1; paintFindCount(); return; }
+    try { const r = await api(`/sessions/${state.current}/search?q=${encodeURIComponent(q)}`); if (seq !== findSeq) return; findHits = r.hits || []; }
+    catch { if (seq !== findSeq) return; findHits = []; }
+    findIndex = findHits.length ? 0 : -1;
+    paintFindCount();
+    if (findIndex >= 0) await gotoFindHit(findIndex);
+  }
+  function openFind() {
+    if (!state.current) return;
+    findBar.classList.remove('hidden');
+    findInput.value = findQuery; findInput.focus(); findInput.select();
+    if (findQuery) highlightFindIn(thread);
+  }
+  function closeFind() { findBar.classList.add('hidden'); findQuery = ''; findHits = []; findIndex = -1; findSeq++; clearFindHighlights(); input.focus(); }
+  let findDebounce = null;
+  findInput.addEventListener('input', () => { clearTimeout(findDebounce); findDebounce = setTimeout(() => runFind(findInput.value.trim()), 200); });
+  findInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); gotoFindHit(findIndex + (e.shiftKey ? -1 : 1)); }
+    else if (e.key === 'Escape') { e.preventDefault(); closeFind(); }
+  });
+  $('#find-next').addEventListener('click', () => gotoFindHit(findIndex + 1));
+  $('#find-prev').addEventListener('click', () => gotoFindHit(findIndex - 1));
+  $('#find-close').addEventListener('click', closeFind);
+
   // ---------- message context menu: Copy, Copy as Markdown, Copy link, Attach as context, Pin as chapter ----------
   const msgCtx = $('#msg-ctx-menu');
   // Assistant text can be several .prose blocks around tool groups; a user bubble is plain text,
@@ -4556,6 +4625,9 @@
     if (!(e.ctrlKey || e.metaKey) || e.altKey || $('#app').classList.contains('hidden')) return;
     const k = e.key.toLowerCase();
     if (k === 'k') { e.preventDefault(); pal.classList.contains('hidden') ? openPalette() : closePalette(); }
+    // With a session open, Ctrl/Cmd+F finds in it instead; the sidebar's own search moves to
+    // Shift+F there (still on its button too). With none open, F keeps finding a session.
+    else if (k === 'f' && state.current && !e.shiftKey) { e.preventDefault(); openFind(); }
     else if (k === 'f') { e.preventDefault(); const sb = $('#sidebar'); if (!sb.classList.contains('searching')) $('#search-btn').click(); else $('#search-input').focus(); app.classList.add('sidebar-open'); }
     else if (k === 'b' && e.shiftKey) { e.preventDefault(); previewOpen ? closePreview() : openPreview(); } // Desktop's own shortcut for its Browser
     else if (k === 'b') { e.preventDefault(); app.classList.toggle('sidebar-open'); }
@@ -4572,6 +4644,7 @@
     const seq = ++openSeq;
     state.current = id; state.live = null; state.tasks = []; hiddenTasks.clear(); paintTasks(); if (changesOpen) closeChanges(); if (previewOpen) closePreview(); if (filesOpen) closeFiles();
     planTodos = null; planTasks.clear(); planBoxClosedByUser = false; paintPlanBox();
+    findQuery = ''; findHits = []; findIndex = -1; findSeq++; findBar.classList.add('hidden');
     if (state.es) { state.es.close(); state.es = null; }
     app.classList.remove('sidebar-open'); app.classList.remove('new');
     empty.classList.remove('show'); thread.innerHTML = '<div class="muted small pad">Loading…</div>';
@@ -4633,6 +4706,7 @@
     hist.id = null; hist.more = false;
     chapters = []; registeredChapters.clear();
     planTodos = null; planTasks.clear(); planBoxClosedByUser = false; paintPlanBox();
+    findQuery = ''; findHits = []; findIndex = -1; findSeq++; findBar.classList.add('hidden');
     state.current = null; state.live = null; state.tasks = []; hiddenTasks.clear(); paintTasks(); if (changesOpen) closeChanges(); if (filesOpen) closeFiles(); stopPrWatch(); $("#sb-pr-state").classList.add("hidden");
     if (state.es) { state.es.close(); state.es = null; }
     app.classList.remove('sidebar-open');

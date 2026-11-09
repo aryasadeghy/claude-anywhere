@@ -27,6 +27,8 @@ async function main() {
   const api = await fx.startFakeApi({ delay: 0 }); // no check here watches words arrive one at a time
   const app = await fx.startApp({ port: await fx.freePort(), dataDir: path.join(tmp, 'data'), configDir: path.join(tmp, 'claude'), env: fx.fakeApiEnv(api) });
   fs.mkdirSync(SHOTS, { recursive: true });
+  // A long session for Find: enough turns, and a compaction, to need paging back to an older hit.
+  const longId = fx.makeLongSession(path.join(tmp, 'claude'), cwd, { turns: 20 }).id;
 
   async function open(type, opts) {
     const browser = await type.launch({ headless: true, ...(type === chromium && channel ? { channel } : {}) });
@@ -250,6 +252,27 @@ async function main() {
     return items.includes('image/png');
   }, 3000));
   await page.screenshot({ path: path.join(SHOTS, 'conversation-code-image.png') });
+
+  // 13. Find in the session (Ctrl/Cmd+F): the server searches the whole transcript, not just
+  // what is loaded; Shift+F still opens the sidebar's own search once a session is open.
+  await page.goto(app.base + '/#/s/' + longId);
+  await until(() => page.isVisible('#thread .msg'), 10000);
+  await page.keyboard.press('Control+f');
+  check('Ctrl+F opens the find bar, not the sidebar search', await until(() => page.isVisible('#find-bar:not(.hidden)'), 3000) && !(await page.evaluate(() => document.querySelector('#sidebar').classList.contains('searching'))));
+  await page.fill('#find-input', 'thing 3');
+  check('it finds matches and highlights them', await until(() => page.isVisible('mark.find-hit'), 8000));
+  const firstCount = await page.textContent('#find-count');
+  await page.press('#find-input', 'Enter');
+  check('Enter moves to the next match', await until(async () => (await page.textContent('#find-count')) !== firstCount, 3000));
+  // "Turn 1:" is before this session's first compaction - paging back to it and showing it
+  // highlighted is the same mechanism a chapter or a deep link uses (jumpToMessage).
+  await page.fill('#find-input', 'Turn 1:');
+  check('an older match pages back and is shown highlighted', await until(() => page.isVisible('mark.find-hit.current'), 10000));
+  await page.press('#find-input', 'Escape');
+  check('Escape closes the bar and clears the highlights', await until(async () => !(await page.isVisible('#find-bar')) && !(await page.isVisible('mark.find-hit')), 3000));
+  await page.keyboard.press('Control+Shift+f');
+  check('Ctrl+Shift+F opens the sidebar search instead', await until(() => page.evaluate(() => document.querySelector('#sidebar').classList.contains('searching')), 3000));
+  await page.screenshot({ path: path.join(SHOTS, 'conversation-find.png') });
 
   check('no errors in the app', !errors.length, errors.join(' | '));
   await browser.close();
