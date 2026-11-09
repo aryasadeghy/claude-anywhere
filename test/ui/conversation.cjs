@@ -211,7 +211,7 @@ async function main() {
   // 10. Message right-click menu: Copy, Copy as Markdown, Copy link (a deep link that opens and
   // highlights the message), Attach as context, Pin as chapter.
   const amsg = page.locator('.msg.assistant').last();
-  { const box = await amsg.boundingBox(); await page.mouse.click(box.x + 20, box.y + 10, { button: 'right' }); }
+  await amsg.click({ button: 'right', position: { x: 20, y: 10 } });
   check('the menu offers all five actions', await until(async () => {
     const items = await page.$$eval('#msg-ctx-menu .menu-item', (ns) => ns.map((n) => n.textContent.trim()));
     return ['Copy', 'Copy as Markdown', 'Copy link', 'Attach as context', 'Pin as chapter'].every((t) => items.includes(t));
@@ -231,7 +231,7 @@ async function main() {
   check('the button copies the code', await until(async () => (await page.evaluate(() => navigator.clipboard.readText())).includes('return a + b;'), 3000));
   await page.click('.code-block pre code', { clickCount: 3 });
   check('triple-click selects the whole block', (await page.evaluate(() => window.getSelection().toString())).includes('function add'));
-  { const box = await page.locator('.code-block pre code').boundingBox(); await page.mouse.click(box.x + 10, box.y + 10, { button: 'right' }); }
+  await page.locator('.code-block pre code').click({ button: 'right', position: { x: 10, y: 10 } });
   check('right-click on code offers Copy code, not the message menu', await until(async () => {
     const items = await page.$$eval('#msg-ctx-menu .menu-item', (ns) => ns.map((n) => n.textContent.trim()));
     return items.length === 1 && items[0] === 'Copy code';
@@ -240,8 +240,10 @@ async function main() {
 
   // 12. Images: right-click Copy / Save.
   await send(page, '[img] show me');
-  await until(async () => (await page.locator('.md-img').boundingBox())?.width > 0, 20000);
-  { const box = await page.locator('.md-img').boundingBox(); await page.mouse.click(box.x + 5, box.y + 5, { button: 'right' }); }
+  const mdImg = page.locator('.md-img');
+  await until(async () => (await mdImg.boundingBox())?.width > 0, 20000);
+  await mdImg.scrollIntoViewIfNeeded();
+  await mdImg.click({ button: 'right' }); // Playwright's own actionability wait, not a stale snapshot
   check('right-click on an image offers Copy image / Save image', await until(async () => {
     const items = await page.$$eval('#msg-ctx-menu .menu-item', (ns) => ns.map((n) => n.textContent.trim()));
     return items.includes('Copy image') && items.includes('Save image');
