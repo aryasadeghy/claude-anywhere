@@ -1397,6 +1397,7 @@
     m.appendChild(item('Changes', '', false, () => { m.classList.add('hidden'); openChanges(); }));
     m.appendChild(item('Files', 'Look through this session\'s folder', false, () => { m.classList.add('hidden'); openFiles(); }));
     m.appendChild(item('Browser', 'Dev servers and the project\'s pages and PDFs, here and on your phone', false, () => { m.classList.add('hidden'); openPreview(); }));
+    m.appendChild(item('Terminal', 'PowerShell or your shell, right here', false, () => { m.classList.add('hidden'); toggleTerminal(); }, { hint: 'Ctrl+`' }));
     m.appendChild(item('Worktrees…', 'A second checkout on its own branch', false, () => { m.classList.add('hidden'); showWorktrees(state.cwd); }));
     m.appendChild(item('Keep computer awake', (AWAKE.find((a) => a[0] === awakeMode) || AWAKE[0])[1], false, () => {
       m.classList.add('hidden');
@@ -2442,7 +2443,7 @@
     clearInterval(tasksTimer); tasksTimer = null;
     if (running.length && tasksOpen) tasksTimer = setInterval(() => { for (const t of running) { const n = tpList.querySelector(`[data-task="${t.id}"] .tp-elapsed`); if (n) n.textContent = fmtDur(Date.now() - t.startedAt); } }, 1000);
   }
-  function openTasks() { if (changesOpen) closeChanges(); if (previewOpen) closePreview(); if (filesOpen) closeFiles(); tasksOpen = true; tasksPanel.classList.remove('hidden'); app.classList.add('tasks-open'); paintTasks(); }
+  function openTasks() { if (changesOpen) closeChanges(); if (previewOpen) closePreview(); if (filesOpen) closeFiles(); if (terminalOpen) closeTerminal(); tasksOpen = true; tasksPanel.classList.remove('hidden'); app.classList.add('tasks-open'); paintTasks(); }
   function closeTasks() { tasksOpen = false; tasksPanel.classList.add('hidden'); app.classList.remove('tasks-open'); for (const [, o] of outputOpen) clearInterval(o.timer); outputOpen.clear(); paintTasks(); }
   $('#tasks-bar').addEventListener('click', () => tasksOpen ? closeTasks() : openTasks());
   $('#tp-close').addEventListener('click', closeTasks);
@@ -2693,6 +2694,7 @@
     if (tasksOpen) closeTasks();
     if (changesOpen) closeChanges();
     if (filesOpen) closeFiles();
+    if (terminalOpen) closeTerminal();
     previewOpen = true; pvPanel.classList.remove('hidden'); app.classList.add('panel-open');
     // The frames cannot send our token, so the server hands out a cookie of their own first.
     try { await grant(); } catch (e) { note(e.message); }
@@ -3028,7 +3030,7 @@
   const FX_FILE = '<svg viewBox="0 0 20 20" width="15" height="15"><path d="M5 3.5h6L15 7v9.5a.5.5 0 0 1-.5.5h-9a.5.5 0 0 1-.5-.5v-13z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M11 3.5V7h4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>';
   const fxSize = (n) => n < 1024 ? n + ' B' : n < 1024 * 1024 ? Math.round(n / 1024) + ' KB' : (n / 1048576).toFixed(1) + ' MB';
   function openFiles() {
-    if (tasksOpen) closeTasks(); if (previewOpen) closePreview(); if (changesOpen) closeChanges();
+    if (tasksOpen) closeTasks(); if (previewOpen) closePreview(); if (changesOpen) closeChanges(); if (terminalOpen) closeTerminal();
     filesOpen = true; fxPanel.classList.remove('hidden'); app.classList.add('panel-open');
     fxHome = state.cwd || '';
     loadDir(fxDir || fxHome);
@@ -3169,6 +3171,220 @@
     return 'This file is not on ' + host + ', which is where the session runs. If it is on another computer, open that one from the account menu.';
   }
 
+  // ---------- terminal: a shell pane like Desktop's, several tabs, Claude's own commands too ----------
+  // xterm.js (~340 KB) is only fetched the first time a tab actually opens - dynamic import,
+  // not a <script> in the page, so every other load is none the heavier for a pane most
+  // visits never open. Served from node_modules by the server (vendor/xterm, vendor/xterm-fit);
+  // no build step, no CDN.
+  const termPanel = $('#terminal-panel'), termTabsEl = $('#term-tabs'), termStage = $('#term-stage'), termPill = $('#term-pill');
+  let terminalOpen = false, terminalMinimized = false;
+  const term = { cwd: '', tabs: [], active: null }; // tabs: { id, title, alive, running, crashed, el, banner, xterm, fit, ws }
+  const findTermTab = (id) => term.tabs.find((t) => t.id === id);
+  let xtermMod = null;
+  async function ensureXterm() {
+    if (xtermMod) return xtermMod;
+    if (!document.getElementById('xterm-css')) {
+      const link = document.createElement('link'); link.id = 'xterm-css'; link.rel = 'stylesheet'; link.href = '/vendor/xterm/xterm.css';
+      document.head.appendChild(link);
+    }
+    const [{ Terminal }, { FitAddon }] = await Promise.all([import('/vendor/xterm/xterm.mjs'), import('/vendor/xterm-fit/addon-fit.mjs')]);
+    return (xtermMod = { Terminal, FitAddon });
+  }
+  // A theme close enough to the app's own that the pane does not read as a hole punched
+  // through it - exact parity is not the point, xterm.js has its own idea of "dim" colours.
+  function termTheme() {
+    const cs = getComputedStyle(document.documentElement);
+    const v = (name, fallback) => cs.getPropertyValue(name).trim() || fallback;
+    return { background: v('--bg-000', '#1a1a1a'), foreground: v('--ink', '#eee'), cursor: v('--ink', '#eee'), selectionBackground: 'rgba(120,150,255,.35)' };
+  }
+  function termWsUrl(sessionId, tabId) {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${proto}//${location.host}/api/terminal/ws?token=${encodeURIComponent(state.token)}&session=${encodeURIComponent(sessionId)}&tab=${encodeURIComponent(tabId)}`;
+  }
+  function writeTermInput(tab, text) { if (tab.ws && tab.ws.readyState === WebSocket.OPEN) tab.ws.send(JSON.stringify({ t: 'input', d: text })); }
+  function connectTab(tab) {
+    const ws = new WebSocket(termWsUrl(state.current, tab.id));
+    tab.ws = ws;
+    ws.addEventListener('message', (ev) => {
+      let msg; try { msg = JSON.parse(ev.data); } catch { return; }
+      if (msg.t === 'snapshot') { tab.xterm.reset(); if (msg.data) tab.xterm.write(msg.data); applyTabInfo(tab, msg.tab); }
+      else if (msg.t === 'data') tab.xterm.write(msg.d);
+      else if (msg.t === 'state') { tab.running = msg.running; tab.alive = msg.alive; paintTermTabs(); }
+      else if (msg.t === 'exit') { tab.alive = false; tab.running = false; tab.crashed = !!msg.crashed; paintTermTabs(); paintTabBanner(tab); }
+      else if (msg.t === 'restarted') { tab.alive = true; tab.running = false; tab.crashed = false; tab.xterm.reset(); paintTermTabs(); paintTabBanner(tab); }
+      else if (msg.t === 'error') toast(msg.text);
+    });
+    ws.addEventListener('close', () => { if (tab.ws === ws) tab.ws = null; });
+  }
+  function applyTabInfo(tab, info) { Object.assign(tab, { title: info.title, cwd: info.cwd, alive: info.alive, running: info.running, crashed: info.crashed, exitCode: info.exitCode }); paintTermTabs(); paintTabBanner(tab); }
+  function paintTabBanner(tab) { tab.banner.classList.toggle('hidden', tab.alive); }
+  async function addTabView(info) {
+    const { Terminal, FitAddon } = await ensureXterm();
+    const tab = { ...info, el: null, banner: null, xterm: null, fit: null, ws: null };
+    const container = el('div', 'term-view hidden');
+    const banner = el('div', 'term-banner hidden');
+    banner.appendChild(el('span', null, 'Shell exited.'));
+    const restartBtn = el('button', 'btn btn-ghost small', 'Restart'); restartBtn.type = 'button';
+    restartBtn.addEventListener('click', () => api(`/sessions/${state.current}/terminal/tabs/${tab.id}/restart`, { method: 'POST' }).catch((e) => toast(e.message)));
+    banner.appendChild(restartBtn);
+    container.appendChild(banner);
+    const xtermHost = el('div', 'term-xterm');
+    container.appendChild(xtermHost);
+    termStage.appendChild(container);
+    const xterm = new Terminal({ fontSize: 13, cursorBlink: true, convertEol: true, scrollback: 5000, theme: termTheme() });
+    const fit = new FitAddon();
+    xterm.loadAddon(fit);
+    xterm.open(xtermHost);
+    // Ctrl+` toggles the pane even while it holds the keyboard - returning false tells xterm
+    // this one is not its to handle, the same way VS Code's own terminal leaves it alone.
+    xterm.attachCustomKeyEventHandler((ev) => { if ((ev.ctrlKey || ev.metaKey) && ev.code === 'Backquote' && ev.type === 'keydown') { toggleTerminal(); return false; } return true; });
+    Object.assign(tab, { el: container, banner });
+    xterm.onData((d) => writeTermInput(tab, d));
+    xterm.onResize(({ cols, rows }) => { if (tab.ws && tab.ws.readyState === WebSocket.OPEN) tab.ws.send(JSON.stringify({ t: 'resize', cols, rows })); });
+    container.addEventListener('contextmenu', (e) => { e.preventDefault(); showTermCtxMenu(tab, e.clientX, e.clientY); });
+    tab.xterm = xterm; tab.fit = fit;
+    term.tabs.push(tab);
+    connectTab(tab);
+    paintTabBanner(tab);
+    return tab;
+  }
+  function resizeActiveTerm() { const tab = findTermTab(term.active); if (!tab) return; try { tab.fit.fit(); } catch {} }
+  // One rAF after becoming visible is sometimes still a frame before the phone's
+  // position:fixed sheet (or the panel's own flex layout) has taken its final size - fit()
+  // then measures too small, and the rest of the pane shows through as xterm's own viewport
+  // background instead of the grid growing to fill it. A second rAF is one frame later, past it.
+  const doubleRaf = (fn) => requestAnimationFrame(() => requestAnimationFrame(fn));
+  // The panel's own drag-resize changes a CSS variable, not the viewport, so a window
+  // 'resize' event never fires for it - a ResizeObserver on the stage catches both that
+  // and an ordinary window resize in one place.
+  const termResizeObserver = new ResizeObserver(() => { if (terminalOpen && !terminalMinimized) resizeActiveTerm(); });
+  termResizeObserver.observe(termStage);
+  function showTerminalTab(id) {
+    const tab = findTermTab(id);
+    if (!tab) return;
+    if (!terminalOpen) { openTerminal().then(() => showTerminalTab(id)); return; }
+    for (const t of term.tabs) t.el.classList.toggle('hidden', t.id !== id);
+    term.active = id;
+    paintTermTabs();
+    doubleRaf(() => { resizeActiveTerm(); tab.xterm.focus(); });
+  }
+  function paintTermTabs() {
+    termTabsEl.innerHTML = '';
+    for (const tab of term.tabs) {
+      const b = el('div', 'pv-tab term-tab' + (tab.id === term.active ? ' on' : '') + (!tab.alive ? ' term-dead' : ''));
+      b.setAttribute('role', 'tab'); b.setAttribute('aria-selected', String(tab.id === term.active)); b.title = tab.title || 'Terminal';
+      if (tab.running) b.appendChild(el('span', 'term-dot'));
+      const name = el('span', 'pv-tab-name', tab.title || 'Terminal'); name.dir = 'auto'; b.appendChild(name);
+      const x = el('button', 'pv-tab-x'); x.type = 'button'; x.title = 'Close terminal'; x.setAttribute('aria-label', 'Close terminal');
+      x.innerHTML = '<svg viewBox="0 0 20 20" width="11" height="11"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
+      x.addEventListener('click', (e) => { e.stopPropagation(); closeTermTab(tab); });
+      b.appendChild(x);
+      b.addEventListener('click', () => showTerminalTab(tab.id));
+      termTabsEl.appendChild(b);
+    }
+    termPill.querySelector('.term-pill-dot')?.classList.toggle('running', term.tabs.some((t) => t.running));
+  }
+  async function newTermTab(cwd) {
+    let info;
+    try { info = await api(`/sessions/${state.current}/terminal/tabs`, { method: 'POST', body: JSON.stringify({ cwd: cwd || state.cwd || '' }) }); }
+    catch (e) { toast(e.message); return null; }
+    const tab = await addTabView(info);
+    paintTermTabs();
+    showTerminalTab(tab.id);
+    return tab;
+  }
+  // A command still running is the one thing closing a tab should not do by surprise -
+  // Desktop's own words for asking first.
+  function closeTermTab(tab) {
+    if (tab.running && !confirm(`A command is still running in ${tab.title || 'this terminal'}. Closing the terminal stops it.`)) return;
+    api(`/sessions/${state.current}/terminal/tabs/${tab.id}`, { method: 'DELETE' }).catch(() => {});
+    try { tab.ws?.close(); } catch {}
+    try { tab.xterm.dispose(); } catch {}
+    tab.el.remove();
+    term.tabs = term.tabs.filter((t) => t !== tab);
+    if (term.active === tab.id) { term.active = null; if (term.tabs.length) showTerminalTab(term.tabs[term.tabs.length - 1].id); else closeTerminal(); }
+    else paintTermTabs();
+  }
+  function disposeTermTabs() {
+    for (const t of term.tabs) { try { t.ws?.close(); } catch {} try { t.xterm.dispose(); } catch {} t.el.remove(); }
+    term.tabs = []; term.active = null;
+  }
+  async function loadTermTabs() {
+    disposeTermTabs();
+    term.cwd = state.cwd || '';
+    let list = [];
+    try { list = (await api(`/sessions/${state.current}/terminal/tabs`)).tabs; } catch (e) { toast(e.message); }
+    if (!list.length) { await newTermTab(); return; }
+    for (const info of list) await addTabView(info);
+    paintTermTabs();
+    showTerminalTab(term.tabs[0].id);
+  }
+  async function openTerminal() {
+    if (!state.current) { toast('Start a conversation first.'); return; }
+    if (tasksOpen) closeTasks(); if (previewOpen) closePreview(); if (filesOpen) closeFiles(); if (changesOpen) closeChanges();
+    terminalOpen = true; terminalMinimized = false;
+    termPanel.classList.remove('hidden', 'minimized'); termPill.classList.add('hidden');
+    app.classList.add('panel-open');
+    if (term.cwd !== (state.cwd || '') || !term.tabs.length) await loadTermTabs();
+    else doubleRaf(resizeActiveTerm);
+  }
+  function closeTerminal() { terminalOpen = false; termPanel.classList.add('hidden'); termPill.classList.add('hidden'); app.classList.remove('panel-open'); }
+  function minimizeTerminal(on) {
+    terminalMinimized = on;
+    termPanel.classList.toggle('minimized', on);
+    termPill.classList.toggle('hidden', !on);
+    if (!on) doubleRaf(resizeActiveTerm);
+  }
+  async function toggleTerminal() { terminalOpen && !terminalMinimized ? closeTerminal() : await openTerminal(); }
+  $('#term-new').addEventListener('click', () => newTermTab());
+  $('#term-close').addEventListener('click', closeTerminal);
+  $('#term-min').addEventListener('click', () => minimizeTerminal(!terminalMinimized));
+  termPill.addEventListener('click', () => minimizeTerminal(false));
+  // Right-click on the pane itself: Copy, Paste, Attach selection as context - the same
+  // menu element the sidebar and Worktrees use, built for this instead.
+  function showTermCtxMenu(tab, x, y) {
+    const sel = tab.xterm.getSelection();
+    ctx.innerHTML = '';
+    const add = (label, fn, disabled) => {
+      const b = item(label, '', false, () => { ctx.classList.add('hidden'); fn(); });
+      if (disabled) { b.disabled = true; b.classList.add('disabled'); }
+      ctx.appendChild(b);
+    };
+    add('Copy', () => { if (sel) navigator.clipboard?.writeText(sel).catch(() => {}); }, !sel);
+    add('Paste', async () => { try { const t = await navigator.clipboard.readText(); if (t) writeTermInput(tab, t); } catch {} });
+    add('Attach selection as context', () => attachContext({ label: 'Terminal · ' + (tab.title || 'Terminal'), text: sel }), !sel);
+    ctx.classList.remove('hidden');
+    if (!isPhone()) { const r = ctx.getBoundingClientRect(); ctx.style.left = Math.min(x, window.innerWidth - r.width - 8) + 'px'; ctx.style.top = Math.min(y, window.innerHeight - r.height - 8) + 'px'; }
+  }
+  // Claude opened or used a tab: shown right away, the same pane the person would open.
+  async function onTerminalTabEvent(info) {
+    if (!terminalOpen) await openTerminal();
+    if (!findTermTab(info.id)) { await addTabView(info); paintTermTabs(); }
+    showTerminalTab(info.id);
+  }
+  // openTerminalAt(dir): what the Files package's "Open in terminal" calls. runInTerminal:
+  // what the composer's "!" command and Claude's own run_in_terminal share - run a command
+  // in a tab the person can see, and (unless told not to) hand its output to the next message.
+  async function openTerminalAt(dir) {
+    if (!state.current) { toast('Start a conversation first.'); return null; }
+    await openTerminal();
+    return newTermTab(dir);
+  }
+  async function runInTerminal(command, { send = true, cwd } = {}) {
+    if (!state.current) { toast('Start a conversation first.'); return null; }
+    await openTerminal();
+    let tab = term.active ? findTermTab(term.active) : null;
+    if (!tab || !tab.alive) tab = await newTermTab(cwd);
+    if (!tab) return null;
+    showTerminalTab(tab.id);
+    let r;
+    try { r = await api(`/sessions/${state.current}/terminal/tabs/${tab.id}/run`, { method: 'POST', body: JSON.stringify({ command }) }); }
+    catch (e) { toast(e.message); return null; }
+    if (r.error) { toast(r.error); return r; }
+    if (send) attachContext({ label: 'Terminal · ' + command, text: (r.output || '(no output)') + (r.exitCode ? '\n(exit code ' + r.exitCode + ')' : '') });
+    return r;
+  }
+
   // ---------- worktrees: a second checkout of the same repository, on its own branch ----------
   async function makeWorktree(cwd) {
     const branch = prompt('New branch for this worktree', 'claude/' + new Date().toISOString().slice(5, 10).replace('-', ''));
@@ -3289,7 +3505,7 @@
   // ---------- Changes: the files this folder has changed, and their diffs (Desktop's Changes pane) ----------
   const changesPanel = $('#changes-panel'), chList = $('#ch-list'), chDiff = $('#ch-diff');
   let changesOpen = false, changesData = null, changesFile = null;
-  function openChanges() { if (tasksOpen) closeTasks(); if (previewOpen) closePreview(); if (filesOpen) closeFiles(); changesOpen = true; changesPanel.classList.remove('hidden'); app.classList.add('panel-open'); showChangesList(); loadChanges(); }
+  function openChanges() { if (tasksOpen) closeTasks(); if (previewOpen) closePreview(); if (filesOpen) closeFiles(); if (terminalOpen) closeTerminal(); changesOpen = true; changesPanel.classList.remove('hidden'); app.classList.add('panel-open'); showChangesList(); loadChanges(); }
   function closeChanges() { changesOpen = false; changesFile = null; changesPanel.classList.add('hidden'); app.classList.remove('panel-open'); }
   $('#ch-close').addEventListener('click', closeChanges);
   $('#ch-refresh').addEventListener('click', () => loadChanges());
@@ -3518,6 +3734,9 @@
           break;
         }
         case 'tasks': state.tasks = ev.tasks || []; paintTasks(); break;
+        // Claude opened or used a terminal tab: the person sees it, same as if they had.
+        case 'terminal_tab': onTerminalTabEvent(ev.tab); break;
+        case 'terminal_focus': showTerminalTab(ev.tabId); break;
         case 'note': thread.appendChild(el('div', 'note' + (ev.level === 'warning' ? ' warning' : ''), ev.text)); statusPaint(); autoscroll(); break;
         // Stop took back messages typed mid-turn: their dashed bubbles go, on every device.
         case 'unqueued': for (const id of ev.ids || []) thread.querySelector('.msg.user.queued[data-prompt-id="' + CSS.escape(id) + '"]')?.remove(); break;
@@ -3964,7 +4183,7 @@
     h.addEventListener('dblclick', () => { apply(0); try { localStorage.removeItem(store); } catch {} });
   }
   resizable($('#sidebar'), '--sidebar-w', { min: 220, max: () => Math.min(600, window.innerWidth / 2), side: 'start' });
-  for (const [node, key] of [[tasksPanel, '--tasks-w'], [changesPanel, '--changes-w'], [pvPanel, '--preview-w'], [fxPanel, '--files-w']]) resizable(node, key, { min: 300, max: () => window.innerWidth - 560, side: 'end' });
+  for (const [node, key] of [[tasksPanel, '--tasks-w'], [changesPanel, '--changes-w'], [pvPanel, '--preview-w'], [fxPanel, '--files-w'], [termPanel, '--terminal-w']]) resizable(node, key, { min: 300, max: () => window.innerWidth - 560, side: 'end' });
 
   // ---------- everything this app can do, by name ----------
   // Ctrl/Cmd+K. Commands first, then the sessions themselves, so the same box both
@@ -3989,6 +4208,7 @@
       { name: 'Changes', group: 'Session', run: () => (changesOpen ? closeChanges() : openChanges()) },
       { name: 'Files', group: 'Session', run: () => (filesOpen ? closeFiles() : openFiles()) },
       { name: 'Browser', group: 'Session', hint: 'Ctrl+Shift+B', run: () => (previewOpen ? closePreview() : openPreview()) },
+      { name: 'Terminal', group: 'Session', hint: 'Ctrl+`', run: () => toggleTerminal() },
       { name: 'Tasks', group: 'Session', run: () => (tasksOpen ? closeTasks() : openTasks()) },
       { name: 'Worktrees', group: 'Session', run: () => showWorktrees(state.cwd) },
       { name: 'New worktree…', group: 'Session', run: () => makeWorktree(state.cwd) },
@@ -4070,6 +4290,7 @@
     else if (k === 'b' && e.shiftKey) { e.preventDefault(); previewOpen ? closePreview() : openPreview(); } // Desktop's own shortcut for its Browser
     else if (k === 'b') { e.preventDefault(); app.classList.toggle('sidebar-open'); }
     else if (k === 'n') { e.preventDefault(); location.hash = '#/'; }
+    else if (e.code === 'Backquote') { e.preventDefault(); toggleTerminal(); } // Ctrl+` : VS Code's and Desktop's own terminal shortcut
   });
 
   // ---------- routing ----------
@@ -4080,7 +4301,7 @@
   let openSeq = 0;
   async function openSession(id) {
     const seq = ++openSeq;
-    state.current = id; state.live = null; state.tasks = []; hiddenTasks.clear(); paintTasks(); if (changesOpen) closeChanges(); if (previewOpen) closePreview(); if (filesOpen) closeFiles();
+    state.current = id; state.live = null; state.tasks = []; hiddenTasks.clear(); paintTasks(); if (changesOpen) closeChanges(); if (previewOpen) closePreview(); if (filesOpen) closeFiles(); if (terminalOpen) closeTerminal();
     if (state.es) { state.es.close(); state.es = null; }
     app.classList.remove('sidebar-open'); app.classList.remove('new');
     empty.classList.remove('show'); thread.innerHTML = '<div class="muted small pad">Loading…</div>';
@@ -4135,7 +4356,7 @@
     openSeq++; // a session still loading must not paint over the new-chat screen
     if (state.cwdIsChat) { state.cwdIsChat = false; state.cwd = localStorage.getItem('cr.cwd') || ''; renderProjectChip(); }
     hist.id = null; hist.more = false;
-    state.current = null; state.live = null; state.tasks = []; hiddenTasks.clear(); paintTasks(); if (changesOpen) closeChanges(); if (filesOpen) closeFiles(); stopPrWatch(); $("#sb-pr-state").classList.add("hidden");
+    state.current = null; state.live = null; state.tasks = []; hiddenTasks.clear(); paintTasks(); if (changesOpen) closeChanges(); if (filesOpen) closeFiles(); if (terminalOpen) closeTerminal(); stopPrWatch(); $("#sb-pr-state").classList.add("hidden");
     if (state.es) { state.es.close(); state.es = null; }
     app.classList.remove('sidebar-open');
     thread.innerHTML = ''; empty.classList.add('show'); app.classList.add('new');

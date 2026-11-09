@@ -333,6 +333,20 @@
       </div>
       <div id="tp-list" class="tp-list"></div>
     </aside>
+
+    <aside id="terminal-panel" class="tasks-panel terminal-panel hidden" aria-label="Terminal">
+      <!-- Desktop's terminal pane: tabs along the top, one shell each -->
+      <div class="tp-head term-head">
+        <div id="term-tabs" class="pv-tabs" role="tablist" aria-label="Terminal tabs"></div>
+        <button id="term-new" class="icon-btn small" type="button" title="New terminal tab" aria-label="New terminal tab"><svg viewBox="0 0 20 20" width="15" height="15"><path d="M10 4.5v11M4.5 10h11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+        <span class="sb-spacer"></span>
+        <button id="term-min" class="icon-btn small" type="button" title="Minimize" aria-label="Minimize"><svg viewBox="0 0 20 20" width="15" height="15"><path d="M4 14h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+        <button id="term-close" class="icon-btn small" type="button" title="Close"><svg viewBox="0 0 20 20" width="15" height="15"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+      </div>
+      <div id="term-stage" class="term-stage"></div>
+      <!-- Minimized: a thin strip, the running dot still visible, click to restore -->
+      <button id="term-pill" class="term-pill hidden" type="button" title="Terminal"><span class="term-pill-dot"></span>Terminal</button>
+    </aside>
   </div>
 
   <!-- Connectors (MCP servers) and plugins -->
