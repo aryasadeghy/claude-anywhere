@@ -2429,6 +2429,61 @@
     paintPlanBox();
   }
 
+  // ---------- masking API keys and tokens in the transcript, with an eye to reveal ----------
+  // A MutationObserver rather than a hook in every place that writes text (renderBlock,
+  // attachResult, userMsg, the step input/result dumps…): whatever lands in the thread gets
+  // walked once, text node by text node, the moment it arrives - live deltas, a history page,
+  // a tool's raw input or result. Masked by default: the dots are what a triple-click or a
+  // screenshot gets; the real value sits in a data attribute until the eye is clicked.
+  const SECRET_RE = /(sk-ant-[A-Za-z0-9_-]{8,}|sk-[A-Za-z0-9_-]{16,}|gh[po]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}|Bearer\s+[A-Za-z0-9._~+/=-]{10,}|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)/g;
+  const EYE_SVG = '<svg viewBox="0 0 20 20" width="13" height="13"><path d="M1.5 10S5 4.5 10 4.5 18.5 10 18.5 10 15 15.5 10 15.5 1.5 10 1.5 10z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><circle cx="10" cy="10" r="2.4" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>';
+  const maskDots = (v) => '•'.repeat(Math.min(v.length, 24));
+  function secretSpan(value) {
+    const span = el('span', 'secret-mask');
+    const text = el('span', 'secret-mask-text', maskDots(value));
+    const eye = el('button', 'secret-eye'); eye.type = 'button'; eye.title = 'Show'; eye.setAttribute('aria-label', 'Show'); eye.innerHTML = EYE_SVG;
+    eye.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const revealed = span.classList.toggle('revealed');
+      text.textContent = revealed ? value : maskDots(value);
+      eye.title = eye.ariaLabel = revealed ? 'Hide' : 'Show';
+    });
+    span.appendChild(text); span.appendChild(eye);
+    return span;
+  }
+  function maskTextNode(node) {
+    const text = node.nodeValue; SECRET_RE.lastIndex = 0;
+    const frag = document.createDocumentFragment();
+    let last = 0, m, any = false;
+    while ((m = SECRET_RE.exec(text))) {
+      any = true;
+      if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
+      frag.appendChild(secretSpan(m[0]));
+      last = m.index + m[0].length;
+    }
+    if (!any) return;
+    if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+    node.parentNode?.replaceChild(frag, node);
+  }
+  // Never inside a mask already - the eye reveal sets a masked span's own text to the real
+  // value, which is itself a mutation this same observer sees; without this guard that text
+  // came right back around and got masked again, undoing the click that asked to see it.
+  const maskable = (n) => !!n.nodeValue && SECRET_RE.test(n.nodeValue) && !n.parentElement?.closest('.secret-mask, textarea, input, script, style');
+  function maskSecretsIn(root) {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, { acceptNode(n) {
+      const ok = maskable(n); SECRET_RE.lastIndex = 0;
+      return ok ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+    } });
+    const nodes = []; let n; while ((n = walker.nextNode())) nodes.push(n);
+    for (const node of nodes) maskTextNode(node);
+  }
+  new MutationObserver((muts) => {
+    for (const mut of muts) for (const node of mut.addedNodes) {
+      if (node.nodeType === Node.TEXT_NODE) { if (maskable(node)) { SECRET_RE.lastIndex = 0; maskTextNode(node); } }
+      else if (node.nodeType === Node.ELEMENT_NODE) maskSecretsIn(node);
+    }
+  }).observe(thread, { childList: true, subtree: true });
+
   // ---------- live status line (the Desktop "✱ Thinking… 12s · 1.2k tokens" row) ----------
   const VERBS = ['Thinking', 'Pondering', 'Considering', 'Working', 'Reasoning', 'Composing', 'Sketching', 'Puzzling', 'Brewing', 'Cooking', 'Musing', 'Mulling'];
   const status = { el: null, verb: VERBS[0], tool: null, toolSince: 0, startedAt: 0, tokens: 0, waiting: false, timer: null, verbTimer: null };

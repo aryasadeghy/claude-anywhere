@@ -24,7 +24,7 @@ async function main() {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ca-ui-conversation-'));
   const cwd = path.join(tmp, 'project');
   fs.mkdirSync(cwd, { recursive: true });
-  const api = await fx.startFakeApi();
+  const api = await fx.startFakeApi({ delay: 0 }); // no check here watches words arrive one at a time
   const app = await fx.startApp({ port: await fx.freePort(), dataDir: path.join(tmp, 'data'), configDir: path.join(tmp, 'claude'), env: fx.fakeApiEnv(api) });
   fs.mkdirSync(SHOTS, { recursive: true });
 
@@ -35,7 +35,7 @@ async function main() {
     const page = await ctx.newPage();
     const errors = []; page.on('pageerror', (e) => errors.push(e.message));
     await page.goto(app.base + '/#/');
-    await wait(600);
+    await until(() => page.isVisible('#input'), 5000);
     return { browser, page, errors };
   }
   const threadText = (page) => page.$eval('#thread', (t) => t.innerText).catch(() => '');
@@ -191,6 +191,19 @@ async function main() {
   check('two separate formulas rendered (inline + block)', await page.$$eval('.katex', (ns) => ns.length) >= 2);
   check('"$5 or $10" is not read as math', (await threadText(page)).includes('$5 or $10'));
   await page.screenshot({ path: path.join(SHOTS, 'conversation-math.png') });
+
+  // 9. API keys and tokens are masked by default, an eye reveals one at a time.
+  const maskedBefore = await page.$$eval('.secret-mask', (ns) => ns.length);
+  await send(page, '[secret] what key is in the .env file');
+  check('a key is masked by default', await until(() => page.isVisible('.secret-mask .secret-mask-text'), 20000));
+  check('...not shown as plain text', !(await threadText(page)).includes('sk-ant-api03-fakeFAKE'));
+  await idle(page); // each streamed word re-renders the whole paragraph; count once it has settled
+  const newMasks = page.locator('.secret-mask').nth(maskedBefore); // the first one this turn added
+  check('two different secrets were both masked (sk-ant- and ghp_)', (await page.$$eval('.secret-mask', (ns) => ns.length)) >= maskedBefore + 2, 'before=' + maskedBefore);
+  await newMasks.locator('.secret-eye').click();
+  check('the eye reveals just that one', await until(async () => (await threadText(page)).includes('sk-ant-api03-fakeFAKE'), 3000));
+  check('...the other stays masked', !(await threadText(page)).includes('ghp_FAKEfakeFAKE'));
+  await page.screenshot({ path: path.join(SHOTS, 'conversation-secrets.png') });
 
   check('no errors in the app', !errors.length, errors.join(' | '));
   await browser.close();

@@ -238,6 +238,7 @@ export async function startFakeApi({ delay = 15 } = {}) {
     const words = afterTool ? (askedBefore ? `Noted: ${toolText.replace(/\s+/g, ' ').slice(0, 160)}` : 'Started it in the background.')
       : /\[background\]/.test(said) || asking || toolTag ? null
       : /\[math\]/.test(said) ? 'The area under the curve is $\\int_0^1 x\\,dx = \\frac{1}{2}$ and the price is $5 or $10, not a range.\n\n$$E = mc^2$$'
+      : /\[secret\]/.test(said) ? 'Found it in .env: ANTHROPIC_API_KEY=sk-ant-api03-fakeFAKEfakeFAKEfakeFAKEfakeFAKEfakeFAKE and a GitHub token ghp_FAKEfakeFAKEfakeFAKEfakeFAKEfake1234.'
       : `Answer to: ${(said.match(/Q\d+/) || ['it'])[0]}. Done.`;
     if (!j.stream) {
       res.writeHead(200, { 'content-type': 'application/json' });

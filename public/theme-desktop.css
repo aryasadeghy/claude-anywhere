@@ -1070,3 +1070,10 @@ audio.lb-media { width: min(520px, 90vw); height: auto; }
 /* Transcript view: Thinking/Verbose draw a thinking block as its own row. */
 .step.thought > summary .name { color: var(--ink-3); font-style: italic; }
 .thought-text { white-space: pre-wrap; color: var(--ink-2); font-size: 13px; line-height: 1.5; }
+
+/* API keys and tokens, masked by default; the eye reveals just that one. */
+.secret-mask { display: inline-flex; align-items: center; gap: 4px; padding: 0 3px; border-radius: 5px; background: color-mix(in srgb, var(--danger) 10%, transparent); }
+.secret-mask-text { font-family: var(--mono); font-size: .92em; letter-spacing: 1px; }
+.secret-mask.revealed .secret-mask-text { letter-spacing: normal; word-break: break-all; }
+.secret-eye { flex: none; display: inline-flex; padding: 1px; border: 0; background: none; color: var(--ink-3); cursor: pointer; border-radius: 4px; }
+.secret-eye:hover { color: var(--ink); background: var(--bg-3); }
