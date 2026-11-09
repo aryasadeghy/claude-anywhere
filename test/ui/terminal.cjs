@@ -127,6 +127,13 @@ async function main() {
   await page.fill('#palette-input', 'terminal');
   check('the command palette lists Terminal', await until(() => page.isVisible('.palette-item:has-text("Terminal")'), 3000));
   await page.keyboard.press('Escape');
+
+  // 9. Claude's own open_terminal_tab (allowed, no asking): the pane opens with the tab it
+  // used, the same one the person would see if they had opened it themselves.
+  await page.fill('#input', 'Q [terminal] open one for me');
+  await page.press('#input', 'Enter');
+  check('Claude opening a tab opens the pane, unasked', await until(() => page.isVisible('#terminal-panel:not(.hidden)'), 15000));
+
   check('no errors in the app', !errors.length, errors.join(' | '));
   await browser.close();
 

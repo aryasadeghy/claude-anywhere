@@ -209,7 +209,8 @@ export function makeLongSession(configDir, cwd, { id = 'eeeeeeee-1111-2222-3333-
 // turns run end to end - the CLI, the app, the page - offline, free and the same every time.
 // An answer streams back a word at a time. A prompt with "[background]" in it is answered first
 // with a background command (`sleep`), the way a render keeps a run alive after its answer;
-// "[ask]" with a question for the person (AskUserQuestion); "[slow]" streams at 150 ms a word.
+// "[ask]" with a question for the person (AskUserQuestion); "[slow]" streams at 150 ms a word;
+// "[terminal]" opens a terminal tab (the app's own open_terminal_tab, which runs without asking).
 // `requests` lists what the CLI asked for, `bodies` what it sent.
 export async function startFakeApi({ delay = 15 } = {}) {
   const requests = [], bodies = [];
@@ -229,7 +230,8 @@ export async function startFakeApi({ delay = 15 } = {}) {
     const askedBefore = afterTool && JSON.stringify((j.messages || []).at(-2)?.content || '').includes('AskUserQuestion');
     const toolText = (last.content || []).filter((b) => b.type === 'tool_result').map((b) => (typeof b.content === 'string' ? b.content : (b.content || []).map((c) => c.text || '').join(''))).join(' ');
     const asking = /\[ask\]/.test(said);
-    const words = afterTool ? (askedBefore ? `Noted: ${toolText.replace(/\s+/g, ' ').slice(0, 160)}` : 'Started it in the background.') : /\[background\]/.test(said) || asking ? null : `Answer to: ${(said.match(/Q\d+/) || ['it'])[0]}. Done.`;
+    const opensTerminal = /\[terminal\]/.test(said);
+    const words = afterTool ? (askedBefore ? `Noted: ${toolText.replace(/\s+/g, ' ').slice(0, 160)}` : 'Started it in the background.') : /\[background\]/.test(said) || asking || opensTerminal ? null : `Answer to: ${(said.match(/Q\d+/) || ['it'])[0]}. Done.`;
     if (!j.stream) {
       res.writeHead(200, { 'content-type': 'application/json' });
       return res.end(JSON.stringify({ id: 'msg_' + requests.length, type: 'message', role: 'assistant', model: j.model, content: [{ type: 'text', text: words || 'ok' }], stop_reason: 'end_turn', stop_sequence: null, usage: { input_tokens: 12, output_tokens: 6 } }));
@@ -244,8 +246,13 @@ export async function startFakeApi({ delay = 15 } = {}) {
       send('content_block_stop', { type: 'content_block_stop', index: 0 });
       send('message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 6 } });
     } else {
-      const input = JSON.stringify(asking ? { questions: [{ question: 'Which colour should the button be?', header: 'Colour', options: [{ label: 'Red', description: 'Warm' }, { label: 'Blue', description: 'Calm' }], multiSelect: false }] } : { command: 'sleep 20', description: 'Render the long video', run_in_background: true });
-      send('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'toolu_fake_' + requests.length, name: asking ? 'AskUserQuestion' : 'Bash', input: {} } });
+      const toolName = asking ? 'AskUserQuestion' : opensTerminal ? 'mcp__claude-anywhere__open_terminal_tab' : 'Bash';
+      const input = JSON.stringify(
+        asking ? { questions: [{ question: 'Which colour should the button be?', header: 'Colour', options: [{ label: 'Red', description: 'Warm' }, { label: 'Blue', description: 'Calm' }], multiSelect: false }] }
+          : opensTerminal ? {}
+            : { command: 'sleep 20', description: 'Render the long video', run_in_background: true },
+      );
+      send('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'toolu_fake_' + requests.length, name: toolName, input: {} } });
       send('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: input } });
       send('content_block_stop', { type: 'content_block_stop', index: 0 });
       send('message_delta', { type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { output_tokens: 20 } });
