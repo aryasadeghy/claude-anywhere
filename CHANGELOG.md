@@ -7,6 +7,45 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **The message box does what Desktop's does.** Type `/` for a menu of commands — Claude
+  Code's own and the app's (`/rename`, `/usage`, `/model`, `/mcp`, `/resume`, `/rewind`) — and
+  `@` to mention a file of the project, found as you type. A message that starts with `!` runs
+  as a shell command in the session's folder, and its output goes with your next message.
+  Ctrl/Cmd+U attaches files, up to 20 pictures a message; a staged picture opens an editor to
+  draw on it (pen, boxes, arrows, text, colours) before it is sent; a microphone dictates where
+  the browser can; number keys answer Claude's question card.
+- **Attach as context.** Select text in the conversation, a file in the Files pane, lines of a
+  file, a line of a diff or the terminal's selection, and it rides along with the next message
+  as a chip above the box — hover it to see exactly what will be sent.
+- **Queued messages have controls.** A message waiting behind the turn can be edited, sent now,
+  removed or dragged into another order, and several collapse into one stack. A message sent
+  while the plan's limit is reached waits above the box and goes by itself when the limit
+  resets.
+- **Rewind restores files too.** *Rewind to here* shows which files would change, and rewinds
+  the conversation, the code, or both; *Redo rewind* undoes it once. Esc Esc rewinds the last
+  message. A message you sent in this visit can be rewound without reloading the page.
+- **A turn cut short by sleep picks itself up** when it is safe to; the *Continue* banner is
+  left for when it is not.
+- **The Files pane is an editor.** A tree beside tabs, fuzzy find by name, `?` to search the
+  contents, Ctrl/Cmd+F in a file, dotfiles shown. Files open editable, with auto save; a file
+  that changed on disk since you opened it is not overwritten. A + beside a line (or a
+  selection) adds a comment that goes with the next message. Word, Excel and PowerPoint files
+  preview. An open file refreshes when Claude changes it. *Open in editor* hands a file to VS
+  Code, and a `#L5-L20` link in an answer opens the file at those lines.
+- **Review comments on a diff** in the Changes panel, sent with the next message, folding away
+  once resolved.
+- **A terminal pane.** Tabs that show when a command is running, ask before closing one that
+  is, and keep a crashed shell's output with *Restart*; Minimize; Copy, Paste and *Attach
+  selection as context*; Ctrl+\`; *Open in terminal* on a folder. Claude can open a terminal
+  tab itself and run a command there (which asks first).
+
+### Changed
+
+- **CI walks the app on three runners**, and every suite runs even after one fails.
+- **The Mac installer carries the terminal for both chips.**
+
 ## [0.11.0] — 2026-11-07
 
 ### Added

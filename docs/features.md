@@ -161,6 +161,25 @@ options up invites a second answer that nothing is listening for.
   it — each task has its own Stop. A message typed mid-turn that Claude had not read yet
   comes back into the box rather than running after the Stop.
 
+## The message box
+
+- **`/` commands.** Typing `/` at the start opens Claude Code's own commands for this folder
+  (skills and plugins included) and the app's: `/rename`, `/usage`, `/model`, `/mcp`, `/resume`,
+  `/rewind`. Arrows and Enter pick one.
+- **`@` files.** Typing `@` searches the project's files by name, dotfiles too, and inserts
+  the path Claude Code understands.
+- **`!` shell commands.** A message that starts with `!` runs in the session's folder (in the
+  terminal pane when it is open); its output goes with your next message.
+- **Attach as context.** Text selected in the conversation, a file, lines of a file, a diff
+  line or a terminal selection become a chip above the box, sent quoted with the next message.
+  Hover a chip to read what it carries.
+- **Pictures**: up to 20 a message, Ctrl/Cmd+U to pick files, and a click on a staged picture
+  opens an editor to draw on it before it goes.
+- **Dictation** with the microphone, where the browser offers speech recognition.
+- **Queued messages** have *Edit in composer*, *Send now* and *Remove*, and drag into another
+  order. A message sent when the plan's limit is reached waits above the box and goes by
+  itself when the limit resets.
+
 ## Tasks
 
 Every command, subagent and workflow a turn runs is a task. A bar above the
@@ -419,8 +438,14 @@ so it is switched off in the other views rather than quietly doing nothing.
 
 ## Files
 
-The session menu opens a read-only browser of the folder Claude is working in:
-folders, files with their sizes, text shown as text and images as images. The
+The Files pane is the folder Claude is working in as a tree beside tabs: fuzzy find by name,
+`?` to search what the files say, Ctrl/Cmd+F inside a file. Files open editable, with auto save
+(off in the pane's menu); a save never overwrites a file that changed on disk meanwhile. A + by
+a line, or a selection, adds a comment that goes with your next message. Markdown, tables,
+PDFs, Word, Excel and PowerPoint files preview; an open file follows Claude's edits. The
+right-click menu has Copy path, Attach as context, Open in terminal and Open in editor, and a
+`#L5-L20` link in an answer opens its file at those lines. Earlier, the pane was a read-only
+browser: folders, files with their sizes, text shown as text and images as images. The
 server only opens paths inside a folder some session has worked in, plus the
 worktrees this app made and the temp folder, so the panel cannot wander off into
 the rest of the disk.
@@ -443,6 +468,14 @@ run — the latest review comments, and a switch for *merge when the checks pass
 
 All of it comes from the `gh` CLI that is already signed in on this machine. The
 app holds no GitHub token and makes no request of its own.
+
+## Terminal
+
+Ctrl+` (or the session menu) opens a terminal pane in the session's folder, on the computer
+that runs Claude: several tabs, a dot while a command runs, a question before closing one that
+is busy, *Restart* for a shell that died, Minimize, and Copy, Paste and *Attach selection as
+context* on right-click. Claude can open a tab itself and run a command in it — that one asks
+first, like any command.
 
 ## Keep this computer awake
 
@@ -473,9 +506,14 @@ actual word wins over scattered letters, and scattered letters still work:
 Honest gaps against Claude Desktop's Code tab, roughly in the order they are
 worth doing:
 
-- Preview tools for Claude itself: reading the previewed page's console,
-  network errors and DOM, the way Claude Desktop's `preview_*` tools do.
-- A terminal pane, and split view.
+These are being built for the next release:
+
+- Git from the app (commit and push, draft PRs, Auto-fix), routines, `/btw` side chats,
+  nested sessions, split view and windows of their own, the session rail, sidebar sections,
+  storage, phone notifications, Claude's own Browser tools, SSH/WSL environments.
+
+And still open:
+
 - Signed macOS and Linux builds. They are built and they run; until someone
   pays Apple, the first launch needs right-click → Open.
 
