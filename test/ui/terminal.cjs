@@ -143,7 +143,9 @@ async function main() {
     await page.click('#session-menu-btn');
     await page.click('.menu-item:has-text("Terminal")');
     check('iphone: the terminal opens as a full-screen sheet', await until(() => page.isVisible('#terminal-panel:not(.hidden)'), 5000));
-    const wide = await page.evaluate(() => [...document.querySelectorAll('#terminal-panel, #terminal-panel *')].filter((n) => n.getBoundingClientRect().right > window.innerWidth + 1).map((n) => n.className));
+    // xterm.js keeps its own IME textarea off-screen on purpose (left: -9999em, 0x0, opacity 0)
+    // for IMEs to find it at the cursor without it ever being seen - not a layout bug to flag.
+    const wide = await page.evaluate(() => [...document.querySelectorAll('#terminal-panel, #terminal-panel *')].filter((n) => !n.classList.contains('xterm-helper-textarea') && n.getBoundingClientRect().right > window.innerWidth + 1).map((n) => n.className));
     check('iphone: nothing in the pane is wider than the screen', !wide.length, wide.join(', '));
     await until(async () => (await termText(page)).trim().length > 0, 15000);
     await page.click('#term-stage .term-view:not(.hidden) .term-xterm');
