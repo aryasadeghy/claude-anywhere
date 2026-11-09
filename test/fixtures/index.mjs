@@ -225,17 +225,31 @@ export async function startFakeApi({ delay = 15 } = {}) {
     if (url.pathname.endsWith('/v1/messages')) bodies.push(j);
     if (url.pathname.endsWith('/count_tokens')) { res.writeHead(200, { 'content-type': 'application/json' }); return res.end('{"input_tokens":12}'); }
     if (req.method !== 'POST' || !url.pathname.endsWith('/v1/messages')) { res.writeHead(404, { 'content-type': 'application/json' }); return res.end('{"type":"error","error":{"type":"not_found_error","message":"not here"}}'); }
-    const last = (j.messages || []).at(-1) || {};
+    // The literal last message is sometimes a trailing role:"system" aside (environment info,
+    // sent once) rather than the human's own turn or its tool result - search back for the last
+    // one Claude or the person actually wrote.
+    const last = [...(j.messages || [])].reverse().find((m) => m.role === 'user') || (j.messages || []).at(-1) || {};
     const afterTool = Array.isArray(last.content) && last.content.some((b) => b.type === 'tool_result');
     const said = userText(last);
     // After a question, Claude says what came back: the answer, or how it went unanswered.
     const askedBefore = afterTool && JSON.stringify((j.messages || []).at(-2)?.content || '').includes('AskUserQuestion');
     const wroteBefore = afterTool && JSON.stringify((j.messages || []).at(-2)?.content || '').includes('"name":"Write"');
-    const toolText = (last.content || []).filter((b) => b.type === 'tool_result').map((b) => (typeof b.content === 'string' ? b.content : (b.content || []).map((c) => c.text || '').join(''))).join(' ');
+    const toolText = (Array.isArray(last.content) ? last.content : []).filter((b) => b.type === 'tool_result').map((b) => (typeof b.content === 'string' ? b.content : (b.content || []).map((c) => c.text || '').join(''))).join(' ');
     const asking = /\[ask\]/.test(said);
+    // The conversation package's own tags, each asking for one Claude-facing tool call (or
+    // ExitPlanMode) instead of a Bash command - a fixed name and input, not the real model's.
+    const toolTag = (said.match(/\[(suggest|chapter|sugtask|status|plan|todo|tasktool)\]/) || [])[1];
     const writeMatch = said.match(/\[write:([^\]]+)\]\s*([\s\S]*)/);
     const opensTerminal = /\[terminal\]/.test(said);
-    const words = afterTool ? (askedBefore ? `Noted: ${toolText.replace(/\s+/g, ' ').slice(0, 160)}` : wroteBefore ? 'Done writing it.' : 'Started it in the background.') : /\[background\]/.test(said) || asking || writeMatch || opensTerminal ? null : `Answer to: ${(said.match(/Q\d+/) || ['it'])[0]}. Done.`;
+    const words = afterTool ? (askedBefore ? `Noted: ${toolText.replace(/\s+/g, ' ').slice(0, 160)}` : wroteBefore ? 'Done writing it.' : 'Started it in the background.')
+      : /\[background\]/.test(said) || asking || writeMatch || opensTerminal || toolTag ? null
+      : /\[math\]/.test(said) ? 'The area under the curve is $\\int_0^1 x\\,dx = \\frac{1}{2}$ and the price is $5 or $10, not a range.\n\n$$E = mc^2$$'
+      : /\[secret\]/.test(said) ? 'Found it in .env: ANTHROPIC_API_KEY=sk-ant-api03-fakeFAKEfakeFAKEfakeFAKEfakeFAKEfakeFAKE and a GitHub token ghp_FAKEfakeFAKEfakeFAKEfakeFAKEfake1234.'
+      : /\[code\]/.test(said) ? 'Here:\n\n```js\nfunction add(a, b) {\n  return a + b;\n}\n```\n'
+      // A data: URI (isWebUrl) renders directly, unlike a bare path, which the app reads from
+      // the session's own folder through /api/file - this tag needs no project file on disk.
+      : /\[img\]/.test(said) ? `Here is the chart: ![chart](data:image/png;base64,${pngOf(64, 64).toString('base64')})`
+      : `Answer to: ${(said.match(/Q\d+/) || ['it'])[0]}. Done.`;
     if (!j.stream) {
       res.writeHead(200, { 'content-type': 'application/json' });
       return res.end(JSON.stringify({ id: 'msg_' + requests.length, type: 'message', role: 'assistant', model: j.model, content: [{ type: 'text', text: words || 'ok' }], stop_reason: 'end_turn', stop_sequence: null, usage: { input_tokens: 12, output_tokens: 6 } }));
@@ -245,19 +259,33 @@ export async function startFakeApi({ delay = 15 } = {}) {
     const pace = /\[slow\]/.test(said) ? 150 : delay;
     send('message_start', { type: 'message_start', message: { id: 'msg_' + requests.length, type: 'message', role: 'assistant', model: j.model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 12, output_tokens: 1 } } });
     if (words) {
-      send('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
-      for (const w of words.split(/(?<= )/)) { send('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: w } }); await new Promise((r) => setTimeout(r, pace)); }
-      send('content_block_stop', { type: 'content_block_stop', index: 0 });
+      // [think]: a non-narration thinking block ahead of the answer - Normal never asks for it
+      // (lib/history.mjs), Thinking/Verbose draw it as its own row (app.js's asShown).
+      let i = 0;
+      if (/\[think\]/.test(said)) {
+        send('content_block_start', { type: 'content_block_start', index: i, content_block: { type: 'thinking', thinking: '' } });
+        send('content_block_delta', { type: 'content_block_delta', index: i, delta: { type: 'thinking_delta', thinking: 'Working through what this needs.' } });
+        send('content_block_stop', { type: 'content_block_stop', index: i });
+        i++;
+      }
+      send('content_block_start', { type: 'content_block_start', index: i, content_block: { type: 'text', text: '' } });
+      for (const w of words.split(/(?<= )/)) { send('content_block_delta', { type: 'content_block_delta', index: i, delta: { type: 'text_delta', text: w } }); await new Promise((r) => setTimeout(r, pace)); }
+      send('content_block_stop', { type: 'content_block_stop', index: i });
       send('message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 6 } });
     } else {
-      const toolName = asking ? 'AskUserQuestion' : writeMatch ? 'Write' : opensTerminal ? 'mcp__claude-anywhere__open_terminal_tab' : 'Bash';
-      const input = JSON.stringify(
-        asking ? { questions: [{ question: 'Which colour should the button be?', header: 'Colour', options: [{ label: 'Red', description: 'Warm' }, { label: 'Blue', description: 'Calm' }], multiSelect: false }] }
-        : writeMatch ? { file_path: writeMatch[1].trim(), content: writeMatch[2] }
-        : opensTerminal ? {}
-        : { command: 'sleep 20', description: 'Render the long video', run_in_background: true },
-      );
-      send('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'toolu_fake_' + requests.length, name: toolName, input: {} } });
+      const TOOL_TAGS = {
+        suggest: ['mcp__claude-anywhere__SuggestNextSteps', { recap: 'Set up the thing.', steps: [{ label: 'Add tests', prompt: 'Add tests for the thing' }] }],
+        chapter: ['mcp__claude-anywhere__MarkChapter', { title: 'Set up the database' }],
+        sugtask: ['mcp__claude-anywhere__SuggestTask', { title: 'Write the README', prompt: 'Write a README for this project' }],
+        status: ['mcp__claude-anywhere__SetSessionStatus', { status: 'ready_for_review', note: 'Looks good' }],
+        plan: ['ExitPlanMode', { plan: '# Plan\n\n1. Do the first thing\n2. Do the second thing' }],
+        todo: ['TodoWrite', { todos: [{ content: 'Set up the database', status: 'completed', activeForm: 'Setting up the database' }, { content: 'Write the tests', status: 'in_progress', activeForm: 'Writing the tests' }, { content: 'Ship it', status: 'pending', activeForm: 'Shipping it' }] }],
+        tasktool: ['TaskCreate', { subject: 'Write the README', description: 'A short one', activeForm: 'Writing the README' }],
+      };
+      const [tagName, tagInput] = TOOL_TAGS[toolTag] || [];
+      const name = asking ? 'AskUserQuestion' : writeMatch ? 'Write' : opensTerminal ? 'mcp__claude-anywhere__open_terminal_tab' : tagName || 'Bash';
+      const input = JSON.stringify(asking ? { questions: [{ question: 'Which colour should the button be?', header: 'Colour', options: [{ label: 'Red', description: 'Warm' }, { label: 'Blue', description: 'Calm' }], multiSelect: false }] } : writeMatch ? { file_path: writeMatch[1].trim(), content: writeMatch[2] } : opensTerminal ? {} : tagInput || { command: 'sleep 20', description: 'Render the long video', run_in_background: true });
+      send('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'toolu_fake_' + requests.length, name, input: {} } });
       send('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: input } });
       send('content_block_stop', { type: 'content_block_stop', index: 0 });
       send('message_delta', { type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { output_tokens: 20 } });

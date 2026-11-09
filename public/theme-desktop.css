@@ -1193,3 +1193,84 @@ audio.lb-media { width: min(520px, 90vw); height: auto; }
   .terminal-panel { width: auto; }
   .term-pill { inset-inline-end: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); }
 }
+
+/* ---------- v55: plan approval, live plan box, Claude's tools, transcript view, math, masking, context menu, find ---------- */
+.menu-empty { padding: 8px 12px; font-size: 12.5px; color: var(--ink-3); max-width: 240px; white-space: normal; }
+
+/* A chapter marker in the thread: its own line, not folded into a tool group. */
+.chapter-divider { display: flex; align-items: center; gap: 10px; margin: 14px 0; font-size: 12.5px; font-weight: 600; color: var(--ink-3); }
+.chapter-divider::before, .chapter-divider::after { content: ''; flex: 1; height: 1px; background: var(--line-2); }
+
+/* SuggestNextSteps: a short recap and buttons for what to send next. */
+.suggest-card { margin-top: 8px; }
+.suggest-card .suggest-recap { color: var(--ink-2); }
+.suggest-steps { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.suggest-step { font-size: 13px; }
+
+/* SuggestTask: its own card, so it reads as an offer rather than part of the answer. */
+.suggested-task-card { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--line-2); border-radius: 10px; background: var(--bg-2); }
+.suggest-task-label { font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; color: var(--ink-3); }
+.suggest-task-title { margin-top: 2px; font-size: 13.5px; }
+
+/* The badge SetSessionStatus leaves on a sidebar row. */
+.status-badge { flex: none; margin-inline-start: 6px; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+.status-badge.status-blocked { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger); }
+.status-badge.status-ready_for_review { background: color-mix(in srgb, #3b82f6 16%, transparent); color: #3b82f6; }
+.status-badge.status-done { background: color-mix(in srgb, var(--success) 18%, transparent); color: var(--success); }
+
+/* A deep link, a chapter, or an older find hit lands here: a brief highlight, not a permanent mark. */
+.jump-flash { animation: jump-flash-kf 2.2s ease-out; }
+@keyframes jump-flash-kf { 0% { background: color-mix(in srgb, var(--accent) 22%, transparent); } 100% { background: transparent; } }
+
+/* ExitPlanMode's own card: the plan as Markdown, a feedback box, and Desktop's three choices. */
+.plan-card { max-width: 640px; }
+.plan-card .plan-text { max-height: 360px; overflow: auto; padding: 10px 12px; margin-top: 8px; border: 1px solid var(--line-2); border-radius: 10px; background: var(--bg-3); }
+.plan-card .plan-feedback { width: 100%; box-sizing: border-box; margin-top: 10px; padding: 9px 12px; border-radius: 10px; border: 1px dashed var(--line-2); background: var(--bg-2); color: var(--ink); font: inherit; font-size: 13px; resize: vertical; outline: none; }
+.plan-card .plan-feedback:focus { border-style: solid; border-color: var(--accent); }
+.plan-card.answered .plan-text { max-height: 160px; }
+.plan-comment-btn { position: fixed; z-index: 60; transform: translate(-50%, -100%); padding: 5px 10px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--bg-000); color: var(--ink); font-size: 12.5px; box-shadow: var(--shadow); cursor: pointer; }
+.plan-comment-btn.hidden { display: none; }
+
+/* The live plan box above the composer: TodoWrite's whole list, or TaskCreate/TaskUpdate's. */
+.plan-box { max-width: 48rem; width: 100%; margin: 0 auto 6px; padding: 7px 12px; border-radius: 12px; background: var(--bg-2); border: 1px solid var(--line); font-size: 13px; color: var(--ink); }
+.plan-box > summary { list-style: none; display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
+.plan-box > summary::-webkit-details-marker { display: none; }
+.plan-box-count, #plan-box-count { margin-inline-start: auto; color: var(--ink-3); font-size: 12.5px; }
+.todo-checklist { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.step-body .todo-checklist { margin-top: 0; }
+.todo-item { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; line-height: 1.4; }
+.todo-check { flex: none; width: 15px; height: 15px; margin-top: 1px; border-radius: 4px; border: 1.4px solid var(--line-2); background: var(--bg-3); }
+.todo-item.status-in_progress .todo-check { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 30%, transparent); }
+.todo-item.status-completed .todo-check { border-color: var(--success); background: var(--success); }
+.todo-item.status-completed .todo-label { color: var(--ink-3); text-decoration: line-through; }
+.todo-item.status-in_progress .todo-label { color: var(--ink); font-weight: 500; }
+
+/* Transcript view: Thinking/Verbose draw a thinking block as its own row. */
+.step.thought > summary .name { color: var(--ink-3); font-style: italic; }
+.thought-text { white-space: pre-wrap; color: var(--ink-2); font-size: 13px; line-height: 1.5; }
+
+/* API keys and tokens, masked by default; the eye reveals just that one. */
+.secret-mask { display: inline-flex; align-items: center; gap: 4px; padding: 0 3px; border-radius: 5px; background: color-mix(in srgb, var(--danger) 10%, transparent); }
+.secret-mask-text { font-family: var(--mono); font-size: .92em; letter-spacing: 1px; }
+.secret-mask.revealed .secret-mask-text { letter-spacing: normal; word-break: break-all; }
+.secret-eye { flex: none; display: inline-flex; padding: 1px; border: 0; background: none; color: var(--ink-3); cursor: pointer; border-radius: 4px; }
+.secret-eye:hover { color: var(--ink); background: var(--bg-3); }
+
+/* The message context menu disables what a message with no uuid (a queued bubble) cannot do. */
+.menu-item:disabled { opacity: .4; cursor: default; pointer-events: none; }
+
+/* A code block's own head bar (language + copy); .prose pre keeps its border and background,
+   just with the top corners squared off to meet the bar instead of rounded under it. */
+.code-block { margin: 10px 0; }
+.code-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 6px 4px 10px; font-size: 11px; color: var(--ink-3); background: var(--bg-2); border: 1px solid var(--line); border-bottom: 0; border-radius: 10px 10px 0 0; }
+.code-lang { text-transform: uppercase; letter-spacing: .04em; }
+.code-copy { display: inline-flex; padding: 4px; border: 0; background: none; color: var(--ink-3); cursor: pointer; border-radius: 6px; }
+.code-copy:hover { color: var(--ink); background: var(--bg-3); }
+.code-block pre { margin: 0; border-radius: 0 0 10px 10px; }
+
+/* Find in the session: a bar over the thread, like a browser's own. */
+.find-bar { display: flex; align-items: center; gap: 8px; max-width: 48rem; width: 100%; margin: 8px auto 0; padding: 7px 12px; border-radius: 12px; background: var(--bg-2); border: 1px solid var(--line); color: var(--ink-3); }
+.find-bar input { flex: 1; min-width: 0; font: inherit; font-size: 13.5px; border: 0; background: none; color: var(--ink); outline: none; }
+.find-count { font-size: 12px; white-space: nowrap; }
+mark.find-hit { background: color-mix(in srgb, var(--accent) 35%, transparent); color: inherit; border-radius: 3px; }
+mark.find-hit.current { background: var(--accent); color: var(--accent-ink); }

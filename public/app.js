@@ -11,6 +11,7 @@
     answering: false,    // Claude is actively producing this turn: the "Working" pill, the status line, the Stop button
     es: null, lastEventId: -1,
     live: null,          // streaming assistant message being built
+    transcriptView: 'normal', // this session's: Normal, Thinking (reads it) or Verbose (+ tool detail)
   };
   try { state.token = localStorage.getItem('cr.token'); } catch {}
   // The desktop app opens its own window already signed in.
@@ -48,6 +49,7 @@
     v.controls = true; btn.parentElement.classList.add('playing'); v.play().catch(() => {});
   });
   document.addEventListener('pause', (e) => { if (e.target.tagName === 'VIDEO' && e.target.ended) e.target.parentElement?.classList.remove('playing'); }, true);
+  const COPY_SVG = '<svg viewBox="0 0 20 20" width="14" height="14"><rect x="7" y="7" width="9" height="9" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M13 7V5.5A1.5 1.5 0 0 0 11.5 4h-6A1.5 1.5 0 0 0 4 5.5v6A1.5 1.5 0 0 0 5.5 13H7" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>';
   marked.use({ renderer: {
     image({ href, title, text }) {
       if (isVideo(href)) return videoHtml(mediaSrc(href));
@@ -69,8 +71,39 @@
         ? `<a href="#" class="file-link code" data-path="${escapeAttr(raw)}">${shown}</a>`
         : `<code>${shown}</code>`;
     },
+    // A copy button on every fenced block; the language shows if the fence named one.
+    code({ text, lang }) {
+      const language = String(lang || '').trim().split(/\s+/)[0] || '';
+      return `<div class="code-block"><div class="code-head"><span class="code-lang">${escapeAttr(language)}</span><button type="button" class="code-copy" title="Copy code">${COPY_SVG}</button></div><pre><code${language ? ` class="language-${escapeAttr(language)}"` : ''}>${escapeAttr(String(text ?? ''))}</code></pre></div>`;
+    },
   } });
-  const md = (text) => DOMPurify.sanitize(marked.parse(text || ''), { USE_PROFILES: { html: true, svg: true }, ADD_TAGS: ['video', 'audio', 'button', 'svg', 'path'], ADD_ATTR: ['loading', 'controls', 'preload', 'target', 'playsinline', 'aria-label', 'viewBox', 'fill', 'd'] });
+  // Math: $...$ and \(...\) inline, $$...$$ and \[...\] as their own block, rendered with KaTeX.
+  // The inline $ rule is Pandoc's: the opening $ needs a non-space right after it, the closing
+  // one a non-space right before and no digit right after - "$5 and $10" is two prices, read as
+  // plain text, not a range read as one formula ("5 and $10").
+  const katexHtml = (tex, displayMode) => { try { return katex.renderToString(tex, { throwOnError: false, displayMode }); } catch { return escapeAttr(tex); } };
+  marked.use({ extensions: [
+    {
+      name: 'mathBlock', level: 'block',
+      start(src) { const m = /\${2}|\\\[/.exec(src); return m?.index; },
+      tokenizer(src) {
+        const m = /^\$\$([\s\S]+?)\$\$/.exec(src) || /^\\\[([\s\S]+?)\\\]/.exec(src);
+        if (m) return { type: 'mathBlock', raw: m[0], text: m[1].trim() };
+      },
+      renderer(token) { return `<p>${katexHtml(token.text, true)}</p>`; },
+    },
+    {
+      name: 'mathInline', level: 'inline',
+      start(src) { const m = /\$(?!\s)|\\\(/.exec(src); return m?.index; },
+      tokenizer(src) {
+        let m = /^\\\(([\s\S]+?)\\\)/.exec(src);
+        if (!m) m = /^\$(?!\s)([^\n$]+?)(?<!\\)(?<!\s)\$(?!\d)/.exec(src);
+        if (m) return { type: 'mathInline', raw: m[0], text: m[1].trim() };
+      },
+      renderer(token) { return katexHtml(token.text, false); },
+    },
+  ] });
+  const md = (text) => DOMPurify.sanitize(marked.parse(text || ''), { USE_PROFILES: { html: true, svg: true, mathMl: true }, ADD_TAGS: ['video', 'audio', 'button', 'svg', 'path'], ADD_ATTR: ['loading', 'controls', 'preload', 'target', 'playsinline', 'aria-label', 'viewBox', 'fill', 'd'] });
   const stripHarness = (t) => String(t || '')
     .replace(/<(system-reminder|ide_opened_file|ide_selection|local-command-stdout|local-command-stderr|command-name|command-message|command-args|task-notification|function_results)[\s\S]*?<\/\1>/g, '')
     .replace(/<local-command-caveat>[\s\S]*?<\/local-command-caveat>/g, '')
@@ -231,6 +264,7 @@
       ? 'You have ' + v.version + (v.commit ? ' · ' + v.commit : '') + (v.update?.newer ? ' — ' + v.update.latest + ' is out' : ' — up to date')
       : 'Claude Anywhere updates itself from GitHub.';
     claudeCodeRow();
+    paintConvSettings();
   }
   // ---------- Claude Code: the one that computer runs, and a newer one from npm ----------
   // The app carries a Claude Code of its own, and a model or a fix newer than it used to wait
@@ -705,6 +739,7 @@
     if (attn) { const d = el('span', 'dot ' + attn); d.title = attn === 'needs-input' ? 'Needs your input' : attn === 'failed' ? 'The last turn failed' : 'Finished while you were away'; a.appendChild(d); }
     else if (working(s)) { const d = el('span', 'dot'); d.title = (s.busy ?? s.live) ? 'Working (started here)' : 'Working in another window'; a.appendChild(d); }
     const t = el('span', 't', s.title); t.dir = 'auto'; a.appendChild(t);
+    const badge = statusBadge(s.status); if (badge) a.appendChild(badge);
     // Found inside the transcript: the row grows a second line with what was found there.
     const found = hits.get(s.id);
     if (found && searchingInside) {
@@ -1389,7 +1424,7 @@
   $('#sb-close').addEventListener('click', () => $('#session-bar').classList.add('hidden'));
   $('#sb-pr').addEventListener('click', () => { input.value = 'Create a pull request for the current changes: commit what is uncommitted with a clear message, push the branch, and open the PR with a title and a short description.'; input.dispatchEvent(new Event('input')); submit(); });
 
-  menuFor('#session-menu-btn', '#session-menu', (m) => {
+  function renderSessionMenu(m) {
     m.innerHTML = '';
     const s = state.sessions.find((x) => x.id === state.current) || {};
     m.appendChild(item('Rename', '', false, async () => { m.classList.add('hidden'); const t = prompt('Session name', s.title || ''); if (t && t.trim()) { try { await api(`/sessions/${state.current}/rename`, { method: 'POST', body: JSON.stringify({ title: t.trim() }) }); $('#chat-title').textContent = t.trim(); loadSessions(); } catch (e) { alert(e.message); } } }, { hint: 'R' }));
@@ -1398,6 +1433,9 @@
     m.appendChild(item('Files', 'Look through this session\'s folder', false, () => { m.classList.add('hidden'); openFiles(); }));
     m.appendChild(item('Browser', 'Dev servers and the project\'s pages and PDFs, here and on your phone', false, () => { m.classList.add('hidden'); openPreview(); }));
     m.appendChild(item('Terminal', 'PowerShell or your shell, right here', false, () => { m.classList.add('hidden'); toggleTerminal(); }, { hint: 'Ctrl+`' }));
+    // Session chapters: MarkChapter, or a message pinned from its own menu.
+    m.appendChild(item('Chapters', chapters.length ? String(chapters.length) : 'None yet', false, (e) => { e.stopPropagation(); renderChaptersMenu(m); }));
+    m.appendChild(item('Transcript view', TRANSCRIPT_VIEWS.find((v) => v[0] === state.transcriptView)?.[1] || 'Normal', false, (e) => { e.stopPropagation(); renderTranscriptMenu(m); }));
     m.appendChild(item('Worktrees…', 'A second checkout on its own branch', false, () => { m.classList.add('hidden'); showWorktrees(state.cwd); }));
     m.appendChild(item('Keep computer awake', (AWAKE.find((a) => a[0] === awakeMode) || AWAKE[0])[1], false, () => {
       m.classList.add('hidden');
@@ -1407,7 +1445,28 @@
     m.appendChild(item(s.archived ? 'Unarchive' : 'Archive', '', false, async () => { m.classList.add('hidden'); try { await api(`/sessions/${state.current}/archive`, { method: 'POST', body: JSON.stringify({ archived: !s.archived }) }); await loadSessions(); if (!s.archived) location.hash = '#/'; } catch (e) { alert(e.message); } }, { hint: 'A' }));
     const del = item('Delete', '', false, async () => { m.classList.add('hidden'); if (!confirm('Delete this session? It moves to the trash and can be put back from Deleted sessions.')) return; try { await api(`/sessions/${state.current}`, { method: 'DELETE' }); await loadSessions(); location.hash = '#/'; } catch (e) { alert(e.message); } }, { hint: 'D' });
     del.classList.add('danger'); m.appendChild(del);
-  });
+  }
+  menuFor('#session-menu-btn', '#session-menu', renderSessionMenu);
+  // "Chapters" redraws the same popover with the list, and "Back" redraws the menu above -
+  // one menu element, two views, like the model menu reusing itself after Refresh.
+  function renderChaptersMenu(m) {
+    m.innerHTML = '';
+    m.appendChild(item('‹ Back', '', false, () => renderSessionMenu(m)));
+    m.appendChild(el('div', 'menu-sep'));
+    if (!chapters.length) m.appendChild(el('div', 'menu-empty', 'No chapters yet. Ask Claude to mark one, or pin a message from its menu.'));
+    for (const c of chapters) m.appendChild(item(c.title, c.at ? relTime(c.at) : '', false, async () => { m.classList.add('hidden'); await jumpToMessage(c.uuid); }));
+  }
+  // Changing it here is for this open session; Settings' General pane sets what the next one
+  // opens to. Either way a plain reopen is the simplest correct redraw: Normal never fetched the
+  // thinking a switch to Thinking or Verbose now needs.
+  function renderTranscriptMenu(m) {
+    m.innerHTML = '';
+    m.appendChild(item('‹ Back', '', false, () => renderSessionMenu(m)));
+    m.appendChild(el('div', 'menu-sep'));
+    for (const [id, name] of TRANSCRIPT_VIEWS) {
+      m.appendChild(item(name, '', id === state.transcriptView, () => { m.classList.add('hidden'); if (id !== state.transcriptView) { explicitTranscriptView = id; openSession(state.current); } }));
+    }
+  }
 
   // ---------- connectors & plugins (Desktop's panel) ----------
   const ctModal = settingsModal;
@@ -1819,6 +1878,7 @@
   }
   function stepEl(kind, name, arg) {
     const d = el('details', 'step ' + kind);
+    d.open = state.transcriptView === 'verbose'; // Verbose: tool inputs and results expanded
     const s = el('summary');
     s.appendChild(el('span', 'name', name));
     s.appendChild(el('span', 'arg', arg || ''));
@@ -1985,7 +2045,7 @@
     // The files a connector's SendUserFile delivered sit under its group without closing it.
     const g0 = msg.group, last = msg.body.lastElementChild;
     if (g0 && (g0 === last || (g0._cards?.length && g0._cards[g0._cards.length - 1] === last))) return g0;
-    const g = el('details', 'tool-group'); g.appendChild(el('summary', null, 'Working')); g.appendChild(el('div', 'group-body'));
+    const g = el('details', 'tool-group'); g.open = state.transcriptView === 'verbose'; g.appendChild(el('summary', null, 'Working')); g.appendChild(el('div', 'group-body'));
     g._names = []; g._inputs = []; msg.body.appendChild(g); msg.group = g; return g;
   }
   function setGroupSummary(g, text) { if (g) g.querySelector('summary').textContent = text; }
@@ -1997,21 +2057,37 @@
       // They are not the answer and Desktop does not show them either.
       const shown = stripHarness(block.text);
       node.innerHTML = md(shown);
+      node._raw = shown; // the source Markdown, for "Copy as Markdown" - innerText would be the rendered text
       node.classList.toggle('hidden', !shown);
+    } else if (block.type === 'thinking' || block.type === 'redacted_thinking') {
+      // Thinking/Verbose only: Normal never lets one of these reach renderBlock at all
+      // (asShown, and the server page it came from, both leave it out).
+      if (!node) { node = stepEl('thought', 'Thought', ''); msg.body.appendChild(node); msg.blocks.set(index, node); msg.group = null; }
+      const text = block.type === 'redacted_thinking' ? '' : String(block.thinking || '');
+      node.querySelector('.arg').textContent = text.slice(0, 120);
+      const b = node.querySelector('.step-body'); b.innerHTML = '';
+      b.appendChild(text ? el('div', 'prose thought-text', text) : el('div', 'muted', 'This part of the thinking is encrypted and not shown.'));
     } else if (block.type === 'tool_use') {
+      if (renderConvTool(msg, index, block)) return;
       if (!node) {
-        node = stepEl('tool', block.name, ''); node._toolId = block.id;
+        node = stepEl('tool', block.name, ''); node._toolId = block.id; node._toolName = block.name;
         if (block.name === 'SendUserFile') msg.group = null; // Desktop's own: "Sent ›" is a line of its own
         const g = toolGroupFor(msg); g.querySelector('.group-body').appendChild(node); g._names.push(block.name); g._inputs.push(block.input || {}); node._groupIndex = g._names.length - 1;
         paintGroupSummary(g);
         msg.blocks.set(index, node); msg.tools.set(block.id, node);
       } else if (node._groupIndex != null && node.parentElement?.parentElement) { const g = node.parentElement.parentElement; g._inputs[node._groupIndex] = block.input || {}; paintGroupSummary(g); }
+      updatePlanFromTool(block.name, block.input);
       const [verb, arg] = stepTitle(block.name, block.input);
       node.querySelector('.name').textContent = verb;
       node.querySelector('.arg').textContent = arg;
       const b = node.querySelector('.step-body'); b.innerHTML = '';
-      b.appendChild(el('div', 'label', 'Input'));
-      const pre = el('pre', null, typeof block.input === 'string' ? block.input : JSON.stringify(block.input, null, 2)); b.appendChild(pre);
+      if (block.name === 'TodoWrite' && block.input?.todos) {
+        b.appendChild(el('div', 'label', 'To-dos'));
+        b.appendChild(todoChecklist(block.input.todos.map((t) => ({ text: t.content, status: t.status, activeForm: t.activeForm }))));
+      } else {
+        b.appendChild(el('div', 'label', 'Input'));
+        const pre = el('pre', null, typeof block.input === 'string' ? block.input : JSON.stringify(block.input, null, 2)); b.appendChild(pre);
+      }
       // A file sent to the user is shown once the input is complete. Desktop's own SendUserFile
       // is a "Sent ›" line with the files under it, and the next tool starts a new group. Through
       // the claude-anywhere connector Desktop counts it in the group ("used a tool"); the group
@@ -2037,11 +2113,18 @@
   // picture Claude read.
   function attachResult(toolNode, result) {
     if (!toolNode) return;
+    // A card from renderConvTool (a chapter divider, a recap, a suggested task) has no
+    // step-body to show a result in - its own card already says what Claude is telling the
+    // person, and the result text is just an echo of that.
     const b = toolNode.querySelector('.step-body');
+    if (!b) return;
     b.appendChild(el('div', 'label', result.is_error ? 'Error' : 'Result'));
     const blocks = Array.isArray(result.content) ? result.content : [{ type: 'text', text: resultText(result.content) }];
     const text = blocks.filter((x) => x.type === 'text').map((x) => x.text).join('\n');
     if (text) b.appendChild(el('pre', null, text.slice(0, 20000)));
+    // TaskCreate only learns its task's id from the result (the call itself does not choose
+    // one), so the live plan box adds this task once it reads it back here.
+    if (toolNode._toolName === 'TaskCreate' && !result.is_error) planTaskCreated(text);
     // Images Claude looked at (Read on a screenshot, a browser capture…) are shown, like Desktop.
     for (const x of blocks) if (x.type === 'image') { const im = el('img', 'tool-img'); im.src = dataUrl(x); im.alt = 'image'; im.loading = 'lazy'; b.appendChild(im); }
     if (blocks.some((x) => x.type === 'image')) { toolNode.open = true; toolNode.classList.add('has-image'); }
@@ -2086,6 +2169,469 @@
   }
   let pendingPrefill = '';
   async function markRead(id) { try { await api(`/sessions/${id}/read`, { method: 'POST' }); const s = state.sessions.find((x) => x.id === id); if (s && (s.unread || s.failed)) { s.unread = false; s.failed = false; renderSessions(); } } catch {} }
+
+  // ---------- conversation: Claude's own tools, chapters, session status ----------
+  // lib/tools-conversation.mjs gives Claude SuggestNextSteps, MarkChapter, SuggestTask and
+  // (only once Settings allows it) SetSessionStatus. A tool_use block's name arrives either
+  // short or mcp__claude-anywhere__-qualified, like every connector tool (see isSendTool above).
+  const toolNamed = (name, short) => name === short || new RegExp('__' + short + '$').test(name || '');
+
+  // A chapter's anchor is the uuid of the message it was marked on - MarkChapter's own tool_use
+  // block, or one a person pinned from its menu. Registering it here (not in the tool handler)
+  // means both paths end up the same way, and a session needs no transcript scan to offer its
+  // Chapters menu: whichever messages a page has actually drawn already know the title.
+  let chapters = [];                       // {uuid, title, at}, this session's, oldest first
+  const registeredChapters = new Set();
+  async function registerChapter(uuid, title) {
+    if (!state.current || !uuid || registeredChapters.has(uuid)) return;
+    registeredChapters.add(uuid);
+    try { await api(`/sessions/${state.current}/chapters`, { method: 'POST', body: JSON.stringify({ uuid, title }) }); chapters.push({ uuid, title, at: Date.now() }); renderChaptersBadge(); }
+    catch { registeredChapters.delete(uuid); }
+  }
+  async function loadChapters(id) {
+    chapters = []; registeredChapters.clear();
+    try { const r = await api(`/sessions/${id}/chapters`); chapters = r.chapters || []; for (const c of chapters) registeredChapters.add(c.uuid); } catch {}
+    renderChaptersBadge();
+  }
+  function renderChaptersBadge() { const b = $('#session-menu-btn'); if (b) b.classList.toggle('has-chapters', chapters.length > 0); }
+
+  // Jump to a message, loading older pages until it is on screen: a deep link, a chapter, and an
+  // older find-bar hit all land here. `loadOlder` (below) already guards against a second opening
+  // racing it, so a dumb retry loop is safe.
+  async function jumpToMessage(uuid) {
+    let tries = 0;
+    while (!thread.querySelector(`[data-uuid="${CSS.escape(uuid)}"]`) && hist.more && hist.id === state.current && tries++ < 300) await loadOlder();
+    const node = thread.querySelector(`[data-uuid="${CSS.escape(uuid)}"]`);
+    if (!node) return false;
+    stickToBottom = false;
+    node.scrollIntoView({ block: 'center' });
+    node.classList.add('jump-flash');
+    setTimeout(() => node.classList.remove('jump-flash'), 2200);
+    return true;
+  }
+
+  // The recap + next-step buttons SuggestNextSteps asked for; pressing one sends its prompt the
+  // way any typed message goes in.
+  function paintSuggestCard(card, inp) {
+    card.innerHTML = '';
+    if (inp.recap) { const r = el('div', 'prose suggest-recap'); r.dir = 'auto'; r.innerHTML = md(String(inp.recap)); card.appendChild(r); }
+    const row = el('div', 'suggest-steps');
+    for (const step of Array.isArray(inp.steps) ? inp.steps : []) {
+      if (!step?.prompt) continue;
+      const b = el('button', 'btn btn-ghost suggest-step', step.label || String(step.prompt).slice(0, 40)); b.type = 'button';
+      b.addEventListener('click', () => { input.value = step.prompt; input.dispatchEvent(new Event('input')); submit(); });
+      row.appendChild(b);
+    }
+    if (row.children.length) card.appendChild(row);
+  }
+  // SuggestTask's card: the same prompt either goes into this session or starts a new one.
+  function paintSuggestedTaskCard(card, inp) {
+    card.innerHTML = '';
+    card.appendChild(el('div', 'suggest-task-label', 'Suggested task'));
+    if (inp.title) card.appendChild(el('div', 'suggest-task-title', String(inp.title)));
+    const row = el('div', 'suggest-steps');
+    const here = el('button', 'btn btn-ghost', 'Do it here'); here.type = 'button';
+    here.addEventListener('click', () => { if (!inp.prompt) return; input.value = inp.prompt; input.dispatchEvent(new Event('input')); submit(); });
+    const fresh = el('button', 'btn btn-ghost', 'Start in a new session'); fresh.type = 'button';
+    fresh.addEventListener('click', async () => {
+      if (!inp.prompt) return;
+      fresh.disabled = true; here.disabled = true;
+      try { const r = await api('/sessions', { method: 'POST', body: JSON.stringify({ text: inp.prompt, cwd: state.cwd || '~' }) }); location.hash = '#/s/' + r.sessionId; }
+      catch (e) { fresh.disabled = false; here.disabled = false; toast(e.message); }
+    });
+    row.appendChild(here); row.appendChild(fresh);
+    card.appendChild(row);
+  }
+  // Dispatches a tool_use block to one of the three cards above, or a chapter divider - called
+  // from renderBlock before its generic "collapsed step" handling; true means it drew the block.
+  function renderConvTool(msg, index, block) {
+    const inp = block.input && typeof block.input === 'object' ? block.input : {};
+    if (toolNamed(block.name, 'MarkChapter')) {
+      let node = msg.blocks.get(index);
+      if (!node) { node = el('div', 'chapter-divider'); node._toolId = block.id; msg.body.appendChild(node); msg.blocks.set(index, node); msg.group = null; }
+      node.textContent = inp.title ? String(inp.title) : 'Chapter';
+      const uuid = msg.root?.dataset.uuid;
+      if (inp.title && uuid) registerChapter(uuid, String(inp.title));
+      return true;
+    }
+    if (toolNamed(block.name, 'SuggestNextSteps')) {
+      let node = msg.blocks.get(index);
+      if (!node) { node = el('div', 'suggest-card'); node._toolId = block.id; msg.body.appendChild(node); msg.blocks.set(index, node); msg.group = null; }
+      paintSuggestCard(node, inp);
+      return true;
+    }
+    if (toolNamed(block.name, 'SuggestTask')) {
+      let node = msg.blocks.get(index);
+      if (!node) { node = el('div', 'suggested-task-card'); node._toolId = block.id; msg.body.appendChild(node); msg.blocks.set(index, node); msg.group = null; }
+      paintSuggestedTaskCard(node, inp);
+      return true;
+    }
+    return false;
+  }
+
+  // The badge SetSessionStatus leaves on a sidebar row.
+  const STATUS_LABEL = { blocked: 'Blocked', ready_for_review: 'Ready for review', done: 'Done' };
+  function statusBadge(status) {
+    if (!status?.status) return null;
+    const b = el('span', 'status-badge status-' + status.status, STATUS_LABEL[status.status] || status.status);
+    if (status.note) b.title = status.note;
+    return b;
+  }
+
+  // This app's own small switches: the default Transcript view, and whether Claude's
+  // SetSessionStatus tool exists at all (lib/tools-conversation.mjs reads the same setting).
+  const TRANSCRIPT_VIEWS = [['normal', 'Normal'], ['thinking', 'Thinking'], ['verbose', 'Verbose']];
+  let convSettings = { transcriptView: 'normal', autoClassify: false };
+  let explicitTranscriptView = null; // set by the session menu, consumed once by the next openSession
+  async function loadConvSettings() { try { convSettings = { ...convSettings, ...(await api('/conversation/settings')) }; } catch {} }
+  function paintConvSettings() {
+    const seg = $('#set-transcript-view');
+    if (seg) {
+      seg.innerHTML = '';
+      for (const [id, name] of TRANSCRIPT_VIEWS) {
+        const b = el('button', 'set-opt' + (convSettings.transcriptView === id ? ' on' : ''), name); b.type = 'button';
+        b.addEventListener('click', async () => { convSettings.transcriptView = id; paintConvSettings(); try { await api('/conversation/settings', { method: 'POST', body: JSON.stringify({ transcriptView: id }) }); } catch {} });
+        seg.appendChild(b);
+      }
+    }
+    const wrap = $('#set-auto-classify');
+    if (wrap && !wrap.firstChild) wrap.appendChild(toggleEl(convSettings.autoClassify, async (on) => { convSettings.autoClassify = on; try { await api('/conversation/settings', { method: 'POST', body: JSON.stringify({ autoClassify: on }) }); } catch (e) { convSettings.autoClassify = !on; throw e; } }));
+    else if (wrap) { const t = wrap.firstChild; t.classList.toggle('on', convSettings.autoClassify); t.setAttribute('aria-checked', String(convSettings.autoClassify)); }
+  }
+
+  // A floating "Plan comment" button that appears over a selection made inside the plan text,
+  // the way Desktop offers one - quoting the selected lines into the feedback box rather than
+  // retyping them. Returns a cleanup to run when the card collapses.
+  function planCommentButton(planEl, feedback) {
+    const btn = el('button', 'plan-comment-btn hidden', 'Plan comment'); btn.type = 'button';
+    document.body.appendChild(btn);
+    let picked = '';
+    const place = () => {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed || !sel.rangeCount || !planEl.contains(sel.anchorNode)) { btn.classList.add('hidden'); return; }
+      picked = sel.toString().trim();
+      if (!picked) { btn.classList.add('hidden'); return; }
+      const r = sel.getRangeAt(0).getBoundingClientRect();
+      btn.style.left = Math.round(r.left + r.width / 2) + 'px';
+      btn.style.top = Math.round(r.top - 8 + window.scrollY) + 'px';
+      btn.classList.remove('hidden');
+    };
+    const onUp = () => setTimeout(place, 0);
+    planEl.addEventListener('mouseup', onUp);
+    planEl.addEventListener('touchend', onUp);
+    const onScroll = () => btn.classList.add('hidden');
+    window.addEventListener('scroll', onScroll, true);
+    btn.addEventListener('click', () => {
+      if (picked) feedback.value = (feedback.value.trim() ? feedback.value.replace(/\s+$/, '') + '\n\n' : '') + picked.split('\n').map((l) => '> ' + l).join('\n') + '\n\n';
+      btn.classList.add('hidden');
+      feedback.focus();
+      window.getSelection()?.removeAllRanges();
+    });
+    return () => { btn.remove(); window.removeEventListener('scroll', onScroll, true); };
+  }
+  // ExitPlanMode's own permission card: the plan as Markdown, Desktop's three choices, and a
+  // feedback box - "No, keep planning" sends the feedback back as the reason Claude was told no.
+  // Approving rides the mode change on the same resolution (PermissionResult.updatedPermissions,
+  // a setMode entry) rather than a second round trip through /controls.
+  function showPlanApproval(ev) {
+    const plan = String(ev.input?.plan ?? '');
+    const card = el('div', 'permission plan-card');
+    card.dataset.reqId = ev.reqId;
+    const head = el('div', 'permission-head');
+    head.appendChild(el('span', 'spark', '✱'));
+    head.appendChild(el('span', null, 'Ready to code?'));
+    card.appendChild(head);
+    const planEl = el('div', 'prose plan-text'); planEl.dir = 'auto';
+    planEl.innerHTML = plan ? md(plan) : '<p class="muted">No plan found.</p>';
+    card.appendChild(planEl);
+    const feedback = el('textarea', 'plan-feedback'); feedback.rows = 2; feedback.placeholder = 'Tell Claude what to change (optional)';
+    const actions = el('div', 'permission-actions plan-actions');
+    const accept = el('button', 'btn btn-primary', 'Yes, and auto-accept edits'); accept.type = 'button';
+    const manual = el('button', 'btn btn-ghost', 'Yes, and manually approve edits'); manual.type = 'button';
+    const keep = el('button', 'btn btn-ghost', 'No, keep planning'); keep.type = 'button';
+    const result = el('div', 'perm-result hidden');
+    // Collapses the same way a question card does (resolvePermissionCard calls it with the same
+    // (unused, behavior) shape so either card type can answer from another device).
+    card.collapse = (_unused, behavior) => {
+      if (card.classList.contains('answered')) return;
+      card.classList.add('answered');
+      head.lastChild.textContent = behavior === 'deny' ? 'Claude kept planning' : 'Plan approved';
+      actions.remove(); feedback.remove();
+      card._cleanupComment?.(); card._cleanupComment = null;
+      result.classList.add('hidden');
+    };
+    const respond = async (behavior, updatedPermissions) => {
+      actions.querySelectorAll('button').forEach((b) => b.disabled = true);
+      const body = { behavior, ...(updatedPermissions ? { updatedPermissions } : {}), ...(behavior === 'deny' ? { message: feedback.value.trim() || 'Keep planning.' } : {}) };
+      try { await api('/permissions/' + ev.reqId, { method: 'POST', body: JSON.stringify(body) }); card.collapse(null, behavior); }
+      catch (e) { result.textContent = e.message; result.classList.remove('hidden'); actions.querySelectorAll('button').forEach((b) => b.disabled = false); }
+    };
+    accept.addEventListener('click', () => respond('allow', [{ type: 'setMode', mode: 'acceptEdits', destination: 'session' }]));
+    manual.addEventListener('click', () => respond('allow', [{ type: 'setMode', mode: 'default', destination: 'session' }]));
+    keep.addEventListener('click', () => respond('deny'));
+    actions.appendChild(accept); actions.appendChild(manual); actions.appendChild(keep);
+    card.appendChild(feedback); card.appendChild(actions); card.appendChild(result);
+    thread.appendChild(card);
+    card._cleanupComment = planCommentButton(planEl, feedback);
+    return true;
+  }
+
+  // ---------- the live plan box above the composer (TodoWrite, or TaskCreate/TaskUpdate) ----------
+  // Two different shapes feed the same box: TodoWrite replaces its whole list every call (no
+  // ids), while TaskCreate/TaskUpdate build one up incrementally by id - normalised to the same
+  // {text, status, activeForm} here so one painter and one checklist widget serve both.
+  let planTodos = null;              // the latest TodoWrite call's list, or null if never used
+  const planTasks = new Map();       // taskId -> {text, status, activeForm}, from TaskCreate/TaskUpdate
+  function todoItems(items) {
+    const frag = document.createDocumentFragment();
+    for (const t of items || []) {
+      const li = el('li', 'todo-item status-' + (t.status || 'pending')); li.dir = 'auto';
+      li.appendChild(el('span', 'todo-check'));
+      li.appendChild(el('span', 'todo-label', (t.status === 'in_progress' && t.activeForm) || t.text || ''));
+      frag.appendChild(li);
+    }
+    return frag;
+  }
+  // A checklist of its own (for the TodoWrite step's "Updated the task list" row, expanded).
+  function todoChecklist(items) { const ul = el('ul', 'todo-checklist'); ul.appendChild(todoItems(items)); return ul; }
+  function planItemsNow() { return planTodos ? planTodos.map((t) => ({ text: t.content, status: t.status, activeForm: t.activeForm })) : [...planTasks.values()]; }
+  let planBoxClosedByUser = false; // respected once; the box still opens itself for a new plan
+  function paintPlanBox() {
+    const box = $('#plan-box'); if (!box) return;
+    const items = planItemsNow();
+    const wasHidden = box.classList.contains('hidden');
+    box.classList.toggle('hidden', !items.length);
+    if (!items.length) return;
+    // A <details> starts closed; open it the first time a plan appears, as Desktop shows one
+    // unasked - but leave it alone once the person has chosen to collapse it themselves.
+    if (wasHidden && !planBoxClosedByUser) box.open = true;
+    $('#plan-box-count').textContent = items.filter((t) => t.status === 'completed').length + ' of ' + items.length;
+    const list = $('#plan-box-list'); list.innerHTML = ''; list.appendChild(todoItems(items));
+  }
+  $('#plan-box')?.addEventListener('toggle', (e) => { planBoxClosedByUser = !e.target.open; });
+  // Called for every tool_use block renderBlock sees (cheap no-op for anything else); reopening a
+  // session feeds the same calls from history, in file order, so the box is right from the start.
+  function updatePlanFromTool(name, inp) {
+    if (!inp || typeof inp !== 'object') return;
+    if (name === 'TodoWrite' && Array.isArray(inp.todos)) { planTodos = inp.todos; paintPlanBox(); }
+    else if (name === 'TaskUpdate' && inp.taskId) {
+      const t = planTasks.get(inp.taskId) || { text: inp.subject || '', status: 'pending', activeForm: '' };
+      if (inp.subject) t.text = inp.subject;
+      if (inp.status) t.status = inp.status === 'deleted' ? 'completed' : inp.status;
+      if (inp.activeForm) t.activeForm = inp.activeForm;
+      planTasks.set(inp.taskId, t);
+      paintPlanBox();
+    }
+  }
+  // TaskCreate only learns its task's id from the result (the call itself does not choose one).
+  function planTaskCreated(resultText) {
+    let id, subject;
+    try { const j = JSON.parse(resultText); id = j?.task?.id; subject = j?.task?.subject; } catch {}
+    if (!id) { const m = /"id"\s*:\s*"([^"]+)"/.exec(resultText || ''); id = m && m[1]; }
+    if (!id) return;
+    const prev = planTasks.get(id);
+    planTasks.set(id, { text: subject || prev?.text || '(task)', status: prev?.status || 'pending', activeForm: prev?.activeForm || '' });
+    paintPlanBox();
+  }
+
+  // ---------- masking API keys and tokens in the transcript, with an eye to reveal ----------
+  // A MutationObserver rather than a hook in every place that writes text (renderBlock,
+  // attachResult, userMsg, the step input/result dumps…): whatever lands in the thread gets
+  // walked once, text node by text node, the moment it arrives - live deltas, a history page,
+  // a tool's raw input or result. Masked by default: the dots are what a triple-click or a
+  // screenshot gets; the real value sits in a data attribute until the eye is clicked.
+  const SECRET_RE = /(sk-ant-[A-Za-z0-9_-]{8,}|sk-[A-Za-z0-9_-]{16,}|gh[po]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}|Bearer\s+[A-Za-z0-9._~+/=-]{10,}|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)/g;
+  const EYE_SVG = '<svg viewBox="0 0 20 20" width="13" height="13"><path d="M1.5 10S5 4.5 10 4.5 18.5 10 18.5 10 15 15.5 10 15.5 1.5 10 1.5 10z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><circle cx="10" cy="10" r="2.4" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>';
+  const maskDots = (v) => '•'.repeat(Math.min(v.length, 24));
+  function secretSpan(value) {
+    const span = el('span', 'secret-mask');
+    const text = el('span', 'secret-mask-text', maskDots(value));
+    const eye = el('button', 'secret-eye'); eye.type = 'button'; eye.title = 'Show'; eye.setAttribute('aria-label', 'Show'); eye.innerHTML = EYE_SVG;
+    eye.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const revealed = span.classList.toggle('revealed');
+      text.textContent = revealed ? value : maskDots(value);
+      eye.title = eye.ariaLabel = revealed ? 'Hide' : 'Show';
+    });
+    span.appendChild(text); span.appendChild(eye);
+    return span;
+  }
+  function maskTextNode(node) {
+    const text = node.nodeValue; SECRET_RE.lastIndex = 0;
+    const frag = document.createDocumentFragment();
+    let last = 0, m, any = false;
+    while ((m = SECRET_RE.exec(text))) {
+      any = true;
+      if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
+      frag.appendChild(secretSpan(m[0]));
+      last = m.index + m[0].length;
+    }
+    if (!any) return;
+    if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+    node.parentNode?.replaceChild(frag, node);
+  }
+  // Never inside a mask already - the eye reveal sets a masked span's own text to the real
+  // value, which is itself a mutation this same observer sees; without this guard that text
+  // came right back around and got masked again, undoing the click that asked to see it.
+  const maskable = (n) => !!n.nodeValue && SECRET_RE.test(n.nodeValue) && !n.parentElement?.closest('.secret-mask, textarea, input, script, style');
+  function maskSecretsIn(root) {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, { acceptNode(n) {
+      const ok = maskable(n); SECRET_RE.lastIndex = 0;
+      return ok ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+    } });
+    const nodes = []; let n; while ((n = walker.nextNode())) nodes.push(n);
+    for (const node of nodes) maskTextNode(node);
+  }
+  new MutationObserver((muts) => {
+    for (const mut of muts) for (const node of mut.addedNodes) {
+      if (node.nodeType === Node.TEXT_NODE) { if (maskable(node)) { SECRET_RE.lastIndex = 0; maskTextNode(node); } }
+      else if (node.nodeType === Node.ELEMENT_NODE) maskSecretsIn(node);
+    }
+  }).observe(thread, { childList: true, subtree: true });
+
+  // ---------- find in the session (Ctrl/Cmd+F with a session open) ----------
+  // The server reads the whole transcript (lib/history.mjs's searchSession, the same file a
+  // history page comes from), not just what this page has loaded - jumpToMessage already knows
+  // how to load older pages until a given message is on screen, so an older hit reuses it.
+  const findBar = $('#find-bar'), findInput = $('#find-input'), findCountEl = $('#find-count');
+  let findQuery = '', findHits = [], findIndex = -1, findSeq = 0;
+  function clearFindHighlights() { thread.querySelectorAll('mark.find-hit').forEach((m) => m.replaceWith(document.createTextNode(m.textContent))); }
+  function highlightFindIn(root) {
+    if (!findQuery) return;
+    const needle = findQuery.toLowerCase();
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, { acceptNode(n) {
+      return n.nodeValue?.toLowerCase().includes(needle) && !n.parentElement?.closest('mark.find-hit, textarea, input, script, style') ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+    } });
+    const nodes = []; let n; while ((n = walker.nextNode())) nodes.push(n);
+    for (const node of nodes) {
+      const text = node.nodeValue, lower = text.toLowerCase();
+      const frag = document.createDocumentFragment();
+      let last = 0, idx;
+      while ((idx = lower.indexOf(needle, last)) >= 0) {
+        if (idx > last) frag.appendChild(document.createTextNode(text.slice(last, idx)));
+        frag.appendChild(el('mark', 'find-hit', text.slice(idx, idx + needle.length)));
+        last = idx + needle.length;
+      }
+      if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+      node.parentNode?.replaceChild(frag, node);
+    }
+  }
+  function paintFindCount() { findCountEl.textContent = findHits.length ? (findIndex + 1) + ' of ' + findHits.length : (findQuery ? 'No results' : ''); }
+  async function gotoFindHit(i) {
+    if (!findHits.length) return;
+    findIndex = ((i % findHits.length) + findHits.length) % findHits.length;
+    paintFindCount();
+    const hit = findHits[findIndex];
+    await jumpToMessage(hit.uuid);
+    highlightFindIn(thread);
+    thread.querySelectorAll('mark.find-hit.current').forEach((m) => m.classList.remove('current'));
+    // A message from before a compaction has no uuid to anchor a jump to (the same reason it
+    // offers no rewind) - the text is on screen regardless once the page loads, just not
+    // addressable by id, so the first mark now in the thread is shown instead of none at all.
+    const mark = thread.querySelector(`[data-uuid="${CSS.escape(hit.uuid || '')}"] mark.find-hit`) || thread.querySelector('mark.find-hit');
+    if (mark) { mark.classList.add('current'); mark.scrollIntoView({ block: 'center' }); }
+  }
+  async function runFind(q) {
+    const seq = ++findSeq;
+    findQuery = q; clearFindHighlights(); highlightFindIn(thread);
+    if (!q || !state.current) { findHits = []; findIndex = -1; paintFindCount(); return; }
+    try { const r = await api(`/sessions/${state.current}/search?q=${encodeURIComponent(q)}`); if (seq !== findSeq) return; findHits = r.hits || []; }
+    catch { if (seq !== findSeq) return; findHits = []; }
+    findIndex = findHits.length ? 0 : -1;
+    paintFindCount();
+    if (findIndex >= 0) await gotoFindHit(findIndex);
+  }
+  function openFind() {
+    if (!state.current) return;
+    findBar.classList.remove('hidden');
+    findInput.value = findQuery; findInput.focus(); findInput.select();
+    if (findQuery) highlightFindIn(thread);
+  }
+  function closeFind() { findBar.classList.add('hidden'); findQuery = ''; findHits = []; findIndex = -1; findSeq++; clearFindHighlights(); input.focus(); }
+  let findDebounce = null;
+  findInput.addEventListener('input', () => { clearTimeout(findDebounce); findDebounce = setTimeout(() => runFind(findInput.value.trim()), 200); });
+  findInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); gotoFindHit(findIndex + (e.shiftKey ? -1 : 1)); }
+    else if (e.key === 'Escape') { e.preventDefault(); closeFind(); }
+  });
+  $('#find-next').addEventListener('click', () => gotoFindHit(findIndex + 1));
+  $('#find-prev').addEventListener('click', () => gotoFindHit(findIndex - 1));
+  $('#find-close').addEventListener('click', closeFind);
+
+  // ---------- message context menu: Copy, Copy as Markdown, Copy link, Attach as context, Pin as chapter ----------
+  const msgCtx = $('#msg-ctx-menu');
+  // Assistant text can be several .prose blocks around tool groups; a user bubble is plain text,
+  // never Markdown, so Copy and Copy as Markdown only differ for Claude's own messages.
+  const msgPlainText = (m) => [...m.querySelectorAll('.prose, .msg-text')].map((n) => n.innerText).join('\n\n').trim();
+  const msgMarkdownText = (m) => { const p = [...m.querySelectorAll('.prose')]; return p.length ? p.map((n) => n._raw ?? n.innerText).join('\n\n').trim() : msgPlainText(m); };
+  async function copyText(text, label) { try { await navigator.clipboard.writeText(text); toast((label || 'Copied') + '.'); } catch { toast('Could not copy.'); } }
+  function placeCtxMenu(x, y) {
+    msgCtx.classList.remove('hidden');
+    if (window.matchMedia('(max-width: 860px)').matches) { msgCtx.style.left = msgCtx.style.top = ''; return; } // a bottom sheet on the phone, like the session row's menu
+    const r = msgCtx.getBoundingClientRect();
+    msgCtx.style.left = Math.min(x, window.innerWidth - r.width - 8) + 'px';
+    msgCtx.style.top = Math.min(y, window.innerHeight - r.height - 8) + 'px';
+  }
+  function showMsgCtxMenu(msgEl, x, y) {
+    const uuid = msgEl.dataset.uuid || null;
+    msgCtx.innerHTML = '';
+    const add = (label, fn, disabled) => { const b = item(label, '', false, () => { msgCtx.classList.add('hidden'); fn(); }); b.disabled = !!disabled; msgCtx.appendChild(b); };
+    add('Copy', () => copyText(msgPlainText(msgEl)));
+    add('Copy as Markdown', () => copyText(msgMarkdownText(msgEl), 'Copied as Markdown'));
+    add('Copy link', () => uuid && state.current && copyText(location.origin + '/#/s/' + state.current + '/m/' + uuid, 'Link copied'), !uuid);
+    add('Attach as context', () => attachContext({ label: msgEl.classList.contains('user') ? 'You said' : 'Claude said', text: msgPlainText(msgEl) }));
+    add('Pin as chapter', async () => { const t = prompt('Chapter title', msgPlainText(msgEl).slice(0, 60)); if (t && t.trim()) await registerChapter(uuid, t.trim()); }, !uuid);
+    placeCtxMenu(x, y);
+  }
+  // A code block or an inline codespan gets its own short menu instead of the message's one -
+  // what you right-clicked is what "Copy code" copies, not the whole bubble around it.
+  function showCodeCtxMenu(codeEl, isBlock, x, y) {
+    msgCtx.innerHTML = '';
+    msgCtx.appendChild(item(isBlock ? 'Copy code' : 'Copy inline code', '', false, () => { msgCtx.classList.add('hidden'); copyText(codeEl.innerText, 'Code copied'); }));
+    placeCtxMenu(x, y);
+  }
+  async function copyImage(src) {
+    try { const blob = await (await fetch(src)).blob(); await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]); toast('Image copied.'); }
+    catch { toast('Could not copy the image.'); }
+  }
+  function saveImage(src, name) {
+    const a = el('a'); a.href = src; a.download = name || 'image'; document.body.appendChild(a); a.click(); a.remove();
+  }
+  function showImageCtxMenu(img, x, y) {
+    msgCtx.innerHTML = '';
+    msgCtx.appendChild(item('Copy image', '', false, () => { msgCtx.classList.add('hidden'); copyImage(img.src); }));
+    msgCtx.appendChild(item('Save image', '', false, () => { msgCtx.classList.add('hidden'); saveImage(img.src, img.alt); }));
+    placeCtxMenu(x, y);
+  }
+  document.addEventListener('click', (e) => { if (!msgCtx.contains(e.target)) msgCtx.classList.add('hidden'); });
+  thread.addEventListener('contextmenu', (e) => {
+    const codeBlock = e.target.closest('pre code');
+    const inlineCode = !codeBlock && e.target.closest('code');
+    const img = !codeBlock && !inlineCode && e.target.closest('img');
+    if (codeBlock || inlineCode) { e.preventDefault(); showCodeCtxMenu(codeBlock || inlineCode, !!codeBlock, e.clientX, e.clientY); return; }
+    if (img && img.src) { e.preventDefault(); showImageCtxMenu(img, e.clientX, e.clientY); return; }
+    const m = e.target.closest('.msg'); if (!m) return;
+    e.preventDefault(); showMsgCtxMenu(m, e.clientX, e.clientY);
+  });
+  // A copy button on every fenced code block (marked's own `code` renderer builds it).
+  thread.addEventListener('click', (e) => { const b = e.target.closest('.code-copy'); if (b) copyText(b.closest('.code-block')?.querySelector('pre code')?.innerText || '', 'Code copied'); });
+  // Triple-click selects the whole block, not just the line under the cursor.
+  thread.addEventListener('click', (e) => {
+    if (e.detail !== 3) return;
+    const pre = e.target.closest('pre'); if (!pre) return;
+    const range = document.createRange(); range.selectNodeContents(pre);
+    const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
+  });
+  let msgPressTimer = null, msgPressed = false;
+  thread.addEventListener('touchstart', (e) => {
+    const m = e.target.closest('.msg'); if (!m) return;
+    msgPressed = false;
+    const t = e.touches[0];
+    msgPressTimer = setTimeout(() => { msgPressed = true; showMsgCtxMenu(m, t.clientX, t.clientY); if (navigator.vibrate) navigator.vibrate(10); }, 450);
+  }, { passive: true });
+  for (const evn of ['touchend', 'touchmove', 'touchcancel']) thread.addEventListener(evn, () => clearTimeout(msgPressTimer), { passive: true });
+  // The tap that ends a long-press must not also open a file link or play a video under it.
+  thread.addEventListener('click', (e) => { if (msgPressed) { e.preventDefault(); e.stopPropagation(); msgPressed = false; } }, true);
 
   // ---------- live status line (the Desktop "✱ Thinking… 12s · 1.2k tokens" row) ----------
   const VERBS = ['Thinking', 'Pondering', 'Considering', 'Working', 'Reasoning', 'Composing', 'Sketching', 'Puzzling', 'Brewing', 'Cooking', 'Musing', 'Mulling'];
@@ -2159,7 +2705,14 @@
       return !!f8 && new TextDecoder().decode(f8) === 'narration';
     } catch { return false; }
   }
-  const asShown = (b) => b?.type === 'thinking' ? (isNarration(b) && b.thinking ? { type: 'text', text: b.thinking } : null) : b?.type === 'redacted_thinking' ? null : b;
+  // Normal: only narration, turned into plain text, as Desktop shows it as part of the answer.
+  // Thinking/Verbose: every thinking block, drawn as its own "Thought" row (asShown's one caller
+  // for a live block_start already keeps the thoughts off the status line regardless of view).
+  const asShown = (b) => {
+    if (b?.type === 'thinking') return state.transcriptView === 'normal' ? (isNarration(b) && b.thinking ? { type: 'text', text: b.thinking } : null) : b;
+    if (b?.type === 'redacted_thinking') return state.transcriptView === 'normal' ? null : b;
+    return b;
+  };
 
   // ---------- history: the transcript, drawn a page at a time ----------
   // One assistant row per turn, like Desktop. A page never holds a tool result without its call
@@ -2186,8 +2739,11 @@
           }
           case 'assistant': {
             const r = openRow(); let any = false;
+            if (!r.root.dataset.uuid) r.root.dataset.uuid = m.uuid; // the row's anchor for a deep link, a chapter, a pin
             m.content.forEach((b, i) => {
-              if (b.type === 'thinking' || b.type === 'redacted_thinking') return;
+              // Normal never asked the server for these blocks at all; Thinking/Verbose did, and
+              // draws them (lib/history.mjs keeps them only when the page was fetched that way).
+              if ((b.type === 'thinking' || b.type === 'redacted_thinking') && state.transcriptView === 'normal') return;
               const key = m.uuid + ':' + i;
               renderBlock(r, key, b); any = true;
               if (b.type === 'tool_use') toolNodes.set(b.id, r.blocks.get(key));
@@ -2333,7 +2889,7 @@
     const id = hist.id, seq = openSeq;
     hist.loading = true;
     try {
-      const p = await api(`/sessions/${id}/history?before=${hist.before}` + (hist.until ? '&until=' + hist.until : ''));
+      const p = await api(`/sessions/${id}/history?before=${hist.before}` + (hist.until ? '&until=' + hist.until : '') + (state.transcriptView !== 'normal' ? '&view=' + state.transcriptView : ''));
       if (seq !== openSeq) return;
       const frag = document.createDocumentFragment();
       const r = historyRenderer(frag);
@@ -4213,6 +4769,7 @@
         // Claude opened or used a terminal tab: the person sees it, same as if they had.
         case 'terminal_tab': onTerminalTabEvent(ev.tab); break;
         case 'terminal_focus': showTerminalTab(ev.tabId); break;
+        case 'session_status': { const srow = state.sessions.find((x) => x.id === sessionId); if (srow) srow.status = { status: ev.status, note: ev.note }; renderSessions(); break; }
         case 'note': thread.appendChild(el('div', 'note' + (ev.level === 'warning' ? ' warning' : ''), ev.text)); statusPaint(); autoscroll(); break;
         // Stop took back messages typed mid-turn (or Remove took one out): its dashed bubble goes, on every device.
         case 'unqueued': for (const id of ev.ids || []) thread.querySelector('.msg.user.queued[data-prompt-id="' + CSS.escape(id) + '"]')?.remove(); restackQueue(); break;
@@ -4240,7 +4797,7 @@
         case 'delta': {
           const p = partial.get(ev.index); if (!p || !state.live) break;
           if (ev.kind === 'text_delta') { p.text += ev.text; renderBlock(state.live, key(ev.index), { type: 'text', text: p.text }); state.live.blocks.get(key(ev.index))?.classList.add('cursor'); }
-          else if (ev.kind === 'input_json_delta') { p.json += ev.text; const n = state.live.blocks.get(key(ev.index)); if (n) n.querySelector('.arg').textContent = p.json.slice(0, 200); }
+          else if (ev.kind === 'input_json_delta') { p.json += ev.text; const n = state.live.blocks.get(key(ev.index)); const a = n?.querySelector('.arg'); if (a) a.textContent = p.json.slice(0, 200); }
           autoscroll(); break;
         }
         case 'block_stop': {
@@ -4250,6 +4807,7 @@
         case 'assistant':
           // final blocks for the message being streamed: re-render with full data
           if (!state.live) { state.live = assistantMsg(); thread.appendChild(state.live.root); }
+          if (!state.live.root.dataset.uuid) state.live.root.dataset.uuid = ev.uuid; // the row's anchor, as historyRenderer gives it
           if (ev.tail) {
             // From the transcript file: one finished block per line, keyed by its uuid.
             ev.content.forEach((b, i) => { const s = asShown(b); if (s) renderBlock(state.live, ev.uuid + ':' + i, s); });
@@ -4447,6 +5005,7 @@
     // A reconnect replays the turn from its start, so the same request can arrive twice.
     if (ev.reqId && thread.querySelector(`[data-req-id="${ev.reqId}"]`)) return;
     if (isAskTool(ev.tool) && showQuestion(ev)) return;
+    if (ev.tool === 'ExitPlanMode' && showPlanApproval(ev)) return;
     const t = $('#tpl-permission').content.firstElementChild.cloneNode(true);
     t.dataset.reqId = ev.reqId;
     t.querySelector('.perm-tool').textContent = ev.tool;
@@ -5420,6 +5979,9 @@
     if (!(e.ctrlKey || e.metaKey) || e.altKey || $('#app').classList.contains('hidden')) return;
     const k = e.key.toLowerCase();
     if (k === 'k') { e.preventDefault(); pal.classList.contains('hidden') ? openPalette() : closePalette(); }
+    // With a session open, Ctrl/Cmd+F finds in it instead; the sidebar's own search moves to
+    // Shift+F there (still on its button too). With none open, F keeps finding a session.
+    else if (k === 'f' && state.current && !e.shiftKey) { e.preventDefault(); openFind(); }
     else if (k === 'f') { e.preventDefault(); const sb = $('#sidebar'); if (!sb.classList.contains('searching')) $('#search-btn').click(); else $('#search-input').focus(); app.classList.add('sidebar-open'); }
     else if (k === 'b' && e.shiftKey) { e.preventDefault(); previewOpen ? closePreview() : openPreview(); } // Desktop's own shortcut for its Browser
     else if (k === 'b') { e.preventDefault(); app.classList.toggle('sidebar-open'); }
@@ -5435,9 +5997,11 @@
   // every await once a newer open (or the new-chat screen) has started. Without this the
   // slow one finished last and painted its messages under the other session's name.
   let openSeq = 0;
-  async function openSession(id) {
+  async function openSession(id, { jumpTo } = {}) {
     const seq = ++openSeq;
     state.current = id; state.live = null; state.tasks = []; hiddenTasks.clear(); paintTasks(); if (changesOpen) closeChanges(); if (previewOpen) closePreview(); if (filesOpen) closeFiles(); if (terminalOpen) closeTerminal();
+    planTodos = null; planTasks.clear(); planBoxClosedByUser = false; paintPlanBox();
+    findQuery = ''; findHits = []; findIndex = -1; findSeq++; findBar.classList.add('hidden');
     if (state.es) { state.es.close(); state.es = null; }
     app.classList.remove('sidebar-open'); app.classList.remove('new');
     empty.classList.remove('show'); thread.innerHTML = '<div class="muted small pad">Loading…</div>';
@@ -5445,6 +6009,7 @@
     try {
       const info = await api('/sessions/' + id);
       if (seq !== openSeq) return;
+      const chaptersReady = loadChapters(id); // raced with the history fetch below, awaited before it draws
       // A turn started here and still running is replayed by the live stream from
       // its prompt onwards, so the history stops just before it.
       // From a server that tells turns apart (`busy` comes with it), the run gives the turn under way and
@@ -5453,8 +6018,10 @@
       const until = !info.live ? 0 : byTurn ? info.turnStartedAt || 0 : info.runStartedAt || 0;
       // The newest page only; older ones come as the reader scrolls up. A server from before
       // paging has no /history and answers with the whole list.
+      // Picking a view from the session menu overrides the default for this one reopen only.
+      state.transcriptView = explicitTranscriptView || convSettings.transcriptView || 'normal'; explicitTranscriptView = null;
       let page;
-      try { page = await api(`/sessions/${id}/history` + (until ? '?until=' + until : '')); }
+      try { page = await api(`/sessions/${id}/history` + (until ? '?until=' + until : '') + (state.transcriptView !== 'normal' ? (until ? '&' : '?') + 'view=' + state.transcriptView : '')); }
       catch (e) { if (e.status !== 404) throw e; page = { messages: await api(`/sessions/${id}/messages` + (until ? '?before=' + until : '')), more: false }; }
       if (seq !== openSeq) return;
       const messages = page.messages;
@@ -5466,6 +6033,7 @@
       // A chat's own folder is where it works (the Files panel, the Browser, relative paths), but
       // it is not a folder to start the next session in: New goes back to what was picked.
       state.cwd = info.cwd || state.cwd; state.cwdIsChat = !!info.chat; renderProjectChip(); pvFollow(); $('#project-btn').classList.add('locked');
+      await chaptersReady; if (seq !== openSeq) return;
       renderHistory(messages);
       paintHistoryTop();
       // The last turn never finished (the app or the PC restarted mid-work). Desktop resumes by
@@ -5486,7 +6054,8 @@
           n.appendChild(b); thread.appendChild(n);
         }
       }
-      stickToBottom = true; pinToBottom();
+      // A deep link to one message is not asking to land at the end - don't pin there first.
+      if (jumpTo) jumpToMessage(jumpTo); else { stickToBottom = true; pinToBottom(); }
       requestAnimationFrame(fillTop); // a first page shorter than the window brings the next one
       setRunning(false); setElsewhere(false);
       markRead(id);
@@ -5503,6 +6072,9 @@
     openSeq++; // a session still loading must not paint over the new-chat screen
     if (state.cwdIsChat) { state.cwdIsChat = false; state.cwd = localStorage.getItem('cr.cwd') || ''; renderProjectChip(); }
     hist.id = null; hist.more = false;
+    chapters = []; registeredChapters.clear();
+    planTodos = null; planTasks.clear(); planBoxClosedByUser = false; paintPlanBox();
+    findQuery = ''; findHits = []; findIndex = -1; findSeq++; findBar.classList.add('hidden');
     state.current = null; state.live = null; state.tasks = []; hiddenTasks.clear(); paintTasks(); if (changesOpen) closeChanges(); if (filesOpen) closeFiles(); if (terminalOpen) closeTerminal(); stopPrWatch(); $("#sb-pr-state").classList.add("hidden");
     if (state.es) { state.es.close(); state.es = null; }
     app.classList.remove('sidebar-open');
@@ -5522,8 +6094,9 @@
   let cameBack = false, hadSession = false;
   window.addEventListener('popstate', () => { cameBack = true; });
   function route() {
-    const m = location.hash.match(/^#\/s\/([0-9a-f-]{36})$/i);
-    if (m) { openSession(m[1]); hadSession = true; }
+    // #/s/<id>/m/<uuid>: a deep link (Copy link, a chapter jump elsewhere, a pin) to one message.
+    const m = location.hash.match(/^#\/s\/([0-9a-f-]{36})(?:\/m\/([0-9a-f-]{36}))?$/i);
+    if (m) { openSession(m[1], { jumpTo: m[2] || null }); hadSession = true; }
     else {
       openNew();
       // Back from a session on the phone lands on the session list, like the mobile app.
@@ -5580,7 +6153,7 @@
     // Opening the app is exactly when "is there a new one?" should be answered afresh:
     // a merge publishes in about eight minutes, and a stale answer reads as "nothing new".
     api('/version').then((v) => { if (!v.update?.checkedAt || Date.now() - v.update.checkedAt > 120000) return api('/update/check', { method: 'POST', body: JSON.stringify({}) }); }).then(() => checkForUpdate()).catch(() => {});
-    await Promise.all([loadSessions(), loadProjects(), loadAwake(), loadModels()]);
+    await Promise.all([loadSessions(), loadProjects(), loadAwake(), loadModels(), loadConvSettings()]);
     route();
     // First time on this device: ask which account to use (local or token).
     let chosen = false; try { chosen = !!localStorage.getItem('cr.accountChosen'); } catch {}
