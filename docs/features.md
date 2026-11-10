@@ -508,7 +508,7 @@ worth doing:
 
 These are being built for the next release:
 
-- Git from the app (commit and push, draft PRs, Auto-fix), routines, `/btw` side chats,
+- Routines, `/btw` side chats,
   nested sessions, split view and windows of their own, the session rail, sidebar sections,
   storage, phone notifications, Claude's own Browser tools, SSH/WSL environments.
 

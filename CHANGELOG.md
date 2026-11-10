@@ -40,6 +40,25 @@ All notable changes to this project are documented here. The format follows
   is, and keep a crashed shell's output with *Restart*; Minimize; Copy, Paste and *Attach
   selection as context*; Ctrl+\`; *Open in terminal* on a folder. Claude can open a terminal
   tab itself and run a command there (which asks first).
+- **Plans, as Desktop shows them.** When Claude asks to leave plan mode, the plan is a card of its
+  own with Desktop's three answers - auto-accept edits, ask before edits, keep planning with
+  feedback - and comments on a selection of the plan. While Claude works, its to-do list stays
+  above the box, ticked and struck through as it goes.
+- **Claude can leave you more than text**: a recap with buttons for the next steps, chapters to
+  jump between in a long session, a suggested task to start apart, and a status for the session -
+  blocked, ready for review, done - shown in the sidebar (a switch in Settings).
+- **Transcript view**: Normal, Thinking or Verbose, from the session menu, with a default in
+  Settings. **Math** renders. **API keys and tokens are masked** with an eye to reveal them.
+- **Right-click a message** for Copy, Copy as Markdown, Copy link (opens the session at that
+  message), Attach as context and Pin as chapter; code blocks get a Copy button and triple-click
+  selects one whole; pictures copy and save. **Ctrl/Cmd+F finds in the session**, older pages too.
+- **Git from the app.** Commit and push, Commit as WIP and Create draft PR from the Changes panel;
+  Mark ready for review and Confirm merge in the PR menu, beside *Merge when ready*, **Auto-fix**
+  (Claude is woken to fix failing checks, conflicts and review comments) and auto-archive when the
+  PR merges or closes. Related and stacked PRs show together.
+- **A session in a worktree of its own**, named from your first message, with its progress and a
+  Stop while it is made, `.worktreeinclude` files (an `.env`) copied in, and the worktree removed
+  when the session is archived. *Open in editor* opens the session's folder.
 
 ### Fixed
 
