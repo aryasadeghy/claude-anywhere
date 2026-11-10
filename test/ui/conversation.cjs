@@ -143,7 +143,7 @@ async function main() {
   // The in-progress item shows its active form ("Writing the tests"), as Desktop shows a
   // spinner-labelled row; the pending and completed ones keep their plain content.
   check('the plan box shows TodoWrite\'s list', await until(() => page.isVisible('#plan-box:not(.hidden) >> text=Writing the tests'), 20000));
-  check('a done item is checked and struck through', await page.$eval('#plan-box .todo-item.status-completed .todo-label', (n) => getComputedStyle(n).textDecorationLine).then((d) => d.includes('line-through')).catch(() => false));
+  check('a done item is checked and struck through', await until(() => page.$eval('#plan-box .todo-item.status-completed .todo-label', (n) => getComputedStyle(n).textDecorationLine).then((d) => d.includes('line-through')).catch(() => false), 5000));
   check('...and its count says 1 of 3', (await page.textContent('#plan-box-count')).trim() === '1 of 3', await page.textContent('#plan-box-count'));
   // The row is folded into its tool-group ("Used a tool ›"); open that, then the row itself.
   await until(() => page.isVisible('.tool-group:has-text("Used a tool")'), 10000);

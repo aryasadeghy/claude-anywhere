@@ -17,3 +17,21 @@ test('no top-level function in public/app.js is declared twice', () => {
   });
   assert.deepEqual(twice, []);
 });
+
+// theme-desktop.css grows in versioned blocks appended at its end, and two blocks merged side by side
+// once lost a closing brace: every rule after it was swallowed by an @media and simply did nothing.
+test('every versioned block of theme-desktop.css starts with all braces closed', () => {
+  const s = fs.readFileSync(new URL('../public/theme-desktop.css', import.meta.url), 'utf8');
+  let depth = 0, inComment = false, line = 1;
+  const open = [];
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === '\n') { line++; if (depth !== 0 && /^\/\* ---------- v\d+/.test(s.slice(i + 1, i + 20))) open.push(line); }
+    if (!inComment && c === '/' && s[i + 1] === '*') { inComment = true; i++; continue; }
+    if (inComment && c === '*' && s[i + 1] === '/') { inComment = false; i++; continue; }
+    if (inComment) continue;
+    if (c === '{') depth++;
+    if (c === '}') depth--;
+  }
+  assert.deepEqual({ depth, open }, { depth: 0, open: [] });
+});

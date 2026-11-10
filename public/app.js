@@ -2610,7 +2610,9 @@
     const img = !codeBlock && !inlineCode && e.target.closest('img');
     if (codeBlock || inlineCode) { e.preventDefault(); showCodeCtxMenu(codeBlock || inlineCode, !!codeBlock, e.clientX, e.clientY); return; }
     if (img && img.src) { e.preventDefault(); showImageCtxMenu(img, e.clientX, e.clientY); return; }
-    const m = e.target.closest('.msg'); if (!m) return;
+    // A queued (dashed) message has a menu of its own - Edit, Send now, Remove - and two menus at once
+    // put this one over it.
+    const m = e.target.closest('.msg'); if (!m || m.classList.contains('queued')) return;
     e.preventDefault(); showMsgCtxMenu(m, e.clientX, e.clientY);
   });
   // A copy button on every fenced code block (marked's own `code` renderer builds it).
@@ -2624,7 +2626,7 @@
   });
   let msgPressTimer = null, msgPressed = false;
   thread.addEventListener('touchstart', (e) => {
-    const m = e.target.closest('.msg'); if (!m) return;
+    const m = e.target.closest('.msg'); if (!m || m.classList.contains('queued')) return;
     msgPressed = false;
     const t = e.touches[0];
     msgPressTimer = setTimeout(() => { msgPressed = true; showMsgCtxMenu(m, t.clientX, t.clientY); if (navigator.vibrate) navigator.vibrate(10); }, 450);
