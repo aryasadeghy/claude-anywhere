@@ -60,7 +60,7 @@ jobs:
           - part: turns and the box
             suites: realtime queue controls composer queue-controls
           - part: files, terminal, conversation
-            suites: files files-pane terminal conversation
+            suites: files files-pane terminal conversation git
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
