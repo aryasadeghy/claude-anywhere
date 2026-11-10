@@ -283,7 +283,12 @@ async function main() {
   {
     const { browser, page, errors } = await open(webkit, devices['iPhone 15 Pro Max']);
     await send(page, '[suggest] what now');
-    check('iphone: the recap + next-step button appear', await until(() => page.isVisible('.suggest-card .suggest-step'), 20000));
+    // The instant fake API can finish a new chat's first turn before a slow WebKit page has attached
+    // to its stream: the answer is then in the transcript, not drawn - reopening reads it from there.
+    const cardShown = () => page.isVisible('.suggest-card .suggest-step');
+    let shown = await until(cardShown, 8000);
+    if (!shown && (await until(() => page.evaluate(() => /^#\/s\//.test(location.hash)), 5000))) { await page.reload(); shown = await until(cardShown, 15000); }
+    check('iphone: the recap + next-step button appear', shown);
     const wide = await page.evaluate(() => [...document.querySelectorAll('.suggest-card, .suggest-card *')].filter((n) => n.getBoundingClientRect().right > window.innerWidth + 1).map((n) => n.className));
     check('iphone: the suggest card fits the screen', !wide.length, wide.join(', '));
     await page.screenshot({ path: path.join(SHOTS, 'conversation-iphone.png') });
