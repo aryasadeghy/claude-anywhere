@@ -33,6 +33,8 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { searchTranscripts } from './lib/search.mjs';
 import * as worktrees from './lib/worktrees.mjs';
 import * as pr from './lib/pr.mjs';
+import * as gitActions from './lib/git-actions.mjs';
+import * as autofix from './lib/autofix.mjs';
 import * as awake from './lib/awake.mjs';
 import * as update from './lib/update.mjs';
 import * as models from './lib/models.mjs';
@@ -453,7 +455,24 @@ app.post('/api/sessions/:id/fork', async (req, res, next) => {
   try { const r = await forkSession(req.params.id, req.body?.title ? { title: String(req.body.title).slice(0, 200) } : {}); res.json({ sessionId: r.sessionId }); } catch (e) { next(e); }
 });
 app.post('/api/sessions/:id/archive', async (req, res, next) => {
-  try { await tagSession(req.params.id, req.body?.archived ? 'archived' : null); res.json({ ok: true, archived: !!req.body?.archived }); } catch (e) { next(e); }
+  try {
+    const archived = !!req.body?.archived;
+    await tagSession(req.params.id, archived ? 'archived' : null);
+    // "A session's worktree is kept until the session is archived" - then removed, but only one
+    // this app made for it (forSession), never a manual one from the Worktrees… menu, and never
+    // while a turn is still using it.
+    if (archived) {
+      const cwd = await sessionCwd(req.params.id);
+      const known = cwd && listWorktrees().find((w) => w.forSession && worktrees.sameDir(w.path, cwd));
+      if (known && !isBusy(req.params.id)) {
+        try {
+          await worktrees.remove(known, {});
+          const p = readPrefs(); p.worktrees = listWorktrees().filter((w) => !worktrees.sameDir(w.path, known.path)); writePrefs(p);
+        } catch {} // the session itself is archived either way; the worktree just outlives it this once
+      }
+    }
+    res.json({ ok: true, archived });
+  } catch (e) { next(e); }
 });
 // ---------- deleting a session puts it aside, it does not destroy it ----------
 // Sessions are the only thing here that cannot be made again, and deleting several
@@ -490,6 +509,7 @@ app.delete('/api/sessions/:id', async (req, res, next) => {
     const info = await getSessionInfo(id).catch(() => null);
     const kept = trashSession(id, info);
     if (!kept) await deleteSession(id); // nothing to move, or the move failed: do as asked
+    autofix.forgetSession(id); // gone from the sidebar: stop polling GitHub for it
     res.json({ ok: true, recoverable: !!kept });
   } catch (e) { next(e); }
 });
@@ -867,6 +887,48 @@ app.delete('/api/worktrees', async (req, res) => {
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: worktrees.cliError(e) }); }
 });
+// A worktree for a brand-new session: made from the first message, before the session itself
+// exists, so the client cannot just wait on one request for it - `git worktree add` on a big
+// repository is minutes, and Desktop's own "step-by-step progress and a Stop button" needs
+// something to poll and something to cancel while that runs. A job, not a Run: nothing here
+// talks to Claude yet.
+const wtJobs = new Map(); // jobId -> { step, done, error, result, controller }
+app.post('/api/worktrees/begin', async (req, res) => {
+  const cwd = String(req.body?.cwd || '');
+  if (!cwd || !fs.existsSync(cwd)) return res.status(400).json({ error: 'That folder is not on this machine.' });
+  const jobId = randomUUID();
+  const controller = new AbortController();
+  const job = { step: 'branch', done: false, error: null, result: null, controller };
+  wtJobs.set(jobId, job);
+  (async () => {
+    try {
+      job.step = 'worktree';
+      const made = await worktrees.addForSession(cwd, String(req.body?.message || ''), { signal: controller.signal });
+      job.step = 'done'; job.result = made;
+      // forSession: true marks this apart from one made through the Worktrees… menu, so
+      // archiving the session can remove it and nothing else mistakes it for a manual one.
+      const p = readPrefs();
+      p.worktrees = [...listWorktrees().filter((w) => !worktrees.sameDir(w.path, made.path)), { ...made, createdAt: Date.now(), forSession: true }];
+      writePrefs(p);
+    } catch (e) {
+      job.error = controller.signal.aborted ? 'Cancelled.' : worktrees.cliError(e);
+      if (e.root && e.dir) await worktrees.abandon(e.root, e.dir).catch(() => {});
+    } finally { job.done = true; }
+    setTimeout(() => wtJobs.delete(jobId), 5 * 60 * 1000); // kept a while so a slow poll still sees the result
+  })();
+  res.json({ jobId });
+});
+app.get('/api/worktrees/begin/:jobId', (req, res) => {
+  const job = wtJobs.get(req.params.jobId);
+  if (!job) return res.status(404).json({ error: 'Gone.' });
+  res.json({ step: job.step, done: job.done, error: job.error, result: job.result });
+});
+app.post('/api/worktrees/begin/:jobId/cancel', (req, res) => {
+  const job = wtJobs.get(req.params.jobId);
+  if (!job) return res.status(404).json({ error: 'Gone.' });
+  job.controller.abort();
+  res.json({ ok: true });
+});
 
 // ---------- queued message controls, and the usage-limit queue ----------
 // Desktop's row menu on a dashed (queued) bubble: Edit in composer is Remove plus the page
@@ -908,7 +970,8 @@ app.post('/api/sessions/:id/limit-queue/:msgId/send-now', async (req, res) => {
 app.get('/api/sessions/:id/pr', async (req, res) => {
   const cwd = await sessionCwd(req.params.id);
   if (!cwd || !fs.existsSync(cwd)) return res.json({ has: false });
-  res.json(req.query.fresh === '1' ? (pr.forget(cwd), await pr.cached(cwd)) : await pr.cached(cwd));
+  const data = req.query.fresh === '1' ? (pr.forget(cwd), await pr.cached(cwd)) : await pr.cached(cwd);
+  res.json({ ...data, autoFix: autofix.isAutoFix(req.params.id), autoArchive: autofix.isAutoArchive(req.params.id) });
 });
 app.post('/api/sessions/:id/pr/auto-merge', async (req, res) => {
   try {
@@ -1093,6 +1156,7 @@ function listPlugins() {
 claudeCode.useDir(path.join(DATA_DIR, 'claude-code')); // first: asking for the menu starts Claude Code
 models.useCache(DATA_DIR);
 limitQueue.init(DATA_DIR); // messages held while the plan's usage limit is reached; survives a restart
+autofix.init(DATA_DIR); // per-PR auto-fix and auto-archive switches, and the watcher behind them
 models.warm().catch(() => {});
 // Refresh waits: a background refresh would answer with the very list it was asked to
 // replace, and the menu would need a second press to show what changed.
@@ -1640,6 +1704,54 @@ app.get('/api/addresses', (_req, res) => {
   }
   res.json(out.sort((a, b) => Number(b.tailscale) - Number(a.tailscale)));
 });
+
+// ---------- git actions: commit, push, draft PR, ready for review, merge, auto-fix, auto-archive ----------
+app.post('/api/sessions/:id/git/commit-push', async (req, res) => {
+  try {
+    const cwd = await sessionCwd(req.params.id);
+    if (!cwd) return res.status(400).json({ error: 'No folder for this session.' });
+    const r = await gitActions.commitAndPush(cwd, String(req.body?.message || '').trim());
+    res.json({ ok: true, ...r });
+  } catch (e) { res.status(500).json({ error: gitActions.cliError(e) }); }
+});
+app.post('/api/sessions/:id/git/commit-wip', async (req, res) => {
+  try {
+    const cwd = await sessionCwd(req.params.id);
+    if (!cwd) return res.status(400).json({ error: 'No folder for this session.' });
+    res.json({ ok: true, ...(await gitActions.commitWip(cwd)) });
+  } catch (e) { res.status(500).json({ error: gitActions.cliError(e) }); }
+});
+app.post('/api/sessions/:id/git/create-draft-pr', async (req, res) => {
+  try {
+    const cwd = await sessionCwd(req.params.id);
+    if (!cwd) return res.status(400).json({ error: 'No folder for this session.' });
+    const r = await gitActions.createDraftPr(cwd);
+    pr.forget(cwd);
+    res.json({ ok: true, ...r });
+  } catch (e) { res.status(500).json({ error: gitActions.cliError(e) }); }
+});
+app.post('/api/sessions/:id/git/mark-ready', async (req, res) => {
+  try {
+    const cwd = await sessionCwd(req.params.id);
+    if (!cwd) return res.status(400).json({ error: 'No folder for this session.' });
+    await gitActions.markReady(cwd);
+    pr.forget(cwd);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: gitActions.cliError(e) }); }
+});
+app.post('/api/sessions/:id/git/merge', async (req, res) => {
+  try {
+    const cwd = await sessionCwd(req.params.id);
+    if (!cwd) return res.status(400).json({ error: 'No folder for this session.' });
+    const method = await gitActions.mergePr(cwd);
+    pr.forget(cwd);
+    res.json({ ok: true, method });
+  } catch (e) { res.status(500).json({ error: gitActions.cliError(e) }); }
+});
+// Per-PR switches in the PR menu: Auto-fix (lib/autofix.mjs's watcher wakes the session when
+// GitHub reports trouble) and auto-archive (that watcher archives the session once the PR is done).
+app.post('/api/sessions/:id/pr/auto-fix', (req, res) => res.json({ on: autofix.setAutoFix(req.params.id, req.body?.on !== false) }));
+app.post('/api/sessions/:id/pr/auto-archive', (req, res) => res.json({ on: autofix.setAutoArchive(req.params.id, req.body?.on !== false) }));
 
 // ---------- updating from anywhere: what is running, restart the server, rebuild the app ----------
 // Runs at work. One resting between turns holds nothing up - not a restart, not leaving.
