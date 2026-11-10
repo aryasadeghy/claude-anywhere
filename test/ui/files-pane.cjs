@@ -229,7 +229,7 @@ async function main() {
   // 7. Right-click: Open, Copy path, Attach as context, Open in editor — no terminal item
   // here, since this build never defines openTerminalAt.
   await page.click('#fx-tree .fx-row:has-text("helpers.js")', { button: 'right' });
-  check('the menu offers Open, Copy path, Attach as context, Open in editor', await until(() => page.isVisible('.menu .menu-item:has-text("Open in editor")')));
+  check('the menu offers Open, Copy path, Attach as context, Open in editor', await until(() => page.isVisible('.menu:not(.hidden) .menu-item:has-text("Open in editor")')));
   const menuText = await page.$eval('body > .menu:last-of-type', (m) => m.textContent);
   check('...and Open in terminal, now that the terminal is in this build', /Open in terminal/.test(menuText), menuText);
   await page.click('.menu .menu-item:has-text("Attach as context")');
