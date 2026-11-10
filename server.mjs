@@ -28,6 +28,7 @@ import * as limitQueue from './lib/limit-queue.mjs';
 import * as rewindStore from './lib/rewind.mjs';
 const execFileP = promisify(execFile);
 import { tailSession, isWorkingElsewhere, WORKING_WINDOW_MS, sessionFile } from './lib/tail.mjs';
+import { transcriptMentions } from './lib/mentioned.mjs';
 import { parsePreviewUrl, portFromReferer, proxyRequest, proxyUpgrade, listLocalPorts, proxyAtRoot, upgradeAtRoot, listenOn, injectBridge } from './lib/preview.mjs';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { searchTranscripts } from './lib/search.mjs';
@@ -1665,9 +1666,11 @@ const IMAGE_EXT = /\.(png|jpe?g|gif|webp|svg|bmp|avif|mp4|webm|mov|m4v|mp3|m4a|w
 // A page opened in the Browser asks for its CSS, scripts and pictures one by one, and each
 // of those is checked here: the list of folders is kept for a few seconds, not re-read.
 let rootsCache = { at: 0, roots: null };
-async function insideProjectRoots(p) {
+// `fresh`: read the sessions again unless that was just done - a session in a brand-new folder is
+// not in a list up to 15 seconds old, and its first pictures were refused.
+async function insideProjectRoots(p, fresh = false) {
   let roots = rootsCache.roots;
-  if (!roots || Date.now() - rootsCache.at > 15000) {
+  if (!roots || Date.now() - rootsCache.at > (fresh ? 2000 : 15000)) {
     roots = new Set([os.tmpdir()]);
     for (const s of await listSessions({ limit: 500 })) if (s.cwd && path.normalize(s.cwd).replace(/[\\/]+$/, '').length > 3) roots.add(path.normalize(s.cwd)); // a session run from a drive root would open the whole drive
     for (const w of listWorktrees()) roots.add(path.normalize(w.path)); // a worktree is newer than any transcript that names it
@@ -1684,15 +1687,21 @@ app.get('/api/file', async (req, res) => {
     if (!p) return res.status(400).json({ error: 'No path' });
     p = path.normalize(p);
     if (!fs.existsSync(p) || !fs.statSync(p).isFile()) return res.status(404).json({ error: 'Not on this PC' });
-    if (!(await insideProjectRoots(p))) return res.status(403).json({ error: 'Outside the project folders' });
+    // A file outside every session's folder is still this session's to show when its transcript
+    // names it (lib/mentioned.mjs): a picture saved to Downloads, a file sent from the Desktop.
+    const sid = /^[0-9a-f-]{36}$/i.test(String(req.query.sid || '')) ? String(req.query.sid) : '';
+    const allowed = (await insideProjectRoots(p)) || (await insideProjectRoots(p, true)) || (sid && sessionFile(sid) && transcriptMentions(sessionFile(sid), p));
+    if (!allowed) return res.status(403).json({ error: 'Outside the project folders' });
     // Pictures, video and sound play inline. Anything else - a file Claude sent, the
     // Download button in the Files panel - is handed over as a download only: served
     // inline from the app's own origin, an HTML page would run as the app. (Pages render
     // in the Browser, on an origin of their own.) Before, every other file was a 404
     // reading "Not an image on this PC", which is what a sent .html opened to.
-    if (IMAGE_EXT.test(p) && !req.query.download) return res.sendFile(p, { headers: { 'Cache-Control': 'private, max-age=60' }, acceptRanges: true });
+    // dotfiles: 'allow' - express refuses any path through a hidden folder by default, and a 'No
+    // folder' chat works in ~/.claude-anywhere/chats/<id>: every picture made there was a 500.
+    if (IMAGE_EXT.test(p) && !req.query.download) return res.sendFile(p, { dotfiles: 'allow', headers: { 'Cache-Control': 'private, max-age=60' }, acceptRanges: true });
     res.attachment(path.basename(p));
-    res.sendFile(p, { headers: { 'Cache-Control': 'private, max-age=60', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': 'sandbox' }, acceptRanges: true });
+    res.sendFile(p, { dotfiles: 'allow', headers: { 'Cache-Control': 'private, max-age=60', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': 'sandbox' }, acceptRanges: true });
   } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
 });
 

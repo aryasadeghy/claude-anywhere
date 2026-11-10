@@ -41,6 +41,18 @@ All notable changes to this project are documented here. The format follows
   selection as context*; Ctrl+\`; *Open in terminal* on a folder. Claude can open a terminal
   tab itself and run a command there (which asks first).
 
+### Fixed
+
+- **Pictures and files show on every device.** A picture or file outside the folders sessions work
+  in - saved to Downloads, sent from the Desktop - was refused by the server, and anything in a
+  hidden folder failed outright, which is every file of a "No folder" chat
+  (`~/.claude-anywhere/chats`). A file is now served when its own session names it, and a
+  brand-new session's folder is found at once rather than after 15 seconds.
+- **A merge can no longer silently switch styles or features off.** A lost brace once disabled
+  every style after it, and two page functions with one name made the Browser's × stop closing
+  tabs; `npm test` checks for both.
+- **A page from the Files tree opens in the Browser**, and `/clear` typed out runs on Enter.
+
 ### Changed
 
 - **CI walks the app on three runners**, and every suite runs even after one fails.

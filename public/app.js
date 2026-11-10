@@ -33,7 +33,9 @@
   marked.setOptions({ breaks: true, gfm: true });
   // Images in an answer that point at files on the PC (`![card](out/share.png)`,
   // `C:\...\shot.png`) are fetched through the server, so they show like in Desktop.
-  const localFileUrl = (href) => `/api/file?token=${encodeURIComponent(state.token || '')}&cwd=${encodeURIComponent(state.cwd || '')}&path=${encodeURIComponent(href)}`;
+  // `sid`: the session whose conversation shows the file - the server serves a file outside every
+  // session's folder (a picture in Downloads) when that session names it.
+  const localFileUrl = (href) => `/api/file?token=${encodeURIComponent(state.token || '')}&cwd=${encodeURIComponent(state.cwd || '')}&sid=${encodeURIComponent(state.current || '')}&path=${encodeURIComponent(href)}`;
   const isWebUrl = (h) => /^(https?:|data:|blob:)/i.test(h || '');
   const escapeAttr = (s) => String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
   const isVideo = (h) => /\.(mp4|webm|mov|m4v)(\?|#|$)/i.test(h || ''), isAudio = (h) => /\.(mp3|m4a|wav|ogg)(\?|#|$)/i.test(h || '');
