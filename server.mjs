@@ -20,22 +20,33 @@ import { execFile, spawn } from 'node:child_process';
 const SERVER_STARTED_AT = Date.now();
 import { promisify } from 'node:util';
 import { listSessions, getSessionMessages, getSessionInfo, renameSession, forkSession, deleteSession, tagSession } from '@anthropic-ai/claude-agent-sdk';
-import { runs, pendingPermissions, isLive, isBusy, startRun, answerPermission, bus, contextBySession, lastLimits } from './lib/runs.mjs';
-import { historyPage, historyImage } from './lib/history.mjs';
+import { runs, pendingPermissions, isLive, isBusy, startRun, answerPermission, bus, contextBySession, lastLimits, ensureLive } from './lib/runs.mjs';
+import { historyPage, historyImage, searchSession } from './lib/history.mjs';
+import { readConvSettings, writeConvSettings } from './lib/conv-settings.mjs';
 import * as runsMod from './lib/runs.mjs';
+import * as limitQueue from './lib/limit-queue.mjs';
+import * as rewindStore from './lib/rewind.mjs';
 const execFileP = promisify(execFile);
 import { tailSession, isWorkingElsewhere, WORKING_WINDOW_MS, sessionFile } from './lib/tail.mjs';
+import { transcriptMentions } from './lib/mentioned.mjs';
 import { parsePreviewUrl, portFromReferer, proxyRequest, proxyUpgrade, listLocalPorts, proxyAtRoot, upgradeAtRoot, listenOn, injectBridge } from './lib/preview.mjs';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { searchTranscripts } from './lib/search.mjs';
 import * as worktrees from './lib/worktrees.mjs';
 import * as pr from './lib/pr.mjs';
+import * as gitActions from './lib/git-actions.mjs';
+import * as autofix from './lib/autofix.mjs';
 import * as awake from './lib/awake.mjs';
 import * as update from './lib/update.mjs';
 import * as models from './lib/models.mjs';
+import * as commandsMod from './lib/commands.mjs';
+import * as filesearch from './lib/filesearch.mjs';
+import * as shell from './lib/shell.mjs';
 import * as claudeCode from './lib/claude-code.mjs';
 import * as access from './lib/access.mjs';
+import * as terminal from './lib/terminal.mjs';
 import { getAuth, activeAccount, setActive, setToken, clearToken, setProvider, clearProvider, classifyToken, envFor, localSource, verifyEnv, candidateEnv, candidateProviderEnv } from './lib/auth.mjs';
+import { findByName, searchContents, officePreview, writeFileChecked } from './lib/files.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -76,7 +87,9 @@ app.use((req, res, next) => {
   if (req.path.startsWith('/api/')) return res.status(403).json({ error: 'Remote access is off on that computer. Turn it on there, in Settings → Remote access.', remoteClosed: true });
   res.status(403).type('html').send(CLOSED);
 });
-app.use(express.json({ limit: '60mb' })); // attachments travel as base64
+// 20 images at the client's own resize ceiling (1600px, jpeg .85) is a few MB of base64;
+// 60mb was sized for the old 10-image cap and left no room once the limit doubled.
+app.use(express.json({ limit: '100mb' })); // attachments travel as base64
 
 // Attachments: images are sent to Claude as image blocks; any other file is saved on
 // this PC and referenced from the prompt by path, the way Remote Control does it.
@@ -84,10 +97,10 @@ const UPLOAD_DIR = path.join(os.tmpdir(), 'claude-anywhere-uploads');
 function parseAttachments(body) {
   const images = (Array.isArray(body?.attachments) ? body.attachments : [])
     .filter((a) => a && typeof a.data === 'string' && /^image\/(png|jpeg|webp|gif)$/.test(a.media_type || ''))
-    .slice(0, 10)
+    .slice(0, 20) // Desktop's own ceiling ("Attach up to 20 images in a single message for local sessions")
     .map((a) => ({ media_type: a.media_type, data: a.data }));
   const paths = [];
-  for (const f of (Array.isArray(body?.files) ? body.files : []).slice(0, 10)) {
+  for (const f of (Array.isArray(body?.files) ? body.files : []).slice(0, 20)) {
     if (!f || typeof f.data !== 'string') continue;
     const safe = String(f.name || 'file').replace(/[^\w.\- ()]/g, '_').slice(0, 120);
     fs.mkdirSync(UPLOAD_DIR, { recursive: true });
@@ -143,6 +156,13 @@ app.use((req, res, next) => {
 
 app.use('/vendor/marked.js', express.static(path.join(here, 'node_modules/marked/lib/marked.umd.js')));
 app.use('/vendor/purify.js', express.static(path.join(here, 'node_modules/dompurify/dist/purify.min.js')));
+// The terminal pane's xterm.js, loaded only once a tab is actually opened (dynamic import),
+// so every other page load is none the heavier for it.
+app.use('/vendor/xterm/', express.static(path.join(here, 'node_modules/@xterm/xterm/lib')));
+app.use('/vendor/xterm/', express.static(path.join(here, 'node_modules/@xterm/xterm/css')));
+app.use('/vendor/xterm-fit/', express.static(path.join(here, 'node_modules/@xterm/addon-fit/lib')));
+// The whole dist, not one file: katex.min.css pulls its fonts from a `fonts/` next to it.
+app.use('/vendor/katex', express.static(path.join(here, 'node_modules/katex/dist')));
 // The app's own WebView caches hard: without this it keeps serving the page it
 // first loaded, so "Restart server" and a rebuild would look like nothing happened.
 // `no-cache` still allows 304s - it only forces a revalidation.
@@ -373,6 +393,59 @@ const shape = (s, pinned) => ({
   tag: s.tag || '',
   archived: s.tag === 'archived',
   context: contextBySession.get(s.sessionId) || null,
+  // Set by Claude's own SetSessionStatus tool (lib/tools-conversation.mjs), shown as a sidebar badge.
+  status: readConvSettings().status[s.sessionId] || null,
+});
+
+// ---------- composer: "/" commands, "@" file mentions, "!" shell commands ----------
+// The "/" menu's Claude Code half: a live run answers for itself (its own process already
+// knows, and commands_changed keeps it current); a resting session or the folder chosen for a
+// new one goes through lib/commands.mjs's per-folder cache instead.
+app.get('/api/commands', async (req, res) => {
+  const run = runs.get(String(req.query.sessionId || ''));
+  if (run && !run.done && run.query) {
+    try { return res.json({ commands: await run.query.supportedCommands(), from: 'live' }); } catch {}
+  }
+  const cwd = String(req.query.cwd || '');
+  if (!cwd) return res.json({ commands: [], from: 'none' });
+  try { res.json({ commands: await commandsMod.forFolder(cwd), from: 'cache' }); }
+  catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+});
+
+// "@"'s file picker: fuzzy-ranked, and only ever inside a folder a session has actually worked in.
+app.get('/api/files/search', async (req, res) => {
+  try {
+    const cwd = String(req.query.cwd || '');
+    if (!cwd || !fs.existsSync(cwd)) return res.json({ files: [] });
+    if (!(await insideProjectRoots(cwd))) return res.status(403).json({ error: 'Outside the project folders' });
+    res.json({ files: await filesearch.search(cwd, String(req.query.q || '')) });
+  } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+});
+
+// "!": a shell command in the session's folder. One at a time per session; the output streams
+// back as newline-delimited JSON (see lib/shell.mjs for why not an EventSource).
+app.post('/api/sessions/:id/shell', async (req, res) => {
+  try {
+    const cwd = await sessionCwd(req.params.id);
+    if (!cwd || !fs.existsSync(cwd)) return res.status(400).json({ error: 'No folder for this session.' });
+    const command = String(req.body?.command || '').trim();
+    if (!command) return res.status(400).json({ error: 'Nothing to run.' });
+    res.json(shell.start(req.params.id, cwd, command));
+  } catch (e) { res.status(e.status || 500).json({ error: String(e.message || e) }); }
+});
+app.get('/api/sessions/:id/shell/:runId/stream', (req, res) => {
+  const r = shell.get(req.params.runId);
+  if (!r || r.sessionId !== req.params.id) return res.status(404).end();
+  res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+  res.write(JSON.stringify({ t: 'start', command: r.command, buffered: r.buffer }) + '\n');
+  if (r.done) { res.write(JSON.stringify({ t: 'done', exitCode: r.exitCode }) + '\n'); return res.end(); }
+  r.listeners.add(res);
+  req.on('close', () => r.listeners.delete(res));
+});
+app.post('/api/sessions/:id/shell/:runId/kill', (req, res) => {
+  const r = shell.get(req.params.runId);
+  if (!r || r.sessionId !== req.params.id) return res.status(404).json({ error: 'No such run.' });
+  res.json({ ok: shell.kill(req.params.runId) });
 });
 
 // ---------- session menu: rename, fork, archive, delete (the Desktop ⋮ menu) ----------
@@ -383,7 +456,24 @@ app.post('/api/sessions/:id/fork', async (req, res, next) => {
   try { const r = await forkSession(req.params.id, req.body?.title ? { title: String(req.body.title).slice(0, 200) } : {}); res.json({ sessionId: r.sessionId }); } catch (e) { next(e); }
 });
 app.post('/api/sessions/:id/archive', async (req, res, next) => {
-  try { await tagSession(req.params.id, req.body?.archived ? 'archived' : null); res.json({ ok: true, archived: !!req.body?.archived }); } catch (e) { next(e); }
+  try {
+    const archived = !!req.body?.archived;
+    await tagSession(req.params.id, archived ? 'archived' : null);
+    // "A session's worktree is kept until the session is archived" - then removed, but only one
+    // this app made for it (forSession), never a manual one from the Worktrees… menu, and never
+    // while a turn is still using it.
+    if (archived) {
+      const cwd = await sessionCwd(req.params.id);
+      const known = cwd && listWorktrees().find((w) => w.forSession && worktrees.sameDir(w.path, cwd));
+      if (known && !isBusy(req.params.id)) {
+        try {
+          await worktrees.remove(known, {});
+          const p = readPrefs(); p.worktrees = listWorktrees().filter((w) => !worktrees.sameDir(w.path, known.path)); writePrefs(p);
+        } catch {} // the session itself is archived either way; the worktree just outlives it this once
+      }
+    }
+    res.json({ ok: true, archived });
+  } catch (e) { next(e); }
 });
 // ---------- deleting a session puts it aside, it does not destroy it ----------
 // Sessions are the only thing here that cannot be made again, and deleting several
@@ -420,6 +510,7 @@ app.delete('/api/sessions/:id', async (req, res, next) => {
     const info = await getSessionInfo(id).catch(() => null);
     const kept = trashSession(id, info);
     if (!kept) await deleteSession(id); // nothing to move, or the move failed: do as asked
+    autofix.forgetSession(id); // gone from the sidebar: stop polling GitHub for it
     res.json({ ok: true, recoverable: !!kept });
   } catch (e) { next(e); }
 });
@@ -571,27 +662,70 @@ app.get('/api/sessions/:id/changes/diff', async (req, res) => {
   } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
 });
 
-// Rewind: a new session that is this one up to just before the chosen message, so the
-// message can be edited and sent again. The original session is left as it was.
+// Rewind: Desktop's "Rewind to this message?", with the choice of conversation, code, or both.
+// The conversation side forks - a new session that is this one up to just before the chosen
+// message, so it can be edited and sent again; the original session is left as it was, which is
+// this app's own non-destructive stand-in for Desktop's in-place truncate-and-undo. The code side
+// is genuinely destructive (Query.rewindFiles overwrites tracked files on disk), so it is
+// snapshotted first - lib/rewind.mjs - which is what "Redo rewind" restores from.
+app.post('/api/sessions/:id/rewind/preview', async (req, res) => {
+  try {
+    const uuid = String(req.body?.uuid || '');
+    const info = await getSessionInfo(req.params.id).catch(() => null);
+    if (!info?.cwd) return res.json({ canRewind: false, error: "This session doesn't support rewind." });
+    const { run } = await ensureLive(req.params.id, info.cwd);
+    res.json(await run.rewindFiles(uuid, { dryRun: true }));
+  } catch (e) { res.status(500).json({ canRewind: false, error: String(e.message || e) }); }
+});
 app.post('/api/sessions/:id/rewind', async (req, res, next) => {
   try {
     const uuid = String(req.body?.uuid || '');
+    const scope = ['conversation', 'code', 'both'].includes(req.body?.scope) ? req.body.scope : 'conversation';
     const msgs = (await getSessionMessages(req.params.id)).filter((m) => !m.parent_tool_use_id);
     const idx = msgs.findIndex((m) => m.uuid === uuid);
     if (idx < 0) return res.status(404).json({ error: 'That message is not in the transcript.' });
     const info = await getSessionInfo(req.params.id).catch(() => null);
-    if (idx === 0) return res.json({ sessionId: null, cwd: info?.cwd || null }); // nothing before it: start fresh in the same folder
+
+    let filesOk = true, fileError = null, stats = null;
+    if (scope !== 'conversation') {
+      try {
+        const { run, created } = await ensureLive(req.params.id, info?.cwd);
+        // A fresh dry run right before the real one: the preview the dialog showed may be stale by
+        // the time the person confirmed it.
+        const preview = await run.rewindFiles(uuid, { dryRun: true });
+        if (preview.canRewind) rewindStore.snapshot(req.params.id, info?.cwd, preview.filesChanged || []);
+        const r = await run.rewindFiles(uuid, { dryRun: false });
+        filesOk = !!r.canRewind;
+        fileError = r.error || (filesOk ? null : "Couldn't restore the code from this point. Try again.");
+        stats = { filesChanged: r.filesChanged || [], insertions: r.insertions || 0, deletions: r.deletions || 0 };
+        if (created) run.maybeClose(); // this run only existed to make this one request
+      } catch (e) { filesOk = false; fileError = String(e.message || e); }
+    }
+    if (scope === 'code') return filesOk ? res.json({ sessionId: null, cwd: info?.cwd || null, filesOnly: true, stats }) : res.status(500).json({ error: fileError });
+    if (scope === 'both' && !filesOk) return res.status(500).json({ error: fileError }); // nothing forked yet: say so plainly, nothing to undo
+    if (idx === 0) return res.json({ sessionId: null, cwd: info?.cwd || null, stats }); // nothing before it: start fresh in the same folder
     const title = ((info?.customTitle || info?.summary || info?.firstPrompt || 'Session').slice(0, 160)) + ' · rewound';
-    const r = await forkSession(req.params.id, { upToMessageId: msgs[idx - 1].uuid, title });
-    res.json({ sessionId: r.sessionId, cwd: info?.cwd || null });
+    try {
+      const r = await forkSession(req.params.id, { upToMessageId: msgs[idx - 1].uuid, title });
+      res.json({ sessionId: r.sessionId, cwd: info?.cwd || null, stats });
+    } catch (e) {
+      // The code side already moved (scope 'both'): say exactly that, Desktop's own words, rather
+      // than the fork's raw error - the files are not in question, only the conversation branch.
+      if (scope === 'both' && filesOk) return res.status(500).json({ error: "Restored the code, but couldn't rewind the conversation. Try rewinding again.", filesOk: true });
+      throw e;
+    }
   } catch (e) { next(e); }
 });
+app.post('/api/sessions/:id/rewind/redo', (req, res) => { res.json({ ok: rewindStore.redo(req.params.id) }); });
 
 // Folder browser for "Open folder…" (the browser has no native folder dialog).
 app.get('/api/browse', (req, res) => {
   const raw = String(req.query.path || '');
-  // The folder picker wants directories only; the file browser asks for both.
+  // The folder picker wants directories only; the file browser asks for both. The Files
+  // pane also wants dotfiles (Desktop shows them); the folder picker never asked for those,
+  // so an existing caller's view of the world does not change underneath it.
   const withFiles = req.query.files === '1';
+  const showHidden = req.query.all === '1';
   const drives = [];
   for (const L of 'CDEFGHIJKLMNOPQRSTUVWXYZ') { try { if (fs.existsSync(L + ':\\')) drives.push(L + ':\\'); } catch {} }
   if (!drives.length) drives.push('/'); // no lettered drives: macOS or Linux, where the root is the only one
@@ -599,7 +733,7 @@ app.get('/api/browse', (req, res) => {
   const p = path.resolve(raw);
   let entries = [];
   try { entries = fs.readdirSync(p, { withFileTypes: true }); } catch (e) { return res.status(400).json({ error: 'Cannot open ' + p }); }
-  const hidden = (n) => n.startsWith('.') || n.startsWith('$');
+  const hidden = (n) => (!showHidden && (n.startsWith('.') || n.startsWith('$')));
   const dirs = entries.filter((e) => e.isDirectory() && !hidden(e.name) && e.name !== 'node_modules').map((e) => ({ name: e.name, path: path.join(p, e.name) })).sort((a, b) => a.name.localeCompare(b.name));
   const files = withFiles ? entries.filter((e) => e.isFile() && !hidden(e.name)).map((e) => { let size = 0; try { size = fs.statSync(path.join(p, e.name)).size; } catch {} return { name: e.name, path: path.join(p, e.name), size }; }).sort((a, b) => a.name.localeCompare(b.name)) : [];
   const parent = path.dirname(p) === p ? '' : path.dirname(p);
@@ -642,13 +776,15 @@ app.get('/api/fs/read', async (req, res) => {
     let st;
     try { st = fs.statSync(p); } catch { return res.status(404).json({ error: 'Not on this PC' }); }
     if (!st.isFile()) return res.status(400).json({ error: 'Not a file' });
-    if (IMAGE_EXT.test(p)) return res.json({ path: p, size: st.size, image: true });
+    // mtimeMs travels with every read so the editor can refuse to overwrite a file that
+    // changed on disk since it was loaded (lib/files.mjs#writeFileChecked checks it back).
+    if (IMAGE_EXT.test(p)) return res.json({ path: p, size: st.size, mtimeMs: st.mtimeMs, image: true });
     const MAX = 512 * 1024;
     const fd = fs.openSync(p, 'r');
     const buf = Buffer.alloc(Math.min(st.size, MAX));
     fs.readSync(fd, buf, 0, buf.length, 0); fs.closeSync(fd);
-    if (buf.includes(0)) return res.json({ path: p, size: st.size, binary: true });
-    res.json({ path: p, size: st.size, truncated: st.size > MAX, text: buf.toString('utf8') });
+    if (buf.includes(0)) return res.json({ path: p, size: st.size, mtimeMs: st.mtimeMs, binary: true });
+    res.json({ path: p, size: st.size, mtimeMs: st.mtimeMs, truncated: st.size > MAX, text: buf.toString('utf8') });
   } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
 });
 
@@ -669,6 +805,50 @@ app.get('/api/git', async (req, res) => {
   if (!cwd || !fs.existsSync(cwd)) return res.json({ git: false });
   try { const r = await execFileP('git', ['-C', cwd, 'rev-parse', '--abbrev-ref', 'HEAD'], { timeout: 5000, windowsHide: true }); res.json({ git: true, branch: r.stdout.trim() }); }
   catch { res.json({ git: false }); }
+});
+
+// ---------- conversation: chapters, session status, transcript view, find in session ----------
+// A chapter's anchor is the uuid of the message it was marked on (MarkChapter's own tool_use
+// block, or a message the person pinned from its menu) - the client registers one the first
+// time it draws that message, live or from history, so reopening a session a page at a time
+// still ends up with the same list without scanning the whole transcript up front.
+app.get('/api/sessions/:id/chapters', (_req, res) => {
+  const s = readConvSettings();
+  res.json({ chapters: Object.values(s.chapters[_req.params.id] || {}).sort((a, b) => (a.at || 0) - (b.at || 0)) });
+});
+app.post('/api/sessions/:id/chapters', (req, res) => {
+  const { uuid, title } = req.body || {};
+  if (!uuid || !title) return res.status(400).json({ error: 'uuid and title are required' });
+  const s = readConvSettings();
+  (s.chapters[req.params.id] ||= {})[uuid] = { uuid, title: String(title).slice(0, 120), at: Date.now() };
+  writeConvSettings(s);
+  res.json({ ok: true });
+});
+app.delete('/api/sessions/:id/chapters/:uuid', (req, res) => {
+  const s = readConvSettings();
+  if (s.chapters[req.params.id]) { delete s.chapters[req.params.id][req.params.uuid]; writeConvSettings(s); }
+  res.json({ ok: true });
+});
+
+// The app-wide switches: the default Transcript view for a newly opened session, and whether
+// Claude's SetSessionStatus tool exists at all (lib/tools-conversation.mjs reads it per turn).
+app.get('/api/conversation/settings', (_req, res) => { const { transcriptView, autoClassify } = readConvSettings(); res.json({ transcriptView, autoClassify }); });
+app.post('/api/conversation/settings', (req, res) => {
+  const s = readConvSettings();
+  if (req.body?.transcriptView && ['normal', 'thinking', 'verbose'].includes(req.body.transcriptView)) s.transcriptView = req.body.transcriptView;
+  if (req.body?.autoClassify !== undefined) s.autoClassify = !!req.body.autoClassify;
+  writeConvSettings(s);
+  res.json({ transcriptView: s.transcriptView, autoClassify: s.autoClassify });
+});
+
+// Text anywhere in one session's own transcript (not every session - that is /api/search):
+// the find bar over an open session, reading the same file lib/history.mjs pages through.
+app.get('/api/sessions/:id/search', async (req, res, next) => {
+  try {
+    const q = String(req.query.q || '').trim();
+    if (!q) return res.json({ hits: [] });
+    res.json(await searchSession(req.params.id, q, { limit: Math.min(Number(req.query.limit) || 200, 500) }));
+  } catch (e) { next(e); }
 });
 
 // ---------- per-session worktrees ----------
@@ -708,12 +888,91 @@ app.delete('/api/worktrees', async (req, res) => {
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: worktrees.cliError(e) }); }
 });
+// A worktree for a brand-new session: made from the first message, before the session itself
+// exists, so the client cannot just wait on one request for it - `git worktree add` on a big
+// repository is minutes, and Desktop's own "step-by-step progress and a Stop button" needs
+// something to poll and something to cancel while that runs. A job, not a Run: nothing here
+// talks to Claude yet.
+const wtJobs = new Map(); // jobId -> { step, done, error, result, controller }
+app.post('/api/worktrees/begin', async (req, res) => {
+  const cwd = String(req.body?.cwd || '');
+  if (!cwd || !fs.existsSync(cwd)) return res.status(400).json({ error: 'That folder is not on this machine.' });
+  const jobId = randomUUID();
+  const controller = new AbortController();
+  const job = { step: 'branch', done: false, error: null, result: null, controller };
+  wtJobs.set(jobId, job);
+  (async () => {
+    try {
+      job.step = 'worktree';
+      const made = await worktrees.addForSession(cwd, String(req.body?.message || ''), { signal: controller.signal });
+      job.step = 'done'; job.result = made;
+      // forSession: true marks this apart from one made through the Worktrees… menu, so
+      // archiving the session can remove it and nothing else mistakes it for a manual one.
+      const p = readPrefs();
+      p.worktrees = [...listWorktrees().filter((w) => !worktrees.sameDir(w.path, made.path)), { ...made, createdAt: Date.now(), forSession: true }];
+      writePrefs(p);
+    } catch (e) {
+      job.error = controller.signal.aborted ? 'Cancelled.' : worktrees.cliError(e);
+      if (e.root && e.dir) await worktrees.abandon(e.root, e.dir).catch(() => {});
+    } finally { job.done = true; }
+    setTimeout(() => wtJobs.delete(jobId), 5 * 60 * 1000); // kept a while so a slow poll still sees the result
+  })();
+  res.json({ jobId });
+});
+app.get('/api/worktrees/begin/:jobId', (req, res) => {
+  const job = wtJobs.get(req.params.jobId);
+  if (!job) return res.status(404).json({ error: 'Gone.' });
+  res.json({ step: job.step, done: job.done, error: job.error, result: job.result });
+});
+app.post('/api/worktrees/begin/:jobId/cancel', (req, res) => {
+  const job = wtJobs.get(req.params.jobId);
+  if (!job) return res.status(404).json({ error: 'Gone.' });
+  job.controller.abort();
+  res.json({ ok: true });
+});
+
+// ---------- queued message controls, and the usage-limit queue ----------
+// Desktop's row menu on a dashed (queued) bubble: Edit in composer is Remove plus the page
+// putting the text back in the box itself, so only Remove, Send now and reorder need the CLI.
+app.post('/api/sessions/:id/queue/:msgId/remove', async (req, res) => {
+  const run = runs.get(req.params.id);
+  if (!run || run.done) return res.status(404).json({ error: 'No live turn.' });
+  try { res.json({ ok: await run.removeQueued(req.params.msgId) }); } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+});
+app.post('/api/sessions/:id/queue/:msgId/send-now', async (req, res) => {
+  const run = runs.get(req.params.id);
+  if (!run || run.done) return res.status(404).json({ error: 'No live turn.' });
+  try { res.json({ ok: await run.sendNowQueued(req.params.msgId) }); } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+});
+app.post('/api/sessions/:id/queue/reorder', async (req, res) => {
+  const run = runs.get(req.params.id);
+  if (!run || run.done) return res.status(404).json({ error: 'No live turn.' });
+  const order = Array.isArray(req.body?.order) ? req.body.order.map(String) : [];
+  try { res.json({ ok: await run.reorderQueued(order) }); } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+});
+
+// Messages typed after the plan's usage limit was reached: held above the composer (lib/limit-
+// queue.mjs) until it resets, each still editable, cancellable, or sendable right away.
+app.get('/api/sessions/:id/limit-queue', (req, res) => {
+  const limited = limitQueue.currentLimit();
+  res.json({ items: limitQueue.list(req.params.id), resetsAt: limited?.resetsAt || null });
+});
+app.post('/api/sessions/:id/limit-queue/:msgId/edit', (req, res) => {
+  const row = limitQueue.edit(req.params.id, req.params.msgId, req.body?.text);
+  if (!row) return res.status(404).json({ error: 'That message is gone.' });
+  res.json({ ok: true, item: row });
+});
+app.post('/api/sessions/:id/limit-queue/:msgId/remove', (req, res) => res.json({ ok: limitQueue.remove(req.params.id, req.params.msgId) }));
+app.post('/api/sessions/:id/limit-queue/:msgId/send-now', async (req, res) => {
+  try { res.json({ ok: await limitQueue.release(req.params.id, req.params.msgId) }); } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+});
 
 // ---------- the pull request for a session's branch ----------
 app.get('/api/sessions/:id/pr', async (req, res) => {
   const cwd = await sessionCwd(req.params.id);
   if (!cwd || !fs.existsSync(cwd)) return res.json({ has: false });
-  res.json(req.query.fresh === '1' ? (pr.forget(cwd), await pr.cached(cwd)) : await pr.cached(cwd));
+  const data = req.query.fresh === '1' ? (pr.forget(cwd), await pr.cached(cwd)) : await pr.cached(cwd);
+  res.json({ ...data, autoFix: autofix.isAutoFix(req.params.id), autoArchive: autofix.isAutoArchive(req.params.id) });
 });
 app.post('/api/sessions/:id/pr/auto-merge', async (req, res) => {
   try {
@@ -723,6 +982,70 @@ app.post('/api/sessions/:id/pr/auto-merge', async (req, res) => {
     pr.forget(cwd);
     res.json(await pr.cached(cwd));
   } catch (e) { res.status(500).json({ error: worktrees.cliError(e) }); }
+});
+
+// ---------- Files pane: fuzzy find, content search, write, Office previews, live refresh ----------
+// Every route here takes a path inside a folder some session has worked in (insideProjectRoots),
+// the same rule /api/fs/read already follows.
+app.get('/api/fs/find', async (req, res) => {
+  try {
+    const root = path.normalize(String(req.query.root || ''));
+    if (!root || !(await insideProjectRoots(root))) return res.status(403).json({ error: 'Outside the project folders' });
+    res.json(findByName(root, String(req.query.q || ''), { limit: 200 }));
+  } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+});
+app.get('/api/fs/search', async (req, res) => {
+  try {
+    const root = path.normalize(String(req.query.root || ''));
+    if (!root || !(await insideProjectRoots(root))) return res.status(403).json({ error: 'Outside the project folders' });
+    res.json(await searchContents(root, String(req.query.q || ''), { limit: 200, budgetMs: Math.min(Number(req.query.budget) || 8000, 20000) }));
+  } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+});
+// A lightweight poll for "has this changed since I loaded it" — the editor and an open
+// preview both use it, so Claude editing a file while it is open shows up without a
+// websocket or a per-file fs.watch (unreliable on a network drive, and one more thing to
+// clean up on every tab close).
+app.get('/api/fs/stat', async (req, res) => {
+  try {
+    const p = path.normalize(String(req.query.path || ''));
+    if (!p || !(await insideProjectRoots(p))) return res.status(403).json({ error: 'Outside the project folders' });
+    let st; try { st = fs.statSync(p); } catch { return res.status(404).json({ error: 'Not on this PC' }); }
+    res.json({ mtimeMs: st.mtimeMs, size: st.size });
+  } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+});
+app.post('/api/fs/write', async (req, res) => {
+  try {
+    const p = path.normalize(String(req.body?.path || ''));
+    if (!p || !path.isAbsolute(p)) return res.status(400).json({ error: 'No path' });
+    if (!(await insideProjectRoots(p))) return res.status(403).json({ error: 'Outside the project folders' });
+    const text = String(req.body?.text ?? '');
+    if (Buffer.byteLength(text, 'utf8') > 5 * 1024 * 1024) return res.status(413).json({ error: 'That file is larger than this editor saves (5 MB).' });
+    if (!fs.existsSync(p)) return res.status(404).json({ error: 'Not on this PC' });
+    const r = writeFileChecked(p, text, req.body?.mtimeMs);
+    if (!r.ok) return res.status(409).json({ error: 'The file changed on disk.', ...r });
+    res.json(r);
+  } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+});
+app.get('/api/fs/office', async (req, res) => {
+  try {
+    const p = path.normalize(String(req.query.path || ''));
+    if (!p || !(await insideProjectRoots(p))) return res.status(403).json({ error: 'Outside the project folders' });
+    res.json(officePreview(p));
+  } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+});
+// "Open in editor": VS Code's CLI if it is on PATH (so the file opens in the window
+// already there), else a vscode:// URL the page opens with its own external-link helper.
+app.post('/api/fs/open-editor', async (req, res) => {
+  const p = String(req.body?.path || '');
+  const line = Number(req.body?.line) || null;
+  if (!p) return res.status(400).json({ error: 'No path' });
+  const target = line ? `${p}:${line}` : p;
+  try {
+    await execFileP(process.platform === 'win32' ? 'code.cmd' : 'code', ['-g', target], { timeout: 4000, windowsHide: true });
+    res.json({ opened: true });
+  } catch {
+    res.json({ opened: false, url: 'vscode://file/' + p.replace(/\\/g, '/') + (line ? ':' + line : '') });
+  }
 });
 
 // ---------- keep this computer awake ----------
@@ -738,6 +1061,33 @@ app.post('/api/awake', (req, res) => {
 // that ended without saying so.
 bus.on('turn_done', () => syncAwake());
 setInterval(() => syncAwake(), 30000).unref();
+
+// ---------- terminal: a shell pane like Desktop's, several tabs, streamed over a websocket ----------
+// Authenticated the same way the rest of /api is (the app.use('/api', ...) gate above already
+// covers everything under here); the websocket itself cannot carry that header, so it rides
+// on the query string, the same compromise EventSource already uses for /sessions/:id/events.
+app.get('/api/sessions/:id/terminal/tabs', (req, res) => res.json({ tabs: terminal.listTabs(req.params.id), status: terminal.status() }));
+app.post('/api/sessions/:id/terminal/tabs', async (req, res) => {
+  try {
+    const cwd = req.body?.cwd || await sessionCwd(req.params.id) || os.homedir();
+    res.json(await terminal.createTab(req.params.id, { cwd, cols: Number(req.body?.cols) || undefined, rows: Number(req.body?.rows) || undefined }));
+  } catch (e) { res.status(500).json({ error: String(e?.message || e) }); }
+});
+app.delete('/api/sessions/:id/terminal/tabs/:tabId', (req, res) => res.json({ ok: terminal.closeTab(req.params.id, req.params.tabId) }));
+app.post('/api/sessions/:id/terminal/tabs/:tabId/restart', async (req, res) => {
+  const tab = await terminal.restartTab(req.params.id, req.params.tabId);
+  if (!tab) return res.status(404).json({ error: 'No such tab.' });
+  res.json(tab);
+});
+// "Run in terminal and send output to Claude" and Claude's own run_in_terminal tool both
+// end up here: one command, written to the tab and awaited to the shell's next prompt.
+app.post('/api/sessions/:id/terminal/tabs/:tabId/run', async (req, res) => {
+  const tab = terminal.getTab(req.params.id, req.params.tabId);
+  if (!tab) return res.status(404).json({ error: 'No such tab.' });
+  const command = String(req.body?.command || '');
+  if (!command.trim()) return res.status(400).json({ error: 'No command.' });
+  res.json(await terminal.runCommand(tab, command, { timeoutMs: Number(req.body?.timeoutMs) || undefined }));
+});
 
 // ---------- plan limits straight from the account (no turn needed) ----------
 // Same endpoint the CLI uses for the usage popover; works for claude.ai logins and
@@ -806,6 +1156,8 @@ function listPlugins() {
 // menu is right on the first paint and a refresh happens behind it.
 claudeCode.useDir(path.join(DATA_DIR, 'claude-code')); // first: asking for the menu starts Claude Code
 models.useCache(DATA_DIR);
+limitQueue.init(DATA_DIR); // messages held while the plan's usage limit is reached; survives a restart
+autofix.init(DATA_DIR); // per-PR auto-fix and auto-archive switches, and the watcher behind them
 models.warm().catch(() => {});
 // Refresh waits: a background refresh would answer with the very list it was asked to
 // replace, and the menu would need a second press to show what changed.
@@ -1047,6 +1399,17 @@ function interruptedTurn(id) {
     return null;
   } catch { return null; }
 }
+// Desktop resumes a sleep-interrupted session by itself and shows the manual banner "only when
+// resuming isn't safe". A dangling tool_call is exactly the unsafe case either way: it is a
+// half-written tool call AND the only way a pending permission prompt (never itself written to
+// the transcript) would show up here, since Claude Code does not write the tool_use until it
+// asks, and does not write the tool_result until the prompt is answered. A dangling tool_result,
+// by contrast, is a clean stopping point - a step finished, nothing left open - so it is safe
+// once it is not too stale to trust (the person may well have fixed things by hand since).
+const SAFE_RESUME_MS = 30 * 60 * 1000;
+function safeToAutoResume(interrupted) {
+  return !!interrupted && interrupted.kind === 'tool_result' && interrupted.at && Date.now() - Date.parse(interrupted.at) < SAFE_RESUME_MS;
+}
 app.get('/api/sessions/:id', async (req, res, next) => {
   try {
     let s = await getSessionInfo(req.params.id);
@@ -1057,7 +1420,8 @@ app.get('/api/sessions/:id', async (req, res, next) => {
     }
     if (!s) return res.status(404).json({ error: 'Not found' });
     const base = shape(s, new Set(readPrefs().pinned));
-    const interrupted = !base.live && !base.working ? interruptedTurn(req.params.id) : null;
+    const interruptedRaw = !base.live && !base.working ? interruptedTurn(req.params.id) : null;
+    const interrupted = interruptedRaw && { ...interruptedRaw, safe: safeToAutoResume(interruptedRaw) };
     res.json({ ...base, settings: sessionSettings(req.params.id), interrupted });
   } catch (e) { next(e); }
 });
@@ -1074,7 +1438,10 @@ app.post('/api/sessions/:id/prefs', (req, res) => {
 app.get('/api/sessions/:id/history', async (req, res, next) => {
   try {
     const before = req.query.before != null && req.query.before !== '' ? Number(req.query.before) : Infinity;
-    const page = await historyPage(req.params.id, { before: Number.isFinite(before) ? before : Infinity, until: Number(req.query.until) || 0 });
+    // Thinking/Verbose keep the thinking blocks Normal leaves out (lib/history.mjs); the
+    // savings Normal relies on (never reading them off disk) only hold when nobody asked.
+    const view = ['thinking', 'verbose'].includes(req.query.view) ? req.query.view : 'normal';
+    const page = await historyPage(req.params.id, { before: Number.isFinite(before) ? before : Infinity, until: Number(req.query.until) || 0, thinking: view !== 'normal' });
     res.json(page || { messages: [], before: 0, more: false, midTurn: false });
   } catch (e) { next(e); }
 });
@@ -1119,6 +1486,14 @@ app.post('/api/sessions/:id/send', async (req, res, next) => {
     const info = await getSessionInfo(id);
     if (!info) return res.status(404).json({ error: 'Session not found' });
     const { model, permissionMode, effort, ultracode, fast } = req.body || {};
+    // Already known to be over a plan usage limit, with nothing live to fold it into: it waits
+    // above the composer (lib/limit-queue.mjs) instead of starting a turn that only comes back
+    // rejected, and goes in by itself once the limit resets.
+    const limited = limitQueue.currentLimit();
+    if (limited) {
+      const held = limitQueue.hold(id, { id: cid, text: prompt, images, cwd: info.cwd, model, permissionMode, effort, ultracode, fast });
+      return res.json({ held: true, id: held.id, sessionId: id, resetsAt: limited.resetsAt });
+    }
     const { run } = startRun({ sessionId: id, cwd: info.cwd, prompt, images, model, permissionMode, effort, ultracode, fast, disabledMcp: readPrefs().disabledMcp || [], promptId: cid });
     joinRun(id, run); // other devices with this session open watch the turn as it streams
     res.json({ runId: run.id, sessionId: id, id: cid });
@@ -1266,8 +1641,8 @@ app.get('/api/sessions/:id/events', (req, res) => {
 });
 
 app.post('/api/permissions/:reqId', (req, res) => {
-  const { behavior, always, updatedInput } = req.body || {};
-  if (!answerPermission(req.params.reqId, behavior, !!always, updatedInput)) return res.status(404).json({ error: 'No such request (it may have expired).' });
+  const { behavior, always, updatedInput, updatedPermissions, message } = req.body || {};
+  if (!answerPermission(req.params.reqId, behavior, !!always, updatedInput, undefined, updatedPermissions, message)) return res.status(404).json({ error: 'No such request (it may have expired).' });
   res.json({ ok: true });
 });
 
@@ -1291,9 +1666,11 @@ const IMAGE_EXT = /\.(png|jpe?g|gif|webp|svg|bmp|avif|mp4|webm|mov|m4v|mp3|m4a|w
 // A page opened in the Browser asks for its CSS, scripts and pictures one by one, and each
 // of those is checked here: the list of folders is kept for a few seconds, not re-read.
 let rootsCache = { at: 0, roots: null };
-async function insideProjectRoots(p) {
+// `fresh`: read the sessions again unless that was just done - a session in a brand-new folder is
+// not in a list up to 15 seconds old, and its first pictures were refused.
+async function insideProjectRoots(p, fresh = false) {
   let roots = rootsCache.roots;
-  if (!roots || Date.now() - rootsCache.at > 15000) {
+  if (!roots || Date.now() - rootsCache.at > (fresh ? 2000 : 15000)) {
     roots = new Set([os.tmpdir()]);
     for (const s of await listSessions({ limit: 500 })) if (s.cwd && path.normalize(s.cwd).replace(/[\\/]+$/, '').length > 3) roots.add(path.normalize(s.cwd)); // a session run from a drive root would open the whole drive
     for (const w of listWorktrees()) roots.add(path.normalize(w.path)); // a worktree is newer than any transcript that names it
@@ -1310,15 +1687,21 @@ app.get('/api/file', async (req, res) => {
     if (!p) return res.status(400).json({ error: 'No path' });
     p = path.normalize(p);
     if (!fs.existsSync(p) || !fs.statSync(p).isFile()) return res.status(404).json({ error: 'Not on this PC' });
-    if (!(await insideProjectRoots(p))) return res.status(403).json({ error: 'Outside the project folders' });
+    // A file outside every session's folder is still this session's to show when its transcript
+    // names it (lib/mentioned.mjs): a picture saved to Downloads, a file sent from the Desktop.
+    const sid = /^[0-9a-f-]{36}$/i.test(String(req.query.sid || '')) ? String(req.query.sid) : '';
+    const allowed = (await insideProjectRoots(p)) || (await insideProjectRoots(p, true)) || (sid && sessionFile(sid) && transcriptMentions(sessionFile(sid), p));
+    if (!allowed) return res.status(403).json({ error: 'Outside the project folders' });
     // Pictures, video and sound play inline. Anything else - a file Claude sent, the
     // Download button in the Files panel - is handed over as a download only: served
     // inline from the app's own origin, an HTML page would run as the app. (Pages render
     // in the Browser, on an origin of their own.) Before, every other file was a 404
     // reading "Not an image on this PC", which is what a sent .html opened to.
-    if (IMAGE_EXT.test(p) && !req.query.download) return res.sendFile(p, { headers: { 'Cache-Control': 'private, max-age=60' }, acceptRanges: true });
+    // dotfiles: 'allow' - express refuses any path through a hidden folder by default, and a 'No
+    // folder' chat works in ~/.claude-anywhere/chats/<id>: every picture made there was a 500.
+    if (IMAGE_EXT.test(p) && !req.query.download) return res.sendFile(p, { dotfiles: 'allow', headers: { 'Cache-Control': 'private, max-age=60' }, acceptRanges: true });
     res.attachment(path.basename(p));
-    res.sendFile(p, { headers: { 'Cache-Control': 'private, max-age=60', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': 'sandbox' }, acceptRanges: true });
+    res.sendFile(p, { dotfiles: 'allow', headers: { 'Cache-Control': 'private, max-age=60', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': 'sandbox' }, acceptRanges: true });
   } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
 });
 
@@ -1330,6 +1713,54 @@ app.get('/api/addresses', (_req, res) => {
   }
   res.json(out.sort((a, b) => Number(b.tailscale) - Number(a.tailscale)));
 });
+
+// ---------- git actions: commit, push, draft PR, ready for review, merge, auto-fix, auto-archive ----------
+app.post('/api/sessions/:id/git/commit-push', async (req, res) => {
+  try {
+    const cwd = await sessionCwd(req.params.id);
+    if (!cwd) return res.status(400).json({ error: 'No folder for this session.' });
+    const r = await gitActions.commitAndPush(cwd, String(req.body?.message || '').trim());
+    res.json({ ok: true, ...r });
+  } catch (e) { res.status(500).json({ error: gitActions.cliError(e) }); }
+});
+app.post('/api/sessions/:id/git/commit-wip', async (req, res) => {
+  try {
+    const cwd = await sessionCwd(req.params.id);
+    if (!cwd) return res.status(400).json({ error: 'No folder for this session.' });
+    res.json({ ok: true, ...(await gitActions.commitWip(cwd)) });
+  } catch (e) { res.status(500).json({ error: gitActions.cliError(e) }); }
+});
+app.post('/api/sessions/:id/git/create-draft-pr', async (req, res) => {
+  try {
+    const cwd = await sessionCwd(req.params.id);
+    if (!cwd) return res.status(400).json({ error: 'No folder for this session.' });
+    const r = await gitActions.createDraftPr(cwd);
+    pr.forget(cwd);
+    res.json({ ok: true, ...r });
+  } catch (e) { res.status(500).json({ error: gitActions.cliError(e) }); }
+});
+app.post('/api/sessions/:id/git/mark-ready', async (req, res) => {
+  try {
+    const cwd = await sessionCwd(req.params.id);
+    if (!cwd) return res.status(400).json({ error: 'No folder for this session.' });
+    await gitActions.markReady(cwd);
+    pr.forget(cwd);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: gitActions.cliError(e) }); }
+});
+app.post('/api/sessions/:id/git/merge', async (req, res) => {
+  try {
+    const cwd = await sessionCwd(req.params.id);
+    if (!cwd) return res.status(400).json({ error: 'No folder for this session.' });
+    const method = await gitActions.mergePr(cwd);
+    pr.forget(cwd);
+    res.json({ ok: true, method });
+  } catch (e) { res.status(500).json({ error: gitActions.cliError(e) }); }
+});
+// Per-PR switches in the PR menu: Auto-fix (lib/autofix.mjs's watcher wakes the session when
+// GitHub reports trouble) and auto-archive (that watcher archives the session once the PR is done).
+app.post('/api/sessions/:id/pr/auto-fix', (req, res) => res.json({ on: autofix.setAutoFix(req.params.id, req.body?.on !== false) }));
+app.post('/api/sessions/:id/pr/auto-archive', (req, res) => res.json({ on: autofix.setAutoArchive(req.params.id, req.body?.on !== false) }));
 
 // ---------- updating from anywhere: what is running, restart the server, rebuild the app ----------
 // Runs at work. One resting between turns holds nothing up - not a restart, not leaving.
@@ -1514,6 +1945,11 @@ export function startServer({ host = HOST, port = PORT } = {}) {
     const server = app.listen(port, host, () => {
       // Hot reload is a WebSocket, and express never sees an upgrade.
       server.on('upgrade', (req, socket, head) => {
+        if ((req.url || '').split('?')[0] === '/api/terminal/ws') {
+          const q = new URL(req.url, 'http://x').searchParams;
+          if ((!access.remoteAllowed() && !access.isLocal(req)) || !knownToken(q.get('token') || '')) return socket.destroy();
+          return terminal.handleUpgrade(req, socket, head, { sessionId: q.get('session') || '', tabId: q.get('tab') || '' });
+        }
         const hit = parsePreviewUrl((req.url || '').split('?')[0]);
         if (!hit) return;
         if (!validPreviewKey(cookieOf(req, PREVIEW_COOKIE)) || (!access.remoteAllowed() && !access.isLocal(req))) return socket.destroy();

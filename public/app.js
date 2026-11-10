@@ -11,6 +11,7 @@
     answering: false,    // Claude is actively producing this turn: the "Working" pill, the status line, the Stop button
     es: null, lastEventId: -1,
     live: null,          // streaming assistant message being built
+    transcriptView: 'normal', // this session's: Normal, Thinking (reads it) or Verbose (+ tool detail)
   };
   try { state.token = localStorage.getItem('cr.token'); } catch {}
   // The desktop app opens its own window already signed in.
@@ -32,7 +33,9 @@
   marked.setOptions({ breaks: true, gfm: true });
   // Images in an answer that point at files on the PC (`![card](out/share.png)`,
   // `C:\...\shot.png`) are fetched through the server, so they show like in Desktop.
-  const localFileUrl = (href) => `/api/file?token=${encodeURIComponent(state.token || '')}&cwd=${encodeURIComponent(state.cwd || '')}&path=${encodeURIComponent(href)}`;
+  // `sid`: the session whose conversation shows the file - the server serves a file outside every
+  // session's folder (a picture in Downloads) when that session names it.
+  const localFileUrl = (href) => `/api/file?token=${encodeURIComponent(state.token || '')}&cwd=${encodeURIComponent(state.cwd || '')}&sid=${encodeURIComponent(state.current || '')}&path=${encodeURIComponent(href)}`;
   const isWebUrl = (h) => /^(https?:|data:|blob:)/i.test(h || '');
   const escapeAttr = (s) => String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
   const isVideo = (h) => /\.(mp4|webm|mov|m4v)(\?|#|$)/i.test(h || ''), isAudio = (h) => /\.(mp3|m4a|wav|ogg)(\?|#|$)/i.test(h || '');
@@ -48,6 +51,7 @@
     v.controls = true; btn.parentElement.classList.add('playing'); v.play().catch(() => {});
   });
   document.addEventListener('pause', (e) => { if (e.target.tagName === 'VIDEO' && e.target.ended) e.target.parentElement?.classList.remove('playing'); }, true);
+  const COPY_SVG = '<svg viewBox="0 0 20 20" width="14" height="14"><rect x="7" y="7" width="9" height="9" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M13 7V5.5A1.5 1.5 0 0 0 11.5 4h-6A1.5 1.5 0 0 0 4 5.5v6A1.5 1.5 0 0 0 5.5 13H7" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>';
   marked.use({ renderer: {
     image({ href, title, text }) {
       if (isVideo(href)) return videoHtml(mediaSrc(href));
@@ -69,8 +73,39 @@
         ? `<a href="#" class="file-link code" data-path="${escapeAttr(raw)}">${shown}</a>`
         : `<code>${shown}</code>`;
     },
+    // A copy button on every fenced block; the language shows if the fence named one.
+    code({ text, lang }) {
+      const language = String(lang || '').trim().split(/\s+/)[0] || '';
+      return `<div class="code-block"><div class="code-head"><span class="code-lang">${escapeAttr(language)}</span><button type="button" class="code-copy" title="Copy code">${COPY_SVG}</button></div><pre><code${language ? ` class="language-${escapeAttr(language)}"` : ''}>${escapeAttr(String(text ?? ''))}</code></pre></div>`;
+    },
   } });
-  const md = (text) => DOMPurify.sanitize(marked.parse(text || ''), { USE_PROFILES: { html: true, svg: true }, ADD_TAGS: ['video', 'audio', 'button', 'svg', 'path'], ADD_ATTR: ['loading', 'controls', 'preload', 'target', 'playsinline', 'aria-label', 'viewBox', 'fill', 'd'] });
+  // Math: $...$ and \(...\) inline, $$...$$ and \[...\] as their own block, rendered with KaTeX.
+  // The inline $ rule is Pandoc's: the opening $ needs a non-space right after it, the closing
+  // one a non-space right before and no digit right after - "$5 and $10" is two prices, read as
+  // plain text, not a range read as one formula ("5 and $10").
+  const katexHtml = (tex, displayMode) => { try { return katex.renderToString(tex, { throwOnError: false, displayMode }); } catch { return escapeAttr(tex); } };
+  marked.use({ extensions: [
+    {
+      name: 'mathBlock', level: 'block',
+      start(src) { const m = /\${2}|\\\[/.exec(src); return m?.index; },
+      tokenizer(src) {
+        const m = /^\$\$([\s\S]+?)\$\$/.exec(src) || /^\\\[([\s\S]+?)\\\]/.exec(src);
+        if (m) return { type: 'mathBlock', raw: m[0], text: m[1].trim() };
+      },
+      renderer(token) { return `<p>${katexHtml(token.text, true)}</p>`; },
+    },
+    {
+      name: 'mathInline', level: 'inline',
+      start(src) { const m = /\$(?!\s)|\\\(/.exec(src); return m?.index; },
+      tokenizer(src) {
+        let m = /^\\\(([\s\S]+?)\\\)/.exec(src);
+        if (!m) m = /^\$(?!\s)([^\n$]+?)(?<!\\)(?<!\s)\$(?!\d)/.exec(src);
+        if (m) return { type: 'mathInline', raw: m[0], text: m[1].trim() };
+      },
+      renderer(token) { return katexHtml(token.text, false); },
+    },
+  ] });
+  const md = (text) => DOMPurify.sanitize(marked.parse(text || ''), { USE_PROFILES: { html: true, svg: true, mathMl: true }, ADD_TAGS: ['video', 'audio', 'button', 'svg', 'path'], ADD_ATTR: ['loading', 'controls', 'preload', 'target', 'playsinline', 'aria-label', 'viewBox', 'fill', 'd'] });
   const stripHarness = (t) => String(t || '')
     .replace(/<(system-reminder|ide_opened_file|ide_selection|local-command-stdout|local-command-stderr|command-name|command-message|command-args|task-notification|function_results)[\s\S]*?<\/\1>/g, '')
     .replace(/<local-command-caveat>[\s\S]*?<\/local-command-caveat>/g, '')
@@ -231,6 +266,7 @@
       ? 'You have ' + v.version + (v.commit ? ' · ' + v.commit : '') + (v.update?.newer ? ' — ' + v.update.latest + ' is out' : ' — up to date')
       : 'Claude Anywhere updates itself from GitHub.';
     claudeCodeRow();
+    paintConvSettings();
   }
   // ---------- Claude Code: the one that computer runs, and a newer one from npm ----------
   // The app carries a Claude Code of its own, and a model or a fix newer than it used to wait
@@ -705,6 +741,7 @@
     if (attn) { const d = el('span', 'dot ' + attn); d.title = attn === 'needs-input' ? 'Needs your input' : attn === 'failed' ? 'The last turn failed' : 'Finished while you were away'; a.appendChild(d); }
     else if (working(s)) { const d = el('span', 'dot'); d.title = (s.busy ?? s.live) ? 'Working (started here)' : 'Working in another window'; a.appendChild(d); }
     const t = el('span', 't', s.title); t.dir = 'auto'; a.appendChild(t);
+    const badge = statusBadge(s.status); if (badge) a.appendChild(badge);
     // Found inside the transcript: the row grows a second line with what was found there.
     const found = hits.get(s.id);
     if (found && searchingInside) {
@@ -1022,13 +1059,20 @@
     const p = state.projects.find((x) => x.cwd === state.cwd);
     const name = state.cwdIsChat ? 'Chats' : state.cwd ? (p ? p.name : folderName(state.cwd)) : 'No folder';
     $('#project-name').textContent = name;
-    $('#nb-folder-name').textContent = name;
+    $('#nb-folder-name').textContent = name + (state.cwdWorktreePending ? ' · Worktree' : '');
     // branch of the chosen folder, for the chip next to it
     const br = $('#nb-branch'); br.classList.add('hidden');
-    if (state.cwd) { try { const g = await api('/git?cwd=' + encodeURIComponent(state.cwd)); if (g.git && !state.current) { br.textContent = g.branch; br.classList.remove('hidden'); } } catch {} }
+    state.cwdIsGit = false;
+    if (state.cwd) {
+      try {
+        const g = await api('/git?cwd=' + encodeURIComponent(state.cwd));
+        state.cwdIsGit = g.git;
+        if (g.git && !state.current) { br.textContent = state.cwdWorktreePending ? 'new worktree' : g.branch; br.classList.remove('hidden'); }
+      } catch {}
+    }
   }
-  function pickFolder(cwd) { state.cwd = cwd || ''; localStorage.setItem('cr.cwd', state.cwd); renderProjectChip(); pvFollow(); }
-  // Desktop's folder menu: No folder / Recent / Open folder…
+  function pickFolder(cwd) { state.cwd = cwd || ''; state.cwdWorktreePending = false; localStorage.setItem('cr.cwd', state.cwd); renderProjectChip(); pvFollow(); }
+  // Desktop's folder menu: No folder / Recent / Open folder… / (a Git folder) Worktree
   function renderProjectMenu(menu) {
     menu.innerHTML = '';
     menu.appendChild(item('No folder', '', !state.cwd, () => { pickFolder(''); menu.classList.add('hidden'); }));
@@ -1037,6 +1081,14 @@
     for (const p of state.projects.slice(0, 8)) menu.appendChild(item(p.name, '', p.cwd === state.cwd, () => { pickFolder(p.cwd); menu.classList.add('hidden'); }));
     menu.appendChild(el('div', 'menu-sep'));
     menu.appendChild(item('Open folder…', '', false, () => { menu.classList.add('hidden'); openFolderBrowser(state.cwd); }));
+    // "For a Git folder, Branch and Worktree are at the bottom of the folder menu" (Desktop) -
+    // only before a session exists: once started, the folder (and any worktree) is fixed.
+    if (state.cwd && state.cwdIsGit && !state.current) {
+      menu.appendChild(el('div', 'menu-sep'));
+      menu.appendChild(item('Worktree', 'A fresh branch for this session, named from what you ask', !!state.cwdWorktreePending, () => {
+        state.cwdWorktreePending = !state.cwdWorktreePending; renderProjectChip(); menu.classList.add('hidden');
+      }));
+    }
   }
   menuFor('#project-btn', '#project-menu', renderProjectMenu);
   menuFor('#nb-folder', '#nb-folder-menu', renderProjectMenu);
@@ -1389,7 +1441,7 @@
   $('#sb-close').addEventListener('click', () => $('#session-bar').classList.add('hidden'));
   $('#sb-pr').addEventListener('click', () => { input.value = 'Create a pull request for the current changes: commit what is uncommitted with a clear message, push the branch, and open the PR with a title and a short description.'; input.dispatchEvent(new Event('input')); submit(); });
 
-  menuFor('#session-menu-btn', '#session-menu', (m) => {
+  function renderSessionMenu(m) {
     m.innerHTML = '';
     const s = state.sessions.find((x) => x.id === state.current) || {};
     m.appendChild(item('Rename', '', false, async () => { m.classList.add('hidden'); const t = prompt('Session name', s.title || ''); if (t && t.trim()) { try { await api(`/sessions/${state.current}/rename`, { method: 'POST', body: JSON.stringify({ title: t.trim() }) }); $('#chat-title').textContent = t.trim(); loadSessions(); } catch (e) { alert(e.message); } } }, { hint: 'R' }));
@@ -1397,6 +1449,12 @@
     m.appendChild(item('Changes', '', false, () => { m.classList.add('hidden'); openChanges(); }));
     m.appendChild(item('Files', 'Look through this session\'s folder', false, () => { m.classList.add('hidden'); openFiles(); }));
     m.appendChild(item('Browser', 'Dev servers and the project\'s pages and PDFs, here and on your phone', false, () => { m.classList.add('hidden'); openPreview(); }));
+    m.appendChild(item('Terminal', 'PowerShell or your shell, right here', false, () => { m.classList.add('hidden'); toggleTerminal(); }, { hint: 'Ctrl+`' }));
+    // Session chapters: MarkChapter, or a message pinned from its own menu.
+    m.appendChild(item('Chapters', chapters.length ? String(chapters.length) : 'None yet', false, (e) => { e.stopPropagation(); renderChaptersMenu(m); }));
+    m.appendChild(item('Transcript view', TRANSCRIPT_VIEWS.find((v) => v[0] === state.transcriptView)?.[1] || 'Normal', false, (e) => { e.stopPropagation(); renderTranscriptMenu(m); }));
+
+    if (state.cwd) m.appendChild(item('Open in editor', '', false, () => { m.classList.add('hidden'); openInEditor(state.cwd); }));
     m.appendChild(item('Worktrees…', 'A second checkout on its own branch', false, () => { m.classList.add('hidden'); showWorktrees(state.cwd); }));
     m.appendChild(item('Keep computer awake', (AWAKE.find((a) => a[0] === awakeMode) || AWAKE[0])[1], false, () => {
       m.classList.add('hidden');
@@ -1406,7 +1464,28 @@
     m.appendChild(item(s.archived ? 'Unarchive' : 'Archive', '', false, async () => { m.classList.add('hidden'); try { await api(`/sessions/${state.current}/archive`, { method: 'POST', body: JSON.stringify({ archived: !s.archived }) }); await loadSessions(); if (!s.archived) location.hash = '#/'; } catch (e) { alert(e.message); } }, { hint: 'A' }));
     const del = item('Delete', '', false, async () => { m.classList.add('hidden'); if (!confirm('Delete this session? It moves to the trash and can be put back from Deleted sessions.')) return; try { await api(`/sessions/${state.current}`, { method: 'DELETE' }); await loadSessions(); location.hash = '#/'; } catch (e) { alert(e.message); } }, { hint: 'D' });
     del.classList.add('danger'); m.appendChild(del);
-  });
+  }
+  menuFor('#session-menu-btn', '#session-menu', renderSessionMenu);
+  // "Chapters" redraws the same popover with the list, and "Back" redraws the menu above -
+  // one menu element, two views, like the model menu reusing itself after Refresh.
+  function renderChaptersMenu(m) {
+    m.innerHTML = '';
+    m.appendChild(item('‹ Back', '', false, () => renderSessionMenu(m)));
+    m.appendChild(el('div', 'menu-sep'));
+    if (!chapters.length) m.appendChild(el('div', 'menu-empty', 'No chapters yet. Ask Claude to mark one, or pin a message from its menu.'));
+    for (const c of chapters) m.appendChild(item(c.title, c.at ? relTime(c.at) : '', false, async () => { m.classList.add('hidden'); await jumpToMessage(c.uuid); }));
+  }
+  // Changing it here is for this open session; Settings' General pane sets what the next one
+  // opens to. Either way a plain reopen is the simplest correct redraw: Normal never fetched the
+  // thinking a switch to Thinking or Verbose now needs.
+  function renderTranscriptMenu(m) {
+    m.innerHTML = '';
+    m.appendChild(item('‹ Back', '', false, () => renderSessionMenu(m)));
+    m.appendChild(el('div', 'menu-sep'));
+    for (const [id, name] of TRANSCRIPT_VIEWS) {
+      m.appendChild(item(name, '', id === state.transcriptView, () => { m.classList.add('hidden'); if (id !== state.transcriptView) { explicitTranscriptView = id; openSession(state.current); } }));
+    }
+  }
 
   // ---------- connectors & plugins (Desktop's panel) ----------
   const ctModal = settingsModal;
@@ -1818,6 +1897,7 @@
   }
   function stepEl(kind, name, arg) {
     const d = el('details', 'step ' + kind);
+    d.open = state.transcriptView === 'verbose'; // Verbose: tool inputs and results expanded
     const s = el('summary');
     s.appendChild(el('span', 'name', name));
     s.appendChild(el('span', 'arg', arg || ''));
@@ -1984,7 +2064,7 @@
     // The files a connector's SendUserFile delivered sit under its group without closing it.
     const g0 = msg.group, last = msg.body.lastElementChild;
     if (g0 && (g0 === last || (g0._cards?.length && g0._cards[g0._cards.length - 1] === last))) return g0;
-    const g = el('details', 'tool-group'); g.appendChild(el('summary', null, 'Working')); g.appendChild(el('div', 'group-body'));
+    const g = el('details', 'tool-group'); g.open = state.transcriptView === 'verbose'; g.appendChild(el('summary', null, 'Working')); g.appendChild(el('div', 'group-body'));
     g._names = []; g._inputs = []; msg.body.appendChild(g); msg.group = g; return g;
   }
   function setGroupSummary(g, text) { if (g) g.querySelector('summary').textContent = text; }
@@ -1996,21 +2076,37 @@
       // They are not the answer and Desktop does not show them either.
       const shown = stripHarness(block.text);
       node.innerHTML = md(shown);
+      node._raw = shown; // the source Markdown, for "Copy as Markdown" - innerText would be the rendered text
       node.classList.toggle('hidden', !shown);
+    } else if (block.type === 'thinking' || block.type === 'redacted_thinking') {
+      // Thinking/Verbose only: Normal never lets one of these reach renderBlock at all
+      // (asShown, and the server page it came from, both leave it out).
+      if (!node) { node = stepEl('thought', 'Thought', ''); msg.body.appendChild(node); msg.blocks.set(index, node); msg.group = null; }
+      const text = block.type === 'redacted_thinking' ? '' : String(block.thinking || '');
+      node.querySelector('.arg').textContent = text.slice(0, 120);
+      const b = node.querySelector('.step-body'); b.innerHTML = '';
+      b.appendChild(text ? el('div', 'prose thought-text', text) : el('div', 'muted', 'This part of the thinking is encrypted and not shown.'));
     } else if (block.type === 'tool_use') {
+      if (renderConvTool(msg, index, block)) return;
       if (!node) {
-        node = stepEl('tool', block.name, ''); node._toolId = block.id;
+        node = stepEl('tool', block.name, ''); node._toolId = block.id; node._toolName = block.name;
         if (block.name === 'SendUserFile') msg.group = null; // Desktop's own: "Sent ›" is a line of its own
         const g = toolGroupFor(msg); g.querySelector('.group-body').appendChild(node); g._names.push(block.name); g._inputs.push(block.input || {}); node._groupIndex = g._names.length - 1;
         paintGroupSummary(g);
         msg.blocks.set(index, node); msg.tools.set(block.id, node);
       } else if (node._groupIndex != null && node.parentElement?.parentElement) { const g = node.parentElement.parentElement; g._inputs[node._groupIndex] = block.input || {}; paintGroupSummary(g); }
+      updatePlanFromTool(block.name, block.input);
       const [verb, arg] = stepTitle(block.name, block.input);
       node.querySelector('.name').textContent = verb;
       node.querySelector('.arg').textContent = arg;
       const b = node.querySelector('.step-body'); b.innerHTML = '';
-      b.appendChild(el('div', 'label', 'Input'));
-      const pre = el('pre', null, typeof block.input === 'string' ? block.input : JSON.stringify(block.input, null, 2)); b.appendChild(pre);
+      if (block.name === 'TodoWrite' && block.input?.todos) {
+        b.appendChild(el('div', 'label', 'To-dos'));
+        b.appendChild(todoChecklist(block.input.todos.map((t) => ({ text: t.content, status: t.status, activeForm: t.activeForm }))));
+      } else {
+        b.appendChild(el('div', 'label', 'Input'));
+        const pre = el('pre', null, typeof block.input === 'string' ? block.input : JSON.stringify(block.input, null, 2)); b.appendChild(pre);
+      }
       // A file sent to the user is shown once the input is complete. Desktop's own SendUserFile
       // is a "Sent ›" line with the files under it, and the next tool starts a new group. Through
       // the claude-anywhere connector Desktop counts it in the group ("used a tool"); the group
@@ -2036,11 +2132,18 @@
   // picture Claude read.
   function attachResult(toolNode, result) {
     if (!toolNode) return;
+    // A card from renderConvTool (a chapter divider, a recap, a suggested task) has no
+    // step-body to show a result in - its own card already says what Claude is telling the
+    // person, and the result text is just an echo of that.
     const b = toolNode.querySelector('.step-body');
+    if (!b) return;
     b.appendChild(el('div', 'label', result.is_error ? 'Error' : 'Result'));
     const blocks = Array.isArray(result.content) ? result.content : [{ type: 'text', text: resultText(result.content) }];
     const text = blocks.filter((x) => x.type === 'text').map((x) => x.text).join('\n');
     if (text) b.appendChild(el('pre', null, text.slice(0, 20000)));
+    // TaskCreate only learns its task's id from the result (the call itself does not choose
+    // one), so the live plan box adds this task once it reads it back here.
+    if (toolNode._toolName === 'TaskCreate' && !result.is_error) planTaskCreated(text);
     // Images Claude looked at (Read on a screenshot, a browser capture…) are shown, like Desktop.
     for (const x of blocks) if (x.type === 'image') { const im = el('img', 'tool-img'); im.src = dataUrl(x); im.alt = 'image'; im.loading = 'lazy'; b.appendChild(im); }
     if (blocks.some((x) => x.type === 'image')) { toolNode.open = true; toolNode.classList.add('has-image'); }
@@ -2065,29 +2168,491 @@
     }
     if (text) b.appendChild(el('div', 'msg-text', text));
     m.appendChild(b);
-    if (queued) m.appendChild(el('div', 'queued-label', 'Queued · Claude reads it after the current step'));
-    if (uuid && !queued) {
-      // Rewind: a new session that stops just before this message, with the message back in the composer to change and resend.
-      const row = el('div', 'msg-actions user-actions');
-      const rw = el('button'); rw.type = 'button'; rw.title = 'Rewind to here'; rw.className = 'rewind';
-      rw.innerHTML = '<svg viewBox="0 0 20 20" width="15" height="15"><path d="M4 10a6 6 0 1 1 1.8 4.3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M4 6v4h4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Rewind to here</span>';
-      rw.addEventListener('click', () => rewindTo(uuid, text));
-      row.appendChild(rw); m.appendChild(row);
-    }
+    // A queued (dashed) bubble gets Desktop's row menu - Edit in composer / Send now / Remove -
+    // plus a drag handle once there are several (queueRowActions, below).
+    if (queued) { m.appendChild(el('div', 'queued-label', 'Queued · Claude reads it after the current step')); queueRowActions(m); }
+    if (uuid && !queued) rewindRow(m, uuid, text);
     return m;
   }
-  async function rewindTo(uuid, text) {
-    if (!state.current) return;
-    try {
-      const r = await api(`/sessions/${state.current}/rewind`, { method: 'POST', body: JSON.stringify({ uuid }) });
-      pendingPrefill = text || '';
-      await loadSessions();
-      if (r.sessionId) location.hash = '#/s/' + r.sessionId;
-      else { if (r.cwd) { state.cwd = r.cwd; localStorage.setItem('cr.cwd', r.cwd); } location.hash = '#/'; }
-    } catch (e) { toast(e.message); }
+  // Rewind: a new session that stops just before this message, with the message back in the composer
+  // to change and resend. A message sent in this visit gets it as Claude takes it up - the page's id
+  // for it is the transcript line's uuid - rather than only after a reload.
+  function rewindRow(m, uuid, text) {
+    if (m.querySelector('.user-actions')) return;
+    m.dataset.uuid = uuid;
+    const row = el('div', 'msg-actions user-actions');
+    const rw = el('button'); rw.type = 'button'; rw.title = 'Rewind to here'; rw.className = 'rewind';
+    rw.innerHTML = '<svg viewBox="0 0 20 20" width="15" height="15"><path d="M4 10a6 6 0 1 1 1.8 4.3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M4 6v4h4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Rewind to here</span>';
+    rw.addEventListener('click', () => openRewindDialog(uuid, text));
+    row.appendChild(rw); m.appendChild(row);
   }
   let pendingPrefill = '';
   async function markRead(id) { try { await api(`/sessions/${id}/read`, { method: 'POST' }); const s = state.sessions.find((x) => x.id === id); if (s && (s.unread || s.failed)) { s.unread = false; s.failed = false; renderSessions(); } } catch {} }
+
+  // ---------- conversation: Claude's own tools, chapters, session status ----------
+  // lib/tools-conversation.mjs gives Claude SuggestNextSteps, MarkChapter, SuggestTask and
+  // (only once Settings allows it) SetSessionStatus. A tool_use block's name arrives either
+  // short or mcp__claude-anywhere__-qualified, like every connector tool (see isSendTool above).
+  const toolNamed = (name, short) => name === short || new RegExp('__' + short + '$').test(name || '');
+
+  // A chapter's anchor is the uuid of the message it was marked on - MarkChapter's own tool_use
+  // block, or one a person pinned from its menu. Registering it here (not in the tool handler)
+  // means both paths end up the same way, and a session needs no transcript scan to offer its
+  // Chapters menu: whichever messages a page has actually drawn already know the title.
+  let chapters = [];                       // {uuid, title, at}, this session's, oldest first
+  const registeredChapters = new Set();
+  async function registerChapter(uuid, title) {
+    if (!state.current || !uuid || registeredChapters.has(uuid)) return;
+    registeredChapters.add(uuid);
+    try { await api(`/sessions/${state.current}/chapters`, { method: 'POST', body: JSON.stringify({ uuid, title }) }); chapters.push({ uuid, title, at: Date.now() }); renderChaptersBadge(); }
+    catch { registeredChapters.delete(uuid); }
+  }
+  async function loadChapters(id) {
+    chapters = []; registeredChapters.clear();
+    try { const r = await api(`/sessions/${id}/chapters`); chapters = r.chapters || []; for (const c of chapters) registeredChapters.add(c.uuid); } catch {}
+    renderChaptersBadge();
+  }
+  function renderChaptersBadge() { const b = $('#session-menu-btn'); if (b) b.classList.toggle('has-chapters', chapters.length > 0); }
+
+  // Jump to a message, loading older pages until it is on screen: a deep link, a chapter, and an
+  // older find-bar hit all land here. `loadOlder` (below) already guards against a second opening
+  // racing it, so a dumb retry loop is safe.
+  async function jumpToMessage(uuid) {
+    let tries = 0;
+    while (!thread.querySelector(`[data-uuid="${CSS.escape(uuid)}"]`) && hist.more && hist.id === state.current && tries++ < 300) await loadOlder();
+    const node = thread.querySelector(`[data-uuid="${CSS.escape(uuid)}"]`);
+    if (!node) return false;
+    stickToBottom = false;
+    node.scrollIntoView({ block: 'center' });
+    node.classList.add('jump-flash');
+    setTimeout(() => node.classList.remove('jump-flash'), 2200);
+    return true;
+  }
+
+  // The recap + next-step buttons SuggestNextSteps asked for; pressing one sends its prompt the
+  // way any typed message goes in.
+  function paintSuggestCard(card, inp) {
+    card.innerHTML = '';
+    if (inp.recap) { const r = el('div', 'prose suggest-recap'); r.dir = 'auto'; r.innerHTML = md(String(inp.recap)); card.appendChild(r); }
+    const row = el('div', 'suggest-steps');
+    for (const step of Array.isArray(inp.steps) ? inp.steps : []) {
+      if (!step?.prompt) continue;
+      const b = el('button', 'btn btn-ghost suggest-step', step.label || String(step.prompt).slice(0, 40)); b.type = 'button';
+      b.addEventListener('click', () => { input.value = step.prompt; input.dispatchEvent(new Event('input')); submit(); });
+      row.appendChild(b);
+    }
+    if (row.children.length) card.appendChild(row);
+  }
+  // SuggestTask's card: the same prompt either goes into this session or starts a new one.
+  function paintSuggestedTaskCard(card, inp) {
+    card.innerHTML = '';
+    card.appendChild(el('div', 'suggest-task-label', 'Suggested task'));
+    if (inp.title) card.appendChild(el('div', 'suggest-task-title', String(inp.title)));
+    const row = el('div', 'suggest-steps');
+    const here = el('button', 'btn btn-ghost', 'Do it here'); here.type = 'button';
+    here.addEventListener('click', () => { if (!inp.prompt) return; input.value = inp.prompt; input.dispatchEvent(new Event('input')); submit(); });
+    const fresh = el('button', 'btn btn-ghost', 'Start in a new session'); fresh.type = 'button';
+    fresh.addEventListener('click', async () => {
+      if (!inp.prompt) return;
+      fresh.disabled = true; here.disabled = true;
+      try { const r = await api('/sessions', { method: 'POST', body: JSON.stringify({ text: inp.prompt, cwd: state.cwd || '~' }) }); location.hash = '#/s/' + r.sessionId; }
+      catch (e) { fresh.disabled = false; here.disabled = false; toast(e.message); }
+    });
+    row.appendChild(here); row.appendChild(fresh);
+    card.appendChild(row);
+  }
+  // Dispatches a tool_use block to one of the three cards above, or a chapter divider - called
+  // from renderBlock before its generic "collapsed step" handling; true means it drew the block.
+  function renderConvTool(msg, index, block) {
+    const inp = block.input && typeof block.input === 'object' ? block.input : {};
+    if (toolNamed(block.name, 'MarkChapter')) {
+      let node = msg.blocks.get(index);
+      if (!node) { node = el('div', 'chapter-divider'); node._toolId = block.id; msg.body.appendChild(node); msg.blocks.set(index, node); msg.group = null; }
+      node.textContent = inp.title ? String(inp.title) : 'Chapter';
+      const uuid = msg.root?.dataset.uuid;
+      if (inp.title && uuid) registerChapter(uuid, String(inp.title));
+      return true;
+    }
+    if (toolNamed(block.name, 'SuggestNextSteps')) {
+      let node = msg.blocks.get(index);
+      if (!node) { node = el('div', 'suggest-card'); node._toolId = block.id; msg.body.appendChild(node); msg.blocks.set(index, node); msg.group = null; }
+      paintSuggestCard(node, inp);
+      return true;
+    }
+    if (toolNamed(block.name, 'SuggestTask')) {
+      let node = msg.blocks.get(index);
+      if (!node) { node = el('div', 'suggested-task-card'); node._toolId = block.id; msg.body.appendChild(node); msg.blocks.set(index, node); msg.group = null; }
+      paintSuggestedTaskCard(node, inp);
+      return true;
+    }
+    return false;
+  }
+
+  // The badge SetSessionStatus leaves on a sidebar row.
+  const STATUS_LABEL = { blocked: 'Blocked', ready_for_review: 'Ready for review', done: 'Done' };
+  function statusBadge(status) {
+    if (!status?.status) return null;
+    const b = el('span', 'status-badge status-' + status.status, STATUS_LABEL[status.status] || status.status);
+    if (status.note) b.title = status.note;
+    return b;
+  }
+
+  // This app's own small switches: the default Transcript view, and whether Claude's
+  // SetSessionStatus tool exists at all (lib/tools-conversation.mjs reads the same setting).
+  const TRANSCRIPT_VIEWS = [['normal', 'Normal'], ['thinking', 'Thinking'], ['verbose', 'Verbose']];
+  let convSettings = { transcriptView: 'normal', autoClassify: false };
+  let explicitTranscriptView = null; // set by the session menu, consumed once by the next openSession
+  async function loadConvSettings() { try { convSettings = { ...convSettings, ...(await api('/conversation/settings')) }; } catch {} }
+  function paintConvSettings() {
+    const seg = $('#set-transcript-view');
+    if (seg) {
+      seg.innerHTML = '';
+      for (const [id, name] of TRANSCRIPT_VIEWS) {
+        const b = el('button', 'set-opt' + (convSettings.transcriptView === id ? ' on' : ''), name); b.type = 'button';
+        b.addEventListener('click', async () => { convSettings.transcriptView = id; paintConvSettings(); try { await api('/conversation/settings', { method: 'POST', body: JSON.stringify({ transcriptView: id }) }); } catch {} });
+        seg.appendChild(b);
+      }
+    }
+    const wrap = $('#set-auto-classify');
+    if (wrap && !wrap.firstChild) wrap.appendChild(toggleEl(convSettings.autoClassify, async (on) => { convSettings.autoClassify = on; try { await api('/conversation/settings', { method: 'POST', body: JSON.stringify({ autoClassify: on }) }); } catch (e) { convSettings.autoClassify = !on; throw e; } }));
+    else if (wrap) { const t = wrap.firstChild; t.classList.toggle('on', convSettings.autoClassify); t.setAttribute('aria-checked', String(convSettings.autoClassify)); }
+  }
+
+  // A floating "Plan comment" button that appears over a selection made inside the plan text,
+  // the way Desktop offers one - quoting the selected lines into the feedback box rather than
+  // retyping them. Returns a cleanup to run when the card collapses.
+  function planCommentButton(planEl, feedback) {
+    const btn = el('button', 'plan-comment-btn hidden', 'Plan comment'); btn.type = 'button';
+    document.body.appendChild(btn);
+    let picked = '';
+    const place = () => {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed || !sel.rangeCount || !planEl.contains(sel.anchorNode)) { btn.classList.add('hidden'); return; }
+      picked = sel.toString().trim();
+      if (!picked) { btn.classList.add('hidden'); return; }
+      const r = sel.getRangeAt(0).getBoundingClientRect();
+      btn.style.left = Math.round(r.left + r.width / 2) + 'px';
+      btn.style.top = Math.round(r.top - 8 + window.scrollY) + 'px';
+      btn.classList.remove('hidden');
+    };
+    const onUp = () => setTimeout(place, 0);
+    planEl.addEventListener('mouseup', onUp);
+    planEl.addEventListener('touchend', onUp);
+    const onScroll = () => btn.classList.add('hidden');
+    window.addEventListener('scroll', onScroll, true);
+    btn.addEventListener('click', () => {
+      if (picked) feedback.value = (feedback.value.trim() ? feedback.value.replace(/\s+$/, '') + '\n\n' : '') + picked.split('\n').map((l) => '> ' + l).join('\n') + '\n\n';
+      btn.classList.add('hidden');
+      feedback.focus();
+      window.getSelection()?.removeAllRanges();
+    });
+    return () => { btn.remove(); window.removeEventListener('scroll', onScroll, true); };
+  }
+  // ExitPlanMode's own permission card: the plan as Markdown, Desktop's three choices, and a
+  // feedback box - "No, keep planning" sends the feedback back as the reason Claude was told no.
+  // Approving rides the mode change on the same resolution (PermissionResult.updatedPermissions,
+  // a setMode entry) rather than a second round trip through /controls.
+  function showPlanApproval(ev) {
+    const plan = String(ev.input?.plan ?? '');
+    const card = el('div', 'permission plan-card');
+    card.dataset.reqId = ev.reqId;
+    const head = el('div', 'permission-head');
+    head.appendChild(el('span', 'spark', '✱'));
+    head.appendChild(el('span', null, 'Ready to code?'));
+    card.appendChild(head);
+    const planEl = el('div', 'prose plan-text'); planEl.dir = 'auto';
+    planEl.innerHTML = plan ? md(plan) : '<p class="muted">No plan found.</p>';
+    card.appendChild(planEl);
+    const feedback = el('textarea', 'plan-feedback'); feedback.rows = 2; feedback.placeholder = 'Tell Claude what to change (optional)';
+    const actions = el('div', 'permission-actions plan-actions');
+    const accept = el('button', 'btn btn-primary', 'Yes, and auto-accept edits'); accept.type = 'button';
+    const manual = el('button', 'btn btn-ghost', 'Yes, and manually approve edits'); manual.type = 'button';
+    const keep = el('button', 'btn btn-ghost', 'No, keep planning'); keep.type = 'button';
+    const result = el('div', 'perm-result hidden');
+    // Collapses the same way a question card does (resolvePermissionCard calls it with the same
+    // (unused, behavior) shape so either card type can answer from another device).
+    card.collapse = (_unused, behavior) => {
+      if (card.classList.contains('answered')) return;
+      card.classList.add('answered');
+      head.lastChild.textContent = behavior === 'deny' ? 'Claude kept planning' : 'Plan approved';
+      actions.remove(); feedback.remove();
+      card._cleanupComment?.(); card._cleanupComment = null;
+      result.classList.add('hidden');
+    };
+    const respond = async (behavior, updatedPermissions) => {
+      actions.querySelectorAll('button').forEach((b) => b.disabled = true);
+      const body = { behavior, ...(updatedPermissions ? { updatedPermissions } : {}), ...(behavior === 'deny' ? { message: feedback.value.trim() || 'Keep planning.' } : {}) };
+      try { await api('/permissions/' + ev.reqId, { method: 'POST', body: JSON.stringify(body) }); card.collapse(null, behavior); }
+      catch (e) { result.textContent = e.message; result.classList.remove('hidden'); actions.querySelectorAll('button').forEach((b) => b.disabled = false); }
+    };
+    accept.addEventListener('click', () => respond('allow', [{ type: 'setMode', mode: 'acceptEdits', destination: 'session' }]));
+    manual.addEventListener('click', () => respond('allow', [{ type: 'setMode', mode: 'default', destination: 'session' }]));
+    keep.addEventListener('click', () => respond('deny'));
+    actions.appendChild(accept); actions.appendChild(manual); actions.appendChild(keep);
+    card.appendChild(feedback); card.appendChild(actions); card.appendChild(result);
+    thread.appendChild(card);
+    card._cleanupComment = planCommentButton(planEl, feedback);
+    return true;
+  }
+
+  // ---------- the live plan box above the composer (TodoWrite, or TaskCreate/TaskUpdate) ----------
+  // Two different shapes feed the same box: TodoWrite replaces its whole list every call (no
+  // ids), while TaskCreate/TaskUpdate build one up incrementally by id - normalised to the same
+  // {text, status, activeForm} here so one painter and one checklist widget serve both.
+  let planTodos = null;              // the latest TodoWrite call's list, or null if never used
+  const planTasks = new Map();       // taskId -> {text, status, activeForm}, from TaskCreate/TaskUpdate
+  function todoItems(items) {
+    const frag = document.createDocumentFragment();
+    for (const t of items || []) {
+      const li = el('li', 'todo-item status-' + (t.status || 'pending')); li.dir = 'auto';
+      li.appendChild(el('span', 'todo-check'));
+      li.appendChild(el('span', 'todo-label', (t.status === 'in_progress' && t.activeForm) || t.text || ''));
+      frag.appendChild(li);
+    }
+    return frag;
+  }
+  // A checklist of its own (for the TodoWrite step's "Updated the task list" row, expanded).
+  function todoChecklist(items) { const ul = el('ul', 'todo-checklist'); ul.appendChild(todoItems(items)); return ul; }
+  function planItemsNow() { return planTodos ? planTodos.map((t) => ({ text: t.content, status: t.status, activeForm: t.activeForm })) : [...planTasks.values()]; }
+  let planBoxClosedByUser = false; // respected once; the box still opens itself for a new plan
+  function paintPlanBox() {
+    const box = $('#plan-box'); if (!box) return;
+    const items = planItemsNow();
+    const wasHidden = box.classList.contains('hidden');
+    box.classList.toggle('hidden', !items.length);
+    if (!items.length) return;
+    // A <details> starts closed; open it the first time a plan appears, as Desktop shows one
+    // unasked - but leave it alone once the person has chosen to collapse it themselves.
+    if (wasHidden && !planBoxClosedByUser) box.open = true;
+    $('#plan-box-count').textContent = items.filter((t) => t.status === 'completed').length + ' of ' + items.length;
+    const list = $('#plan-box-list'); list.innerHTML = ''; list.appendChild(todoItems(items));
+  }
+  $('#plan-box')?.addEventListener('toggle', (e) => { planBoxClosedByUser = !e.target.open; });
+  // Called for every tool_use block renderBlock sees (cheap no-op for anything else); reopening a
+  // session feeds the same calls from history, in file order, so the box is right from the start.
+  function updatePlanFromTool(name, inp) {
+    if (!inp || typeof inp !== 'object') return;
+    if (name === 'TodoWrite' && Array.isArray(inp.todos)) { planTodos = inp.todos; paintPlanBox(); }
+    else if (name === 'TaskUpdate' && inp.taskId) {
+      const t = planTasks.get(inp.taskId) || { text: inp.subject || '', status: 'pending', activeForm: '' };
+      if (inp.subject) t.text = inp.subject;
+      if (inp.status) t.status = inp.status === 'deleted' ? 'completed' : inp.status;
+      if (inp.activeForm) t.activeForm = inp.activeForm;
+      planTasks.set(inp.taskId, t);
+      paintPlanBox();
+    }
+  }
+  // TaskCreate only learns its task's id from the result (the call itself does not choose one).
+  function planTaskCreated(resultText) {
+    let id, subject;
+    try { const j = JSON.parse(resultText); id = j?.task?.id; subject = j?.task?.subject; } catch {}
+    if (!id) { const m = /"id"\s*:\s*"([^"]+)"/.exec(resultText || ''); id = m && m[1]; }
+    if (!id) return;
+    const prev = planTasks.get(id);
+    planTasks.set(id, { text: subject || prev?.text || '(task)', status: prev?.status || 'pending', activeForm: prev?.activeForm || '' });
+    paintPlanBox();
+  }
+
+  // ---------- masking API keys and tokens in the transcript, with an eye to reveal ----------
+  // A MutationObserver rather than a hook in every place that writes text (renderBlock,
+  // attachResult, userMsg, the step input/result dumps…): whatever lands in the thread gets
+  // walked once, text node by text node, the moment it arrives - live deltas, a history page,
+  // a tool's raw input or result. Masked by default: the dots are what a triple-click or a
+  // screenshot gets; the real value sits in a data attribute until the eye is clicked.
+  const SECRET_RE = /(sk-ant-[A-Za-z0-9_-]{8,}|sk-[A-Za-z0-9_-]{16,}|gh[po]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}|Bearer\s+[A-Za-z0-9._~+/=-]{10,}|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)/g;
+  const EYE_SVG = '<svg viewBox="0 0 20 20" width="13" height="13"><path d="M1.5 10S5 4.5 10 4.5 18.5 10 18.5 10 15 15.5 10 15.5 1.5 10 1.5 10z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><circle cx="10" cy="10" r="2.4" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>';
+  const maskDots = (v) => '•'.repeat(Math.min(v.length, 24));
+  function secretSpan(value) {
+    const span = el('span', 'secret-mask');
+    const text = el('span', 'secret-mask-text', maskDots(value));
+    const eye = el('button', 'secret-eye'); eye.type = 'button'; eye.title = 'Show'; eye.setAttribute('aria-label', 'Show'); eye.innerHTML = EYE_SVG;
+    eye.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const revealed = span.classList.toggle('revealed');
+      text.textContent = revealed ? value : maskDots(value);
+      eye.title = eye.ariaLabel = revealed ? 'Hide' : 'Show';
+    });
+    span.appendChild(text); span.appendChild(eye);
+    return span;
+  }
+  function maskTextNode(node) {
+    const text = node.nodeValue; SECRET_RE.lastIndex = 0;
+    const frag = document.createDocumentFragment();
+    let last = 0, m, any = false;
+    while ((m = SECRET_RE.exec(text))) {
+      any = true;
+      if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
+      frag.appendChild(secretSpan(m[0]));
+      last = m.index + m[0].length;
+    }
+    if (!any) return;
+    if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+    node.parentNode?.replaceChild(frag, node);
+  }
+  // Never inside a mask already - the eye reveal sets a masked span's own text to the real
+  // value, which is itself a mutation this same observer sees; without this guard that text
+  // came right back around and got masked again, undoing the click that asked to see it.
+  const maskable = (n) => !!n.nodeValue && SECRET_RE.test(n.nodeValue) && !n.parentElement?.closest('.secret-mask, textarea, input, script, style');
+  function maskSecretsIn(root) {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, { acceptNode(n) {
+      const ok = maskable(n); SECRET_RE.lastIndex = 0;
+      return ok ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+    } });
+    const nodes = []; let n; while ((n = walker.nextNode())) nodes.push(n);
+    for (const node of nodes) maskTextNode(node);
+  }
+  new MutationObserver((muts) => {
+    for (const mut of muts) for (const node of mut.addedNodes) {
+      if (node.nodeType === Node.TEXT_NODE) { if (maskable(node)) { SECRET_RE.lastIndex = 0; maskTextNode(node); } }
+      else if (node.nodeType === Node.ELEMENT_NODE) maskSecretsIn(node);
+    }
+  }).observe(thread, { childList: true, subtree: true });
+
+  // ---------- find in the session (Ctrl/Cmd+F with a session open) ----------
+  // The server reads the whole transcript (lib/history.mjs's searchSession, the same file a
+  // history page comes from), not just what this page has loaded - jumpToMessage already knows
+  // how to load older pages until a given message is on screen, so an older hit reuses it.
+  const findBar = $('#find-bar'), findInput = $('#find-input'), findCountEl = $('#find-count');
+  let findQuery = '', findHits = [], findIndex = -1, findSeq = 0;
+  function clearFindHighlights() { thread.querySelectorAll('mark.find-hit').forEach((m) => m.replaceWith(document.createTextNode(m.textContent))); }
+  function highlightFindIn(root) {
+    if (!findQuery) return;
+    const needle = findQuery.toLowerCase();
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, { acceptNode(n) {
+      return n.nodeValue?.toLowerCase().includes(needle) && !n.parentElement?.closest('mark.find-hit, textarea, input, script, style') ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+    } });
+    const nodes = []; let n; while ((n = walker.nextNode())) nodes.push(n);
+    for (const node of nodes) {
+      const text = node.nodeValue, lower = text.toLowerCase();
+      const frag = document.createDocumentFragment();
+      let last = 0, idx;
+      while ((idx = lower.indexOf(needle, last)) >= 0) {
+        if (idx > last) frag.appendChild(document.createTextNode(text.slice(last, idx)));
+        frag.appendChild(el('mark', 'find-hit', text.slice(idx, idx + needle.length)));
+        last = idx + needle.length;
+      }
+      if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+      node.parentNode?.replaceChild(frag, node);
+    }
+  }
+  function paintFindCount() { findCountEl.textContent = findHits.length ? (findIndex + 1) + ' of ' + findHits.length : (findQuery ? 'No results' : ''); }
+  async function gotoFindHit(i) {
+    if (!findHits.length) return;
+    findIndex = ((i % findHits.length) + findHits.length) % findHits.length;
+    paintFindCount();
+    const hit = findHits[findIndex];
+    await jumpToMessage(hit.uuid);
+    highlightFindIn(thread);
+    thread.querySelectorAll('mark.find-hit.current').forEach((m) => m.classList.remove('current'));
+    // A message from before a compaction has no uuid to anchor a jump to (the same reason it
+    // offers no rewind) - the text is on screen regardless once the page loads, just not
+    // addressable by id, so the first mark now in the thread is shown instead of none at all.
+    const mark = thread.querySelector(`[data-uuid="${CSS.escape(hit.uuid || '')}"] mark.find-hit`) || thread.querySelector('mark.find-hit');
+    if (mark) { mark.classList.add('current'); mark.scrollIntoView({ block: 'center' }); }
+  }
+  async function runFind(q) {
+    const seq = ++findSeq;
+    findQuery = q; clearFindHighlights(); highlightFindIn(thread);
+    if (!q || !state.current) { findHits = []; findIndex = -1; paintFindCount(); return; }
+    try { const r = await api(`/sessions/${state.current}/search?q=${encodeURIComponent(q)}`); if (seq !== findSeq) return; findHits = r.hits || []; }
+    catch { if (seq !== findSeq) return; findHits = []; }
+    findIndex = findHits.length ? 0 : -1;
+    paintFindCount();
+    if (findIndex >= 0) await gotoFindHit(findIndex);
+  }
+  function openFind() {
+    if (!state.current) return;
+    findBar.classList.remove('hidden');
+    findInput.value = findQuery; findInput.focus(); findInput.select();
+    if (findQuery) highlightFindIn(thread);
+  }
+  function closeFind() { findBar.classList.add('hidden'); findQuery = ''; findHits = []; findIndex = -1; findSeq++; clearFindHighlights(); input.focus(); }
+  let findDebounce = null;
+  findInput.addEventListener('input', () => { clearTimeout(findDebounce); findDebounce = setTimeout(() => runFind(findInput.value.trim()), 200); });
+  findInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); gotoFindHit(findIndex + (e.shiftKey ? -1 : 1)); }
+    else if (e.key === 'Escape') { e.preventDefault(); closeFind(); }
+  });
+  $('#find-next').addEventListener('click', () => gotoFindHit(findIndex + 1));
+  $('#find-prev').addEventListener('click', () => gotoFindHit(findIndex - 1));
+  $('#find-close').addEventListener('click', closeFind);
+
+  // ---------- message context menu: Copy, Copy as Markdown, Copy link, Attach as context, Pin as chapter ----------
+  const msgCtx = $('#msg-ctx-menu');
+  // Assistant text can be several .prose blocks around tool groups; a user bubble is plain text,
+  // never Markdown, so Copy and Copy as Markdown only differ for Claude's own messages.
+  const msgPlainText = (m) => [...m.querySelectorAll('.prose, .msg-text')].map((n) => n.innerText).join('\n\n').trim();
+  const msgMarkdownText = (m) => { const p = [...m.querySelectorAll('.prose')]; return p.length ? p.map((n) => n._raw ?? n.innerText).join('\n\n').trim() : msgPlainText(m); };
+  async function copyText(text, label) { try { await navigator.clipboard.writeText(text); toast((label || 'Copied') + '.'); } catch { toast('Could not copy.'); } }
+  function placeCtxMenu(x, y) {
+    msgCtx.classList.remove('hidden');
+    if (window.matchMedia('(max-width: 860px)').matches) { msgCtx.style.left = msgCtx.style.top = ''; return; } // a bottom sheet on the phone, like the session row's menu
+    const r = msgCtx.getBoundingClientRect();
+    msgCtx.style.left = Math.min(x, window.innerWidth - r.width - 8) + 'px';
+    msgCtx.style.top = Math.min(y, window.innerHeight - r.height - 8) + 'px';
+  }
+  function showMsgCtxMenu(msgEl, x, y) {
+    const uuid = msgEl.dataset.uuid || null;
+    msgCtx.innerHTML = '';
+    const add = (label, fn, disabled) => { const b = item(label, '', false, () => { msgCtx.classList.add('hidden'); fn(); }); b.disabled = !!disabled; msgCtx.appendChild(b); };
+    add('Copy', () => copyText(msgPlainText(msgEl)));
+    add('Copy as Markdown', () => copyText(msgMarkdownText(msgEl), 'Copied as Markdown'));
+    add('Copy link', () => uuid && state.current && copyText(location.origin + '/#/s/' + state.current + '/m/' + uuid, 'Link copied'), !uuid);
+    add('Attach as context', () => attachContext({ label: msgEl.classList.contains('user') ? 'You said' : 'Claude said', text: msgPlainText(msgEl) }));
+    add('Pin as chapter', async () => { const t = prompt('Chapter title', msgPlainText(msgEl).slice(0, 60)); if (t && t.trim()) await registerChapter(uuid, t.trim()); }, !uuid);
+    placeCtxMenu(x, y);
+  }
+  // A code block or an inline codespan gets its own short menu instead of the message's one -
+  // what you right-clicked is what "Copy code" copies, not the whole bubble around it.
+  function showCodeCtxMenu(codeEl, isBlock, x, y) {
+    msgCtx.innerHTML = '';
+    msgCtx.appendChild(item(isBlock ? 'Copy code' : 'Copy inline code', '', false, () => { msgCtx.classList.add('hidden'); copyText(codeEl.innerText, 'Code copied'); }));
+    placeCtxMenu(x, y);
+  }
+  async function copyImage(src) {
+    try { const blob = await (await fetch(src)).blob(); await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]); toast('Image copied.'); }
+    catch { toast('Could not copy the image.'); }
+  }
+  function saveImage(src, name) {
+    const a = el('a'); a.href = src; a.download = name || 'image'; document.body.appendChild(a); a.click(); a.remove();
+  }
+  function showImageCtxMenu(img, x, y) {
+    msgCtx.innerHTML = '';
+    msgCtx.appendChild(item('Copy image', '', false, () => { msgCtx.classList.add('hidden'); copyImage(img.src); }));
+    msgCtx.appendChild(item('Save image', '', false, () => { msgCtx.classList.add('hidden'); saveImage(img.src, img.alt); }));
+    placeCtxMenu(x, y);
+  }
+  document.addEventListener('click', (e) => { if (!msgCtx.contains(e.target)) msgCtx.classList.add('hidden'); });
+  thread.addEventListener('contextmenu', (e) => {
+    const codeBlock = e.target.closest('pre code');
+    const inlineCode = !codeBlock && e.target.closest('code');
+    const img = !codeBlock && !inlineCode && e.target.closest('img');
+    if (codeBlock || inlineCode) { e.preventDefault(); showCodeCtxMenu(codeBlock || inlineCode, !!codeBlock, e.clientX, e.clientY); return; }
+    if (img && img.src) { e.preventDefault(); showImageCtxMenu(img, e.clientX, e.clientY); return; }
+    // A queued (dashed) message has a menu of its own - Edit, Send now, Remove - and two menus at once
+    // put this one over it.
+    const m = e.target.closest('.msg'); if (!m || m.classList.contains('queued')) return;
+    e.preventDefault(); showMsgCtxMenu(m, e.clientX, e.clientY);
+  });
+  // A copy button on every fenced code block (marked's own `code` renderer builds it).
+  thread.addEventListener('click', (e) => { const b = e.target.closest('.code-copy'); if (b) copyText(b.closest('.code-block')?.querySelector('pre code')?.innerText || '', 'Code copied'); });
+  // Triple-click selects the whole block, not just the line under the cursor.
+  thread.addEventListener('click', (e) => {
+    if (e.detail !== 3) return;
+    const pre = e.target.closest('pre'); if (!pre) return;
+    const range = document.createRange(); range.selectNodeContents(pre);
+    const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
+  });
+  let msgPressTimer = null, msgPressed = false;
+  thread.addEventListener('touchstart', (e) => {
+    const m = e.target.closest('.msg'); if (!m || m.classList.contains('queued')) return;
+    msgPressed = false;
+    const t = e.touches[0];
+    msgPressTimer = setTimeout(() => { msgPressed = true; showMsgCtxMenu(m, t.clientX, t.clientY); if (navigator.vibrate) navigator.vibrate(10); }, 450);
+  }, { passive: true });
+  for (const evn of ['touchend', 'touchmove', 'touchcancel']) thread.addEventListener(evn, () => clearTimeout(msgPressTimer), { passive: true });
+  // The tap that ends a long-press must not also open a file link or play a video under it.
+  thread.addEventListener('click', (e) => { if (msgPressed) { e.preventDefault(); e.stopPropagation(); msgPressed = false; } }, true);
 
   // ---------- live status line (the Desktop "✱ Thinking… 12s · 1.2k tokens" row) ----------
   const VERBS = ['Thinking', 'Pondering', 'Considering', 'Working', 'Reasoning', 'Composing', 'Sketching', 'Puzzling', 'Brewing', 'Cooking', 'Musing', 'Mulling'];
@@ -2161,7 +2726,14 @@
       return !!f8 && new TextDecoder().decode(f8) === 'narration';
     } catch { return false; }
   }
-  const asShown = (b) => b?.type === 'thinking' ? (isNarration(b) && b.thinking ? { type: 'text', text: b.thinking } : null) : b?.type === 'redacted_thinking' ? null : b;
+  // Normal: only narration, turned into plain text, as Desktop shows it as part of the answer.
+  // Thinking/Verbose: every thinking block, drawn as its own "Thought" row (asShown's one caller
+  // for a live block_start already keeps the thoughts off the status line regardless of view).
+  const asShown = (b) => {
+    if (b?.type === 'thinking') return state.transcriptView === 'normal' ? (isNarration(b) && b.thinking ? { type: 'text', text: b.thinking } : null) : b;
+    if (b?.type === 'redacted_thinking') return state.transcriptView === 'normal' ? null : b;
+    return b;
+  };
 
   // ---------- history: the transcript, drawn a page at a time ----------
   // One assistant row per turn, like Desktop. A page never holds a tool result without its call
@@ -2188,8 +2760,11 @@
           }
           case 'assistant': {
             const r = openRow(); let any = false;
+            if (!r.root.dataset.uuid) r.root.dataset.uuid = m.uuid; // the row's anchor for a deep link, a chapter, a pin
             m.content.forEach((b, i) => {
-              if (b.type === 'thinking' || b.type === 'redacted_thinking') return;
+              // Normal never asked the server for these blocks at all; Thinking/Verbose did, and
+              // draws them (lib/history.mjs keeps them only when the page was fetched that way).
+              if ((b.type === 'thinking' || b.type === 'redacted_thinking') && state.transcriptView === 'normal') return;
               const key = m.uuid + ':' + i;
               renderBlock(r, key, b); any = true;
               if (b.type === 'tool_use') toolNodes.set(b.id, r.blocks.get(key));
@@ -2335,7 +2910,7 @@
     const id = hist.id, seq = openSeq;
     hist.loading = true;
     try {
-      const p = await api(`/sessions/${id}/history?before=${hist.before}` + (hist.until ? '&until=' + hist.until : ''));
+      const p = await api(`/sessions/${id}/history?before=${hist.before}` + (hist.until ? '&until=' + hist.until : '') + (state.transcriptView !== 'normal' ? '&view=' + state.transcriptView : ''));
       if (seq !== openSeq) return;
       const frag = document.createDocumentFragment();
       const r = historyRenderer(frag);
@@ -2442,7 +3017,7 @@
     clearInterval(tasksTimer); tasksTimer = null;
     if (running.length && tasksOpen) tasksTimer = setInterval(() => { for (const t of running) { const n = tpList.querySelector(`[data-task="${t.id}"] .tp-elapsed`); if (n) n.textContent = fmtDur(Date.now() - t.startedAt); } }, 1000);
   }
-  function openTasks() { if (changesOpen) closeChanges(); if (previewOpen) closePreview(); if (filesOpen) closeFiles(); tasksOpen = true; tasksPanel.classList.remove('hidden'); app.classList.add('tasks-open'); paintTasks(); }
+  function openTasks() { if (changesOpen) closeChanges(); if (previewOpen) closePreview(); if (filesOpen) closeFiles(); if (terminalOpen) closeTerminal(); tasksOpen = true; tasksPanel.classList.remove('hidden'); app.classList.add('tasks-open'); paintTasks(); }
   function closeTasks() { tasksOpen = false; tasksPanel.classList.add('hidden'); app.classList.remove('tasks-open'); for (const [, o] of outputOpen) clearInterval(o.timer); outputOpen.clear(); paintTasks(); }
   $('#tasks-bar').addEventListener('click', () => tasksOpen ? closeTasks() : openTasks());
   $('#tp-close').addEventListener('click', closeTasks);
@@ -2612,13 +3187,17 @@
     const a = e.target.closest('a.file-link');
     if (!a) return;
     e.preventDefault();
-    const p = a.dataset.path || '';
+    let p = a.dataset.path || '';
+    // A `#L5-L20` (or `#L5`) suffix highlights those lines once the file opens in the Files
+    // panel, the way Desktop points at a range without pasting the lines into the message.
+    const lineM = p.match(/#L(\d+)(?:-L?(\d+))?$/i);
+    const lines = lineM ? { startLine: Number(lineM[1]), endLine: Number(lineM[2] || lineM[1]) } : {};
+    if (lineM) p = p.slice(0, lineM.index);
     const name = p.split(/[\\/]/).filter(Boolean).pop() || p;
     if (isImage(p)) return openImage(localFileUrl(p), name);
     if (isVideo(p) || isAudio(p)) return openPlayer(p, name);
     if (/\.(html?|pdf)(\?|#|$)/i.test(p)) return openFileInBrowser(absPath(p).replace(/[?#].*$/, ''));
-    openFiles();
-    openFileAt(absPath(p), name);
+    openFileAt(absPath(p), name, lines);
   });
   lbImg.addEventListener('load', fitImage);
   window.addEventListener('resize', () => { if (!lb.classList.contains('hidden')) fitImage(); });
@@ -2693,6 +3272,7 @@
     if (tasksOpen) closeTasks();
     if (changesOpen) closeChanges();
     if (filesOpen) closeFiles();
+    if (terminalOpen) closeTerminal();
     previewOpen = true; pvPanel.classList.remove('hidden'); app.classList.add('panel-open');
     // The frames cannot send our token, so the server hands out a cookie of their own first.
     try { await grant(); } catch (e) { note(e.message); }
@@ -3019,106 +3599,339 @@
     activate(t);
   }
 
-  // ---------- Files: what is in the session's folder, read only ----------
-  // The server only opens paths under a folder some session has worked in, so this
-  // cannot wander off into the rest of the disk; it still shows anything Claude can see.
-  const fxPanel = $('#files-panel'), fxList = $('#fx-list'), fxView = $('#fx-view');
-  let filesOpen = false, fxDir = '', fxHome = '';
+  // ---------- Files: a tree beside tabs, fuzzy find, edit in place, comments, Office previews ----------
+  // The server only opens paths under a folder some session has worked in, so this cannot
+  // wander off into the rest of the disk; it still shows anything Claude can see — dotfiles
+  // included, which the old folder-at-a-time browser (and the "Open folder" picker, which
+  // still hides them) did not.
+  const fxPanel = $('#files-panel'), fxTree = $('#fx-tree'), fxResults = $('#fx-results'), fxTabsEl = $('#fx-tabs'), fxView = $('#fx-view'), fxEmpty = $('#fx-empty'), fxSearch = $('#fx-search');
+  let filesOpen = false, fxRoot = '';
   const FX_FOLDER = '<svg viewBox="0 0 20 20" width="15" height="15"><path d="M3 5.5A1.5 1.5 0 0 1 4.5 4h3.2l1.6 1.8h6.2A1.5 1.5 0 0 1 17 7.3v7.2a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 3 14.5z" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>';
   const FX_FILE = '<svg viewBox="0 0 20 20" width="15" height="15"><path d="M5 3.5h6L15 7v9.5a.5.5 0 0 1-.5.5h-9a.5.5 0 0 1-.5-.5v-13z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M11 3.5V7h4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>';
   const fxSize = (n) => n < 1024 ? n + ' B' : n < 1024 * 1024 ? Math.round(n / 1024) + ' KB' : (n / 1048576).toFixed(1) + ' MB';
+  const RICH_KINDS = /\.(md|markdown|mdx|csv|tsv|json)$/i;
+  // One level of a folder, cached: a tree expands lazily, the way Desktop's does, rather than
+  // reading a whole repository (node_modules included) the moment a session opens.
+  const fxChildren = new Map();   // dir path -> { dirs, files }
+  const fxLoading = new Set();    // dir paths with a fetch in flight, so expanding twice fast does not double it
+  const fxExpanded = new Set();   // dir paths currently open
+  const fxSelected = new Set();   // paths selected in the tree (Ctrl/Cmd and Shift extend it)
+  let fxLastClicked = null, fxFlatRows = [];
+  let fxOpen = [];                // open tabs: { path, name, preview, mode, text, savedText, dirty, mtimeMs, size, commentedLines, ... }
+  let fxActivePath = null;
+  let fxPendingHighlight = null;  // { path, startLine, endLine } from a #L5-L20 link, consumed once that tab renders
+  let fxAutoSave = true; try { fxAutoSave = localStorage.getItem('cr.fx.autosave') !== '0'; } catch {}
+  let fxPoll = null;
+
+  function relPath(p) {
+    if (fxRoot && String(p).toLowerCase().startsWith(fxRoot.toLowerCase())) {
+      const r = p.slice(fxRoot.length).replace(/^[\\/]+/, '').replace(/\\/g, '/');
+      return r || baseName(p);
+    }
+    return p;
+  }
+  const activeTab = () => fxOpen.find((t) => t.path === fxActivePath);
+  const defaultModeFor = (p) => RICH_KINDS.test(p) ? 'preview' : 'edit';
+
   function openFiles() {
-    if (tasksOpen) closeTasks(); if (previewOpen) closePreview(); if (changesOpen) closeChanges();
+    if (tasksOpen) closeTasks(); if (previewOpen) closePreview(); if (changesOpen) closeChanges(); if (terminalOpen) closeTerminal();
     filesOpen = true; fxPanel.classList.remove('hidden'); app.classList.add('panel-open');
-    fxHome = state.cwd || '';
-    loadDir(fxDir || fxHome);
+    // A new session's folder starts the tree over; the same session keeps its open tabs,
+    // so switching to the Browser and back does not lose where you were.
+    if (fxRoot !== (state.cwd || '')) {
+      fxRoot = state.cwd || ''; fxChildren.clear(); fxExpanded.clear(); fxSelected.clear();
+      fxOpen = []; fxActivePath = null;
+    }
+    if (fxRoot) ensureChildren(fxRoot);
+    paintTree(); renderTabs(); renderActiveTab();
+    clearInterval(fxPoll); fxPoll = setInterval(pollActive, 1800);
   }
-  function closeFiles() { filesOpen = false; fxPanel.classList.add('hidden'); app.classList.remove('panel-open'); }
+  function closeFiles() {
+    filesOpen = false; fxPanel.classList.add('hidden'); app.classList.remove('panel-open');
+    clearInterval(fxPoll); fxPoll = null; closeFxMenu(); closeFxPopover(); removeSelBtn();
+  }
   $('#fx-close').addEventListener('click', closeFiles);
-  $('#fx-home').addEventListener('click', () => loadDir(fxHome || state.cwd || ''));
-  $('#fx-up').addEventListener('click', () => { if (!fxView.classList.contains('hidden')) return showDir(); const up = fxDir.replace(/[\\/]+$/, '').replace(/[\\/][^\\/]+$/, ''); if (up) loadDir(up); });
-  const showDir = () => { fxView.classList.add('hidden'); fxView.classList.remove('fx-rich'); fxView.textContent = ''; fxList.classList.remove('hidden'); $('#fx-path').textContent = fxDir; };
-  async function loadDir(dir) {
-    if (!dir) { fxList.innerHTML = ''; fxList.appendChild(el('div', 'muted small pad', 'This session has no folder.')); return; }
-    showDir();
-    try {
-      const d = await api('/browse?files=1&path=' + encodeURIComponent(dir));
-      fxDir = d.path; if (fxView.classList.contains('hidden')) $('#fx-path').textContent = d.path; // a file opened over the list keeps its own path
-      fxList.innerHTML = '';
-      for (const x of d.dirs) {
-        const b = el('button', 'fx-row'); b.type = 'button';
-        const ic = el('span', 'ic'); ic.innerHTML = FX_FOLDER; b.appendChild(ic);
-        b.appendChild(el('span', 'nm', x.name));
-        b.addEventListener('click', () => loadDir(x.path));
-        fxList.appendChild(b);
-      }
-      for (const x of d.files) {
-        const b = el('button', 'fx-row'); b.type = 'button';
-        const ic = el('span', 'ic'); ic.innerHTML = FX_FILE; b.appendChild(ic);
-        b.appendChild(el('span', 'nm', x.name));
-        b.appendChild(el('span', 'sz', fxSize(x.size)));
-        b.addEventListener('click', () => openFileAt(x.path, x.name));
-        fxList.appendChild(b);
-      }
-      if (!d.dirs.length && !d.files.length) fxList.appendChild(el('div', 'muted small pad', 'Nothing here.'));
-    } catch (e) { fxList.innerHTML = ''; fxList.appendChild(el('div', 'note error', e.message)); }
+  $('#fx-back').addEventListener('click', () => fxPanel.classList.remove('fx-file-open'));
+
+  // ---------- the tree: lazy, dotfiles and all ----------
+  async function ensureChildren(dir) {
+    if (fxChildren.has(dir) || fxLoading.has(dir)) return;
+    fxLoading.add(dir);
+    try { const d = await api('/browse?files=1&all=1&path=' + encodeURIComponent(dir)); fxChildren.set(dir, { dirs: d.dirs, files: d.files }); }
+    catch { fxChildren.set(dir, { dirs: [], files: [] }); }
+    fxLoading.delete(dir);
+    if (filesOpen) paintTree();
   }
-  async function openFileAt(p, name) {
+  function flattenChildren(dir, depth, out) {
+    const kids = fxChildren.get(dir);
+    if (!kids) { ensureChildren(dir); return; }
+    for (const d of kids.dirs) { out.push({ path: d.path, isDir: true, depth, name: d.name }); if (fxExpanded.has(d.path)) flattenChildren(d.path, depth + 1, out); }
+    for (const f of kids.files) out.push({ path: f.path, isDir: false, depth, name: f.name, size: f.size });
+  }
+  function paintTree() {
+    fxTree.innerHTML = '';
+    if (!fxRoot) { fxTree.appendChild(el('div', 'muted small pad', 'This session has no folder.')); return; }
+    const out = []; flattenChildren(fxRoot, 0, out); fxFlatRows = out;
+    if (!out.length && fxChildren.has(fxRoot)) { fxTree.appendChild(el('div', 'muted small pad', 'Nothing here.')); return; }
+    for (const row of out) fxTree.appendChild(buildRow(row));
+  }
+  function buildRow(row) {
+    const b = el('button', 'fx-row' + (fxSelected.has(row.path) ? ' sel' : '') + (row.path === fxActivePath ? ' active' : ''));
+    b.type = 'button'; b.style.paddingInlineStart = (8 + row.depth * 16) + 'px'; b.title = row.path;
+    const chev = el('span', 'fx-chev', row.isDir ? (fxExpanded.has(row.path) ? '▾' : '▸') : ''); b.appendChild(chev);
+    const ic = el('span', 'ic'); ic.innerHTML = row.isDir ? FX_FOLDER : FX_FILE; b.appendChild(ic);
+    b.appendChild(el('span', 'nm', row.name));
+    if (!row.isDir && row.size != null) b.appendChild(el('span', 'sz', fxSize(row.size)));
+    b.addEventListener('click', (e) => onRowClick(e, row));
+    b.addEventListener('dblclick', () => { if (!row.isDir) pinTab(row.path, row.name); });
+    b.addEventListener('contextmenu', (e) => { e.preventDefault(); onRowContext(e, row); });
+    return b;
+  }
+  function onRowClick(e, row) {
+    if (e.shiftKey && fxLastClicked) {
+      const i1 = fxFlatRows.findIndex((r) => r.path === fxLastClicked), i2 = fxFlatRows.findIndex((r) => r.path === row.path);
+      if (i1 >= 0 && i2 >= 0) { const [a, b] = i1 < i2 ? [i1, i2] : [i2, i1]; fxSelected.clear(); for (let i = a; i <= b; i++) fxSelected.add(fxFlatRows[i].path); paintTree(); return; }
+    }
+    if (e.ctrlKey || e.metaKey) { fxSelected.has(row.path) ? fxSelected.delete(row.path) : fxSelected.add(row.path); fxLastClicked = row.path; paintTree(); return; }
+    fxSelected.clear(); fxSelected.add(row.path); fxLastClicked = row.path;
+    if (row.isDir) { fxExpanded.has(row.path) ? fxExpanded.delete(row.path) : fxExpanded.add(row.path); ensureChildren(row.path); paintTree(); }
+    // A page, a PDF or an SVG is more than its source: a click renders it in the Browser, as it did
+    // before the pane had tabs. Its source is a double-click away, for editing.
+    else if (/\.(html?|pdf|svg)$/i.test(row.path)) openFileInBrowser(row.path);
+    else openPreviewTab(row.path, row.name);
+  }
+  // ---------- right-click: Open, Copy path, Attach as context, Open in terminal, Open in editor ----------
+  let fxCtxMenu = null;
+  function closeFxMenu() { fxCtxMenu?.remove(); fxCtxMenu = null; }
+  function showFxMenu(x, y, items) {
+    closeFxMenu();
+    const m = el('div', 'menu'); m.style.position = 'fixed'; m.style.left = x + 'px'; m.style.top = y + 'px'; m.style.zIndex = '60';
+    for (const it of items) m.appendChild(it);
+    document.body.appendChild(m);
+    const r = m.getBoundingClientRect();
+    if (r.right > innerWidth) m.style.left = Math.max(4, innerWidth - r.width - 4) + 'px';
+    if (r.bottom > innerHeight) m.style.top = Math.max(4, innerHeight - r.height - 4) + 'px';
+    fxCtxMenu = m;
+    setTimeout(() => document.addEventListener('mousedown', onFxMenuOutside, true), 0);
+  }
+  function onFxMenuOutside(e) { if (fxCtxMenu && !fxCtxMenu.contains(e.target)) { closeFxMenu(); document.removeEventListener('mousedown', onFxMenuOutside, true); } }
+  function onRowContext(e, row) {
+    if (!fxSelected.has(row.path)) { fxSelected.clear(); fxSelected.add(row.path); fxLastClicked = row.path; paintTree(); }
+    const targets = [...fxSelected];
+    const dir = row.isDir ? row.path : row.path.slice(0, Math.max(row.path.lastIndexOf('\\'), row.path.lastIndexOf('/')));
+    const rows = [
+      item('Open', '', false, () => { closeFxMenu(); for (const p of targets) { const r = fxFlatRows.find((x) => x.path === p); if (r && !r.isDir) openPreviewTab(p, r.name); } }),
+      item('Copy path', '', false, () => { closeFxMenu(); try { navigator.clipboard.writeText(targets.join('\n')); } catch {} }),
+      item('Attach as context', '', false, () => { closeFxMenu(); targets.forEach(attachFileAsContext); }),
+    ];
+    // Another package adds the terminal; without it there is nothing to call.
+    if (typeof openTerminalAt === 'function') rows.push(item('Open in terminal', '', false, () => { closeFxMenu(); openTerminalAt(dir); }));
+    if (!row.isDir) rows.push(item('Open in editor', '', false, () => { closeFxMenu(); openInEditor(row.path); }));
+    showFxMenu(e.clientX, e.clientY, rows);
+  }
+  async function attachFileAsContext(p) {
+    const rel = relPath(p);
+    try {
+      const r = await api('/fs/read?path=' + encodeURIComponent(p));
+      if (r.binary || r.image) return attachContext({ label: rel, text: '(binary file, ' + fxSize(r.size) + ')' });
+      attachContext({ label: rel, text: r.text.length > 8000 ? r.text.slice(0, 8000) + '\n… truncated' : r.text });
+    } catch (e) { attachContext({ label: rel, text: '(could not be read: ' + e.message + ')' }); }
+  }
+  async function openInEditor(p, line) {
+    try { const r = await api('/fs/open-editor', { method: 'POST', body: JSON.stringify({ path: p, line }) }); if (!r.opened && r.url) openExternal(r.url); }
+    catch (e) { alert(e.message); }
+  }
+
+  // ---------- fuzzy find by name, or ? to search contents ----------
+  let fxSearchTimer = null;
+  fxSearch.addEventListener('input', () => { clearTimeout(fxSearchTimer); fxSearchTimer = setTimeout(runFxSearch, 180); });
+  async function runFxSearch() {
+    const q = fxSearch.value;
+    if (!q.trim()) { fxResults.classList.add('hidden'); fxTree.classList.remove('hidden'); return; }
+    fxTree.classList.add('hidden'); fxResults.classList.remove('hidden');
+    fxResults.innerHTML = ''; fxResults.appendChild(el('div', 'muted small pad', 'Searching…'));
+    try {
+      if (q.startsWith('?')) {
+        const needle = q.slice(1);
+        if (!needle.trim()) { fxResults.innerHTML = ''; fxResults.appendChild(el('div', 'muted small pad', 'Type to search file contents.')); return; }
+        const r = await api('/fs/search?root=' + encodeURIComponent(fxRoot) + '&q=' + encodeURIComponent(needle));
+        paintSearchResults(r.hits.map((h) => ({ kind: 'content', ...h })), r.truncated);
+      } else {
+        const r = await api('/fs/find?root=' + encodeURIComponent(fxRoot) + '&q=' + encodeURIComponent(q));
+        paintSearchResults(r.hits.map((h) => ({ kind: 'name', ...h })), r.truncated);
+      }
+    } catch (e) { fxResults.innerHTML = ''; fxResults.appendChild(el('div', 'note error', e.message)); }
+  }
+  function paintSearchResults(hits, truncated) {
+    fxResults.innerHTML = '';
+    if (!hits.length) { fxResults.appendChild(el('div', 'muted small pad', 'No matches.')); return; }
+    for (const h of hits.slice(0, 200)) {
+      const b = el('button', 'fx-row'); b.type = 'button'; b.title = h.path;
+      const ic = el('span', 'ic'); ic.innerHTML = h.isDir ? FX_FOLDER : FX_FILE; b.appendChild(ic);
+      b.appendChild(el('span', 'nm', h.kind === 'content' ? relPath(h.path) + ':' + h.line : (h.rel || relPath(h.path))));
+      if (h.kind === 'content') b.appendChild(el('span', 'fx-snippet', h.text.trim()));
+      b.addEventListener('click', () => {
+        if (h.isDir) return;
+        if (h.kind === 'content') fxPendingHighlight = { path: h.path, startLine: h.line, endLine: h.line };
+        openFileAt(h.path, baseName(h.path));
+      });
+      fxResults.appendChild(b);
+    }
+    if (truncated) fxResults.appendChild(el('div', 'muted small pad', 'Showing the first matches.'));
+  }
+
+  // ---------- tabs: single-click preview (replaced by the next one), a pin keeps it ----------
+  function renderTabs() {
+    fxTabsEl.innerHTML = ''; fxTabsEl.classList.toggle('hidden', !fxOpen.length);
+    for (const tab of fxOpen) {
+      const b = el('button', 'fx-tab' + (tab.path === fxActivePath ? ' active' : '') + (tab.preview ? ' preview' : ''));
+      b.type = 'button'; b.title = tab.path;
+      b.appendChild(el('span', 'fx-tab-name', tab.name));
+      if (tab.dirty) b.appendChild(el('span', 'fx-tab-dot', '●'));
+      const x = el('button', 'fx-tab-x', '×'); x.type = 'button'; x.title = 'Close';
+      x.addEventListener('click', (e) => { e.stopPropagation(); closeFxTab(tab.path); });
+      b.appendChild(x);
+      b.addEventListener('click', () => activateTab(tab.path));
+      b.addEventListener('dblclick', () => { tab.preview = false; renderTabs(); });
+      fxTabsEl.appendChild(b);
+    }
+  }
+  function openPreviewTab(p, name) {
+    if (!filesOpen) openFiles();
+    if (fxOpen.find((t) => t.path === p)) return activateTab(p);
+    const tab = { path: p, name, preview: true, mode: defaultModeFor(p), text: null, dirty: false, commentedLines: new Set() };
+    const prev = fxOpen.find((t) => t.preview);
+    if (prev) fxOpen[fxOpen.indexOf(prev)] = tab; else fxOpen.push(tab);
+    activateTab(p);
+  }
+  function pinTab(p, name) {
+    if (!filesOpen) openFiles();
+    let tab = fxOpen.find((t) => t.path === p);
+    if (tab) tab.preview = false;
+    else { tab = { path: p, name, preview: false, mode: defaultModeFor(p), text: null, dirty: false, commentedLines: new Set() }; fxOpen.push(tab); }
+    activateTab(p);
+  }
+  function activateTab(p) { fxActivePath = p; fxPanel.classList.toggle('fx-file-open', true); renderTabs(); loadTabContent(p); }
+  function closeFxTab(p) {
+    const tab = fxOpen.find((t) => t.path === p); if (!tab) return;
+    if (tab.dirty && !tab.shellOnly) saveTab(tab, { explicit: true }).catch(() => {});
+    fxOpen = fxOpen.filter((t) => t.path !== p);
+    if (fxActivePath === p) { const next = fxOpen[fxOpen.length - 1]; fxActivePath = next ? next.path : null; if (next) loadTabContent(next.path); }
+    renderTabs(); if (!fxOpen.length) { fxPanel.classList.remove('fx-file-open'); renderActiveTab(); }
+  }
+  async function openFileAt(p, name, opts = {}) {
     // A page, a PDF or an SVG is more than its source: each renders in the Browser rather
     // than being printed as text here. (Clicking one used to show its markup, which read as
     // the file failing to open.)
     if (/\.(html?|pdf|svg)$/i.test(p)) return openFileInBrowser(p);
-    fxList.classList.add('hidden'); fxView.classList.remove('hidden', 'fx-rich'); fxView.textContent = 'Opening…'; $('#fx-path').textContent = p;
+    if (opts.startLine) fxPendingHighlight = { path: p, startLine: opts.startLine, endLine: opts.endLine || opts.startLine };
+    pinTab(p, name);
+  }
+
+  // ---------- loading and rendering the active tab ----------
+  async function loadTabContent(p) {
+    const tab = fxOpen.find((t) => t.path === p); if (!tab) return;
+    if (tab.text != null || tab.binary || tab.image || tab.officeData || tab.loading) { renderActiveTab(); return; }
+    tab.loading = true; renderActiveTab();
     try {
       const r = await api('/fs/read?path=' + encodeURIComponent(p));
-      fxView.textContent = '';
-      renderFile(p, name, r);
+      tab.loading = false; tab.mtimeMs = r.mtimeMs; tab.size = r.size;
+      if (r.image) tab.image = true;
+      else if (r.binary) {
+        if (/\.(docx|xlsx|pptx)$/i.test(p)) { try { tab.officeData = await api('/fs/office?path=' + encodeURIComponent(p)); } catch { tab.binary = true; } }
+        else tab.binary = true;
+      } else { tab.text = r.text; tab.savedText = r.text; tab.truncated = r.truncated; }
     } catch (e) {
+      tab.loading = false;
       // The server's machine does not have this file. In the app it may sit on the machine
       // this window is on instead (a file you have locally while the session runs on another
       // computer); the shell can read that, the way a dropped file is read.
-      if (/not on this pc|not found|no path/i.test(e.message || '') && await showFromShell(p, name)) return;
-      fxView.textContent = notThere(e.message);
+      if (!(/not on this pc|not found|no path/i.test(e.message || '') && await tryShellRead(tab))) tab.error = notThere(e.message);
+    }
+    if (fxActivePath === p) renderActiveTab();
+  }
+  async function tryShellRead(tab) {
+    const invoke = bridge(); if (!invoke) return false;
+    try {
+      const bytes = new Uint8Array(await invoke('dropped_file', { path: tab.path }));
+      if (/\.(png|jpe?g|gif|webp|avif|bmp|ico)$/i.test(tab.path)) { tab.shellImageUrl = URL.createObjectURL(new Blob([bytes])); tab.image = true; return true; }
+      if (bytes.includes(0)) { tab.binary = true; tab.size = bytes.length; return true; }
+      tab.text = new TextDecoder().decode(bytes); tab.savedText = tab.text; tab.shellOnly = true; // no mtimeMs from the shell: this tab never saves
+      return true;
+    } catch { return false; }
+  }
+  function renderActiveTab() {
+    const tab = activeTab();
+    $('#fx-findbar').classList.add('hidden');
+    if (!tab) { fxView.classList.add('hidden'); fxEmpty.classList.remove('hidden'); return; }
+    fxEmpty.classList.add('hidden'); fxView.classList.remove('hidden'); fxView.classList.add('fx-rich'); fxView.innerHTML = '';
+    if (tab.loading) { fxView.appendChild(el('div', 'muted small pad', 'Opening…')); return; }
+    if (tab.error) { fxView.appendChild(el('div', 'note error', tab.error)); return; }
+    // A link that asked to highlight lines needs the raw text, not a rendered preview.
+    if (fxPendingHighlight?.path === tab.path && !tab.binary && !tab.image && !tab.officeData) tab.mode = 'edit';
+    const editable = !tab.binary && !tab.image && !tab.officeData && tab.text != null && !tab.truncated && !tab.shellOnly;
+    fxView.appendChild(buildBar(tab, editable));
+    const body = el('div', 'fx-body'); fxView.appendChild(body);
+    if (tab.conflict) body.appendChild(buildConflictNote(tab));
+    if (tab.officeData) body.appendChild(renderOffice(tab.officeData));
+    else if (tab.image) {
+      const src = tab.shellImageUrl || localFileUrl(tab.path);
+      if (isVideo(tab.path)) body.appendChild(videoEl(src));
+      else if (isAudio(tab.path)) { const a = el('audio', 'md-audio'); a.controls = true; a.src = src; body.appendChild(a); }
+      else { const img = el('img'); img.src = src; img.alt = tab.name; img.addEventListener('click', () => openImage(src, tab.name)); body.appendChild(img); }
+    } else if (tab.binary) {
+      body.appendChild(el('div', 'fx-note', tab.name + ' can’t be shown here. Download it to open it with its own app.'));
+    } else if (editable && tab.mode === 'edit') {
+      body.appendChild(buildEditor(tab));
+    } else {
+      body.appendChild(renderPreviewBody(tab));
+      if (tab.truncated) body.appendChild(el('div', 'fx-note', 'Showing the first 512 KB of ' + fxSize(tab.size) + '. Too large to edit here.'));
     }
   }
-  // A file in the side panel the way Claude shows one: a document rendered, a table as a
-  // table, data indented, code as code, a recording playing - with Source to see the text
-  // behind a rendered one, and Download for anything, including what cannot be shown.
-  function renderFile(p, name, r) {
-    fxView.classList.add('fx-rich');
+  function buildBar(tab, editable) {
     const bar = el('div', 'fx-bar');
-    bar.appendChild(el('span', 'fx-kind', fileKind(p) + (r.size != null ? ' · ' + fxSize(r.size) : '')));
+    bar.appendChild(el('span', 'fx-kind', fileKind(tab.path) + (tab.size != null ? ' · ' + fxSize(tab.size) : '')));
+    if (editable && RICH_KINDS.test(tab.path)) {
+      const tog = el('button', 'link-btn small', tab.mode === 'preview' ? 'Edit' : 'Preview'); tog.type = 'button';
+      tog.addEventListener('click', () => { tab.mode = tab.mode === 'preview' ? 'edit' : 'preview'; renderActiveTab(); });
+      bar.appendChild(tog);
+    }
+    if (editable) {
+      const findBtn = el('button', 'link-btn small', 'Find'); findBtn.type = 'button';
+      findBtn.addEventListener('click', () => { if (tab.mode === 'preview') { tab.mode = 'edit'; renderActiveTab(); } openFindBar(); });
+      bar.appendChild(findBtn);
+    }
     bar.appendChild(el('span', 'fx-spacer'));
-    const dl = el('button', 'link-btn small', 'Download'); dl.type = 'button'; dl.addEventListener('click', () => downloadFile(p)); 
-    fxView.appendChild(bar);
-    const body = el('div', 'fx-body'); fxView.appendChild(body);
-    const src = localFileUrl(p);
-    const code = (text) => { const pre = el('pre', 'fx-code'); pre.textContent = text; return pre; };
-    if (r.image) {
-      if (isVideo(p)) body.appendChild(videoEl(src));
-      else if (isAudio(p)) { const a = el('audio', 'md-audio'); a.controls = true; a.src = src; body.appendChild(a); }
-      else { const img = el('img'); img.src = src; img.alt = name; img.addEventListener('click', () => openImage(src, name)); body.appendChild(img); }
-      bar.appendChild(dl); return;
+    if (editable) {
+      tab._dirtyDot = el('span', 'fx-dirty' + (tab.dirty ? '' : ' hidden'), '●'); bar.appendChild(tab._dirtyDot);
+      tab._saveBtn = el('button', 'link-btn small', 'Save'); tab._saveBtn.type = 'button'; tab._saveBtn.disabled = !tab.dirty;
+      tab._saveBtn.addEventListener('click', () => saveTab(tab, { explicit: true }));
+      bar.appendChild(tab._saveBtn);
     }
-    if (r.binary) {
-      body.appendChild(el('div', 'fx-note', name + ' can\u2019t be shown here' + (/Word|Spreadsheet|Presentation/.test(fileKind(p)) ? ' yet' : '') + '. Download it to open it with its own app.'));
-      bar.appendChild(dl); return;
-    }
-    const text = r.text + (r.truncated ? '\n\n… the first 512 KB of ' + fxSize(r.size) + '.' : '');
-    let rendered = null;
-    if (/\.(md|markdown|mdx)$/i.test(p)) { rendered = el('div', 'prose fx-md'); rendered.dir = 'auto'; rendered.innerHTML = md(r.text); }
-    else if (/\.(csv|tsv)$/i.test(p)) rendered = csvTable(r.text, /\.tsv$/i.test(p) ? '\t' : ',');
-    else if (/\.json$/i.test(p)) { try { rendered = code(JSON.stringify(JSON.parse(r.text), null, 2)); } catch {} }
-    if (rendered && !/\.json$/i.test(p)) {
-      const raw = code(text); raw.classList.add('hidden');
-      const tog = el('button', 'link-btn small', 'Source'); tog.type = 'button';
-      tog.addEventListener('click', () => { const showRaw = raw.classList.toggle('hidden') === false; rendered.classList.toggle('hidden', showRaw); tog.textContent = showRaw ? 'Preview' : 'Source'; });
-      bar.appendChild(tog); body.appendChild(rendered); body.appendChild(raw);
-    } else body.appendChild(rendered || code(text));
-    bar.appendChild(dl);
+    if (!tab.shellOnly) { const dl = el('button', 'link-btn small', 'Download'); dl.type = 'button'; dl.addEventListener('click', () => downloadFile(tab.path)); bar.appendChild(dl); }
+    return bar;
+  }
+  function buildConflictNote(tab) {
+    const n = el('div', 'note error fx-conflict');
+    n.textContent = 'Your changes to ' + tab.name + ' weren’t saved because the file changed on disk. Reopen the file to see the latest version.';
+    n.appendChild(el('br'));
+    const btn = el('button', 'link-btn small', 'Reopen'); btn.type = 'button';
+    btn.addEventListener('click', async () => { tab.conflict = false; tab.text = null; tab.savedText = null; tab.dirty = false; await loadTabContent(tab.path); });
+    n.appendChild(btn);
+    return n;
+  }
+  // A file rendered the way Claude shows one: a document, a table, indented data, code. Edit
+  // mode (the same text) is one click away unless the file is too big to edit safely.
+  function renderPreviewBody(tab) {
+    const p = tab.path, text = tab.text || '';
+    if (/\.(md|markdown|mdx)$/i.test(p)) { const d = el('div', 'prose fx-md'); d.dir = 'auto'; d.innerHTML = md(text); return d; }
+    if (/\.(csv|tsv)$/i.test(p)) return csvTable(text, /\.tsv$/i.test(p) ? '\t' : ',');
+    const pre = el('pre', 'fx-code');
+    if (/\.json$/i.test(p)) { try { pre.textContent = JSON.stringify(JSON.parse(text), null, 2); return pre; } catch {} }
+    pre.textContent = text; return pre;
   }
   // CSV as a table: quoted fields, doubled quotes and line breaks inside quotes, as
-  // spreadsheets write them. The first 500 rows; the rest is in Source and Download.
+  // spreadsheets write them. The first 500 rows; the rest is in Edit and Download.
   function csvTable(text, sep) {
     const rows = []; let row = [], f = '', q = false;
     for (let i = 0; i < text.length && rows.length < 501; i++) {
@@ -3136,6 +3949,192 @@
     if (rows.length > 500) wrap.appendChild(el('div', 'fx-note', 'The first 500 rows.'));
     return wrap;
   }
+  // Office documents: a zip of XML, read with zlib server-side (lib/files.mjs) — no viewer,
+  // just the words: paragraphs and headings, a table as a table, sheet rows, slide text.
+  function renderOffice(data) {
+    const wrap = el('div', 'fx-office prose');
+    if (data.kind === 'docx') {
+      for (const b of data.blocks) {
+        if (b.type === 'heading') wrap.appendChild(el('h' + Math.min(6, Math.max(1, b.level || 1)), null, b.text));
+        else if (b.type === 'table') {
+          const t = el('table', 'fx-table');
+          for (const row of b.rows) { const tr = el('tr'); for (const c of row) tr.appendChild(el('td', null, c)); t.appendChild(tr); }
+          const w = el('div', 'fx-table-wrap'); w.appendChild(t); wrap.appendChild(w);
+        } else if (b.text) wrap.appendChild(el('p', null, b.text));
+      }
+      if (data.truncated) wrap.appendChild(el('div', 'fx-note', 'Showing the first part of the document.'));
+    } else if (data.kind === 'xlsx') {
+      for (const sheet of data.sheets) {
+        wrap.appendChild(el('h3', null, sheet.name));
+        const t = el('table', 'fx-table');
+        for (const row of sheet.rows) { const tr = el('tr'); for (const c of row) tr.appendChild(el('td', null, c)); t.appendChild(tr); }
+        const w = el('div', 'fx-table-wrap'); w.appendChild(t); wrap.appendChild(w);
+      }
+      if (!data.sheets.length) wrap.appendChild(el('div', 'fx-note', 'No sheets found.'));
+    } else if (data.kind === 'pptx') {
+      data.slides.forEach((s, i) => {
+        const card = el('div', 'fx-slide');
+        card.appendChild(el('div', 'fx-slide-n', 'Slide ' + (i + 1)));
+        for (const t of s.texts) card.appendChild(el('div', 'fx-slide-text', t));
+        wrap.appendChild(card);
+      });
+      if (!data.slides.length) wrap.appendChild(el('div', 'fx-note', 'No slides found.'));
+    }
+    return wrap;
+  }
+
+  // ---------- edit in place: line numbers, Tab, Ctrl/Cmd+S, a + per line for comments ----------
+  const FX_LINE_H = 18;
+  function buildEditor(tab) {
+    const wrap = el('div', 'fx-editor');
+    const gutterWrap = el('div', 'fx-editor-gutter'), gutterInner = el('div', 'fx-gutter-inner');
+    gutterWrap.appendChild(gutterInner);
+    const ta = el('textarea', 'fx-editor-ta'); ta.value = tab.text ?? ''; ta.spellcheck = false; ta.wrap = 'off';
+    ta.setAttribute('autocapitalize', 'off'); ta.setAttribute('autocorrect', 'off');
+    wrap.appendChild(gutterWrap); wrap.appendChild(ta);
+    tab._ta = ta; tab._gutterInner = gutterInner;
+    function paintGutter() {
+      const n = Math.min((ta.value.match(/\n/g)?.length || 0) + 1, 20000);
+      if (gutterInner.children.length !== n) {
+        gutterInner.innerHTML = '';
+        for (let i = 1; i <= n; i++) {
+          const row = el('div', 'fx-gline'); row.style.height = FX_LINE_H + 'px'; row.dataset.n = i;
+          row.appendChild(el('span', 'fx-gnum', String(i)));
+          if (i <= 5000) {
+            const add = el('button', 'fx-gadd', '+'); add.type = 'button'; add.title = 'Add comment';
+            add.addEventListener('click', (e) => { e.stopPropagation(); openCommentPopover(tab, i, i, row); });
+            row.appendChild(add);
+          }
+          gutterInner.appendChild(row);
+        }
+      }
+      for (const row of gutterInner.children) row.classList.toggle('commented', tab.commentedLines?.has(Number(row.dataset.n)));
+    }
+    paintGutter();
+    ta.addEventListener('scroll', () => { gutterInner.style.transform = 'translateY(-' + ta.scrollTop + 'px)'; removeSelBtn(); });
+    ta.addEventListener('input', () => {
+      tab.text = ta.value; tab.dirty = tab.text !== tab.savedText; tab.preview = false;
+      paintGutter(); renderTabs();
+      if (tab._dirtyDot) tab._dirtyDot.classList.toggle('hidden', !tab.dirty);
+      if (tab._saveBtn) tab._saveBtn.disabled = !tab.dirty;
+      clearTimeout(tab._saveTimer); if (fxAutoSave) tab._saveTimer = setTimeout(() => saveTab(tab, { explicit: false }), 900);
+    });
+    ta.addEventListener('keydown', (e) => {
+      if (e.key === 'Tab') { e.preventDefault(); const s = ta.selectionStart, en = ta.selectionEnd; ta.value = ta.value.slice(0, s) + '\t' + ta.value.slice(en); ta.selectionStart = ta.selectionEnd = s + 1; ta.dispatchEvent(new Event('input')); }
+      else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); saveTab(tab, { explicit: true }); }
+      else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') { e.preventDefault(); openFindBar(); }
+    });
+    ta.addEventListener('mouseup', () => showSelectionCommentButton(tab, ta));
+    ta.addEventListener('keyup', (e) => { if (e.shiftKey) showSelectionCommentButton(tab, ta); });
+    ta.addEventListener('blur', removeSelBtn);
+    if (fxPendingHighlight?.path === tab.path) { applyHighlight(ta, fxPendingHighlight); fxPendingHighlight = null; }
+    return wrap;
+  }
+  function applyHighlight(ta, { startLine, endLine }) {
+    const lines = ta.value.split('\n');
+    let start = 0; for (let i = 0; i < startLine - 1 && i < lines.length; i++) start += lines[i].length + 1;
+    let end = start; for (let i = startLine - 1; i < (endLine || startLine) && i < lines.length; i++) end += lines[i].length + 1;
+    end = Math.max(start, end - 1);
+    ta.focus(); ta.setSelectionRange(start, end);
+    ta.scrollTop = Math.max(0, (startLine - 1) * FX_LINE_H - ta.clientHeight / 2);
+  }
+  async function saveTab(tab, { explicit } = {}) {
+    if (!tab.dirty && !explicit) return;
+    if (tab._saving) return; tab._saving = true;
+    try {
+      const r = await api('/fs/write', { method: 'POST', body: JSON.stringify({ path: tab.path, text: tab.text, mtimeMs: tab.mtimeMs }) });
+      tab.savedText = tab.text; tab.mtimeMs = r.mtimeMs; tab.size = r.size; tab.dirty = false; tab.conflict = false;
+      if (tab._dirtyDot) tab._dirtyDot.classList.add('hidden'); if (tab._saveBtn) tab._saveBtn.disabled = true;
+      renderTabs();
+    } catch (e) {
+      if (e.status === 409) { tab.conflict = true; if (fxActivePath === tab.path) renderActiveTab(); }
+    } finally { tab._saving = false; }
+  }
+  // Find in the open file: Ctrl/Cmd+F inside the panel, scoped to whichever tab is open.
+  let fxFindMatches = [], fxFindIndex = -1;
+  function openFindBar() {
+    const tab = activeTab(); if (!tab?._ta) return;
+    $('#fx-findbar').classList.remove('hidden');
+    const input = $('#fx-find-input'); input.value = ''; input.focus(); updateFindMatches();
+  }
+  function closeFindBar() { $('#fx-findbar').classList.add('hidden'); fxFindMatches = []; fxFindIndex = -1; }
+  function updateFindMatches() {
+    const ta = activeTab()?._ta; const q = $('#fx-find-input').value;
+    fxFindMatches = [];
+    if (ta && q) { const hay = ta.value.toLowerCase(), needle = q.toLowerCase(); let i = 0; while ((i = hay.indexOf(needle, i)) !== -1) { fxFindMatches.push(i); i += Math.max(1, needle.length); } }
+    if (fxFindMatches.length) gotoMatch(0, q.length); else $('#fx-find-count').textContent = q ? '0/0' : '';
+  }
+  function gotoMatch(idx, len) {
+    const ta = activeTab()?._ta; if (!ta || !fxFindMatches.length) return;
+    fxFindIndex = (idx + fxFindMatches.length) % fxFindMatches.length;
+    const start = fxFindMatches[fxFindIndex];
+    ta.focus(); ta.setSelectionRange(start, start + len);
+    ta.scrollTop = Math.max(0, (ta.value.slice(0, start).match(/\n/g)?.length || 0) * FX_LINE_H - ta.clientHeight / 2);
+    $('#fx-find-count').textContent = (fxFindIndex + 1) + '/' + fxFindMatches.length;
+  }
+  $('#fx-find-input').addEventListener('input', updateFindMatches);
+  $('#fx-find-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); gotoMatch(fxFindIndex + (e.shiftKey ? -1 : 1), $('#fx-find-input').value.length); }
+    else if (e.key === 'Escape') { e.preventDefault(); closeFindBar(); activeTab()?._ta?.focus(); }
+  });
+  $('#fx-find-next').addEventListener('click', () => gotoMatch(fxFindIndex + 1, $('#fx-find-input').value.length));
+  $('#fx-find-prev').addEventListener('click', () => gotoMatch(fxFindIndex - 1, $('#fx-find-input').value.length));
+  $('#fx-find-close').addEventListener('click', closeFindBar);
+  fxPanel.addEventListener('keydown', (e) => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f' && activeTab()?._ta) { e.preventDefault(); openFindBar(); } });
+
+  // ---------- comments: the + beside a line, or a selection, attach a note to the next message ----------
+  let fxSelBtn = null;
+  function removeSelBtn() { fxSelBtn?.remove(); fxSelBtn = null; }
+  function showSelectionCommentButton(tab, ta) {
+    removeSelBtn();
+    const s = ta.selectionStart, e2 = ta.selectionEnd; if (s === e2) return;
+    const l1 = ta.value.slice(0, s).split('\n').length, l2 = ta.value.slice(0, e2).split('\n').length;
+    const btn = el('button', 'fx-sel-comment', 'Add comment'); btn.type = 'button';
+    const r = ta.getBoundingClientRect();
+    const top = r.top + (Math.max(l1, l2) - 1) * FX_LINE_H - ta.scrollTop;
+    btn.style.left = Math.max(r.left, r.right - 118) + 'px'; btn.style.top = Math.max(r.top, Math.min(top, r.bottom - 26)) + 'px';
+    btn.addEventListener('click', () => { openCommentPopover(tab, Math.min(l1, l2), Math.max(l1, l2), btn); removeSelBtn(); });
+    document.body.appendChild(btn); fxSelBtn = btn;
+  }
+  let fxPopover = null;
+  function closeFxPopover() { fxPopover?.remove(); fxPopover = null; document.removeEventListener('mousedown', onFxPopoverOutside, true); }
+  function onFxPopoverOutside(e) { if (fxPopover && !fxPopover.contains(e.target)) closeFxPopover(); }
+  function openCommentPopover(tab, l1, l2, anchorEl) {
+    closeFxPopover();
+    const pop = el('div', 'fx-comment-pop');
+    const ta2 = el('textarea', 'fx-comment-ta'); ta2.placeholder = 'Add a comment for Claude…'; ta2.rows = 3;
+    pop.appendChild(ta2);
+    const row = el('div', 'fx-comment-row');
+    const cancel = el('button', 'link-btn small', 'Cancel'); cancel.type = 'button'; cancel.addEventListener('click', closeFxPopover);
+    const add = el('button', 'btn btn-primary small', 'Add comment'); add.type = 'button';
+    add.addEventListener('click', () => {
+      const text = ta2.value.trim(); if (!text) return;
+      const label = relPath(tab.path) + '#L' + l1 + (l2 > l1 ? '-L' + l2 : '');
+      attachContext({ label, text });
+      tab.commentedLines ||= new Set(); for (let i = l1; i <= l2; i++) tab.commentedLines.add(i);
+      closeFxPopover(); if (fxActivePath === tab.path) renderActiveTab();
+    });
+    row.appendChild(cancel); row.appendChild(add); pop.appendChild(row);
+    document.body.appendChild(pop);
+    const r = (anchorEl || tab._ta).getBoundingClientRect();
+    pop.style.left = Math.max(4, Math.min(r.left, innerWidth - 300)) + 'px'; pop.style.top = Math.max(4, Math.min(r.top, innerHeight - 160)) + 'px';
+    ta2.focus(); fxPopover = pop;
+    setTimeout(() => document.addEventListener('mousedown', onFxPopoverOutside, true), 0);
+  }
+
+  // ---------- live refresh: an open file (and its preview) catches up when it changes on disk ----------
+  async function pollActive() {
+    if (!filesOpen) return;
+    const tab = activeTab(); if (!tab || tab.shellOnly || (tab.text == null && !tab.officeData && !tab.image)) return;
+    try {
+      const r = await api('/fs/stat?path=' + encodeURIComponent(tab.path));
+      if (r.mtimeMs === tab.mtimeMs) return;
+      if (tab.dirty) { return; } // left alone; the next save's own check is what catches this
+      tab.text = null; tab.officeData = null; tab.binary = false; tab.image = false; tab.savedText = null;
+      await loadTabContent(tab.path);
+    } catch {}
+  }
+
   // Download by the server's /api/file?download: in the app, the system browser saves it
   // (a webview does not always save a download); in a browser, an ordinary download.
   function downloadFile(p) {
@@ -3143,30 +4142,251 @@
     if (window.__TAURI__?.opener?.openUrl) return openExternal(location.origin + url);
     const a = el('a'); a.href = url; a.download = baseName(p); document.body.appendChild(a); a.click(); a.remove();
   }
-
-  // A file the server's machine cannot see, read from the window's machine through the shell.
-  // Only in the app (a plain browser has no shell) and only as a fallback, so the ordinary
-  // path is untouched.
-  async function showFromShell(p, name) {
-    const invoke = bridge(); if (!invoke) return false;
-    try {
-      const bytes = new Uint8Array(await invoke('dropped_file', { path: p }));
-      fxView.textContent = '';
-      if (/\.(png|jpe?g|gif|webp|avif|bmp|ico)$/i.test(p)) {
-        const url = URL.createObjectURL(new Blob([bytes]));
-        const img = el('img'); img.src = url; img.alt = name; img.addEventListener('click', () => openImage(url, name)); fxView.appendChild(img); return true;
-      }
-      if (bytes.includes(0)) { fxView.textContent = name + ' is not text (' + fxSize(bytes.length) + ').'; return true; }
-      fxView.textContent = new TextDecoder().decode(bytes);
-      return true;
-    } catch { return false; }
-  }
   // "Not on this PC" on its own reads as a bug. Say whose disk was looked at and why it can
   // differ from the window you are in.
   function notThere(msg) {
     if (!/not on this pc/i.test(msg || '')) return msg;
     const host = state.host && state.host !== 'this machine' ? '“' + state.host + '”' : 'the computer running this session';
     return 'This file is not on ' + host + ', which is where the session runs. If it is on another computer, open that one from the account menu.';
+  }
+  // ---------- the pane's own menu: Auto save, on by default ----------
+  menuFor('#fx-menu-btn', '#fx-menu-pop', (m) => {
+    m.innerHTML = '';
+    const row = el('div', 'menu-item menu-switch');
+    row.appendChild(el('span', 'menu-label', 'Auto save'));
+    row.appendChild(el('span', 'desc', 'Saves a file a moment after you stop typing.'));
+    const sw = toggleEl(fxAutoSave, (on) => { fxAutoSave = on; try { localStorage.setItem('cr.fx.autosave', on ? '1' : '0'); } catch {} });
+    sw.setAttribute('aria-label', 'Toggle Auto save'); row.appendChild(sw);
+    m.appendChild(row);
+  });
+  // ---------- the tree column drags wider or narrower, inside the panel itself ----------
+  (function fxSideResize() {
+    const h = $('#fx-side-resizer'); if (!h) return;
+    let w = 0; try { w = Number(localStorage.getItem('cr.fx.sidew')) || 0; } catch {}
+    const apply = (px) => fxPanel.style.setProperty('--fx-side-w', px + 'px');
+    if (w) apply(w);
+    h.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault(); h.setPointerCapture(e.pointerId);
+      const x0 = e.clientX, w0 = $('#fx-side').getBoundingClientRect().width;
+      const move = (ev) => { w = Math.round(Math.max(160, Math.min(fxPanel.getBoundingClientRect().width - 200, w0 + (ev.clientX - x0)))); apply(w); };
+      const up = () => { h.removeEventListener('pointermove', move); h.removeEventListener('pointerup', up); try { localStorage.setItem('cr.fx.sidew', String(w)); } catch {} };
+      h.addEventListener('pointermove', move); h.addEventListener('pointerup', up);
+    });
+  })();
+
+  // ---------- terminal: a shell pane like Desktop's, several tabs, Claude's own commands too ----------
+  // xterm.js (~340 KB) is only fetched the first time a tab actually opens - dynamic import,
+  // not a <script> in the page, so every other load is none the heavier for a pane most
+  // visits never open. Served from node_modules by the server (vendor/xterm, vendor/xterm-fit);
+  // no build step, no CDN.
+  const termPanel = $('#terminal-panel'), termTabsEl = $('#term-tabs'), termStage = $('#term-stage'), termPill = $('#term-pill');
+  let terminalOpen = false, terminalMinimized = false;
+  const term = { cwd: '', tabs: [], active: null }; // tabs: { id, title, alive, running, crashed, el, banner, xterm, fit, ws }
+  const findTermTab = (id) => term.tabs.find((t) => t.id === id);
+  let xtermMod = null;
+  async function ensureXterm() {
+    if (xtermMod) return xtermMod;
+    if (!document.getElementById('xterm-css')) {
+      const link = document.createElement('link'); link.id = 'xterm-css'; link.rel = 'stylesheet'; link.href = '/vendor/xterm/xterm.css';
+      document.head.appendChild(link);
+    }
+    const [{ Terminal }, { FitAddon }] = await Promise.all([import('/vendor/xterm/xterm.mjs'), import('/vendor/xterm-fit/addon-fit.mjs')]);
+    return (xtermMod = { Terminal, FitAddon });
+  }
+  // A theme close enough to the app's own that the pane does not read as a hole punched
+  // through it - exact parity is not the point, xterm.js has its own idea of "dim" colours.
+  function termTheme() {
+    const cs = getComputedStyle(document.documentElement);
+    const v = (name, fallback) => cs.getPropertyValue(name).trim() || fallback;
+    return { background: v('--bg-000', '#1a1a1a'), foreground: v('--ink', '#eee'), cursor: v('--ink', '#eee'), selectionBackground: 'rgba(120,150,255,.35)' };
+  }
+  function termWsUrl(sessionId, tabId) {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${proto}//${location.host}/api/terminal/ws?token=${encodeURIComponent(state.token)}&session=${encodeURIComponent(sessionId)}&tab=${encodeURIComponent(tabId)}`;
+  }
+  function writeTermInput(tab, text) { if (tab.ws && tab.ws.readyState === WebSocket.OPEN) tab.ws.send(JSON.stringify({ t: 'input', d: text })); }
+  function connectTab(tab) {
+    const ws = new WebSocket(termWsUrl(state.current, tab.id));
+    tab.ws = ws;
+    ws.addEventListener('message', (ev) => {
+      let msg; try { msg = JSON.parse(ev.data); } catch { return; }
+      if (msg.t === 'snapshot') { tab.xterm.reset(); if (msg.data) tab.xterm.write(msg.data); applyTabInfo(tab, msg.tab); }
+      else if (msg.t === 'data') tab.xterm.write(msg.d);
+      else if (msg.t === 'state') { tab.running = msg.running; tab.alive = msg.alive; paintTermTabs(); }
+      else if (msg.t === 'exit') { tab.alive = false; tab.running = false; tab.crashed = !!msg.crashed; paintTermTabs(); paintTabBanner(tab); }
+      else if (msg.t === 'restarted') { tab.alive = true; tab.running = false; tab.crashed = false; tab.xterm.reset(); paintTermTabs(); paintTabBanner(tab); }
+      else if (msg.t === 'error') toast(msg.text);
+    });
+    ws.addEventListener('close', () => { if (tab.ws === ws) tab.ws = null; });
+  }
+  function applyTabInfo(tab, info) { Object.assign(tab, { title: info.title, cwd: info.cwd, alive: info.alive, running: info.running, crashed: info.crashed, exitCode: info.exitCode }); paintTermTabs(); paintTabBanner(tab); }
+  function paintTabBanner(tab) { tab.banner.classList.toggle('hidden', tab.alive); }
+  async function addTabView(info) {
+    const { Terminal, FitAddon } = await ensureXterm();
+    const tab = { ...info, el: null, banner: null, xterm: null, fit: null, ws: null };
+    const container = el('div', 'term-view hidden');
+    const banner = el('div', 'term-banner hidden');
+    banner.appendChild(el('span', null, 'Shell exited.'));
+    const restartBtn = el('button', 'btn btn-ghost small', 'Restart'); restartBtn.type = 'button';
+    restartBtn.addEventListener('click', () => api(`/sessions/${state.current}/terminal/tabs/${tab.id}/restart`, { method: 'POST' }).catch((e) => toast(e.message)));
+    banner.appendChild(restartBtn);
+    container.appendChild(banner);
+    const xtermHost = el('div', 'term-xterm');
+    container.appendChild(xtermHost);
+    termStage.appendChild(container);
+    const xterm = new Terminal({ fontSize: 13, cursorBlink: true, convertEol: true, scrollback: 5000, theme: termTheme() });
+    const fit = new FitAddon();
+    xterm.loadAddon(fit);
+    xterm.open(xtermHost);
+    // Ctrl+` toggles the pane even while it holds the keyboard - returning false tells xterm
+    // this one is not its to handle, the same way VS Code's own terminal leaves it alone.
+    xterm.attachCustomKeyEventHandler((ev) => { if ((ev.ctrlKey || ev.metaKey) && ev.code === 'Backquote' && ev.type === 'keydown') { toggleTerminal(); return false; } return true; });
+    Object.assign(tab, { el: container, banner });
+    xterm.onData((d) => writeTermInput(tab, d));
+    xterm.onResize(({ cols, rows }) => { if (tab.ws && tab.ws.readyState === WebSocket.OPEN) tab.ws.send(JSON.stringify({ t: 'resize', cols, rows })); });
+    container.addEventListener('contextmenu', (e) => { e.preventDefault(); showTermCtxMenu(tab, e.clientX, e.clientY); });
+    tab.xterm = xterm; tab.fit = fit;
+    term.tabs.push(tab);
+    connectTab(tab);
+    paintTabBanner(tab);
+    return tab;
+  }
+  function resizeActiveTerm() { const tab = findTermTab(term.active); if (!tab) return; try { tab.fit.fit(); } catch {} }
+  // One rAF after becoming visible is sometimes still a frame before the phone's
+  // position:fixed sheet (or the panel's own flex layout) has taken its final size - fit()
+  // then measures too small, and the rest of the pane shows through as xterm's own viewport
+  // background instead of the grid growing to fill it. A second rAF is one frame later, past it.
+  const doubleRaf = (fn) => requestAnimationFrame(() => requestAnimationFrame(fn));
+  // The panel's own drag-resize changes a CSS variable, not the viewport, so a window
+  // 'resize' event never fires for it - a ResizeObserver on the stage catches both that
+  // and an ordinary window resize in one place.
+  const termResizeObserver = new ResizeObserver(() => { if (terminalOpen && !terminalMinimized) resizeActiveTerm(); });
+  termResizeObserver.observe(termStage);
+  function showTerminalTab(id) {
+    const tab = findTermTab(id);
+    if (!tab) return;
+    if (!terminalOpen) { openTerminal().then(() => showTerminalTab(id)); return; }
+    for (const t of term.tabs) t.el.classList.toggle('hidden', t.id !== id);
+    term.active = id;
+    paintTermTabs();
+    doubleRaf(() => { resizeActiveTerm(); tab.xterm.focus(); });
+  }
+  function paintTermTabs() {
+    termTabsEl.innerHTML = '';
+    for (const tab of term.tabs) {
+      const b = el('div', 'pv-tab term-tab' + (tab.id === term.active ? ' on' : '') + (!tab.alive ? ' term-dead' : ''));
+      b.setAttribute('role', 'tab'); b.setAttribute('aria-selected', String(tab.id === term.active)); b.title = tab.title || 'Terminal';
+      if (tab.running) b.appendChild(el('span', 'term-dot'));
+      const name = el('span', 'pv-tab-name', tab.title || 'Terminal'); name.dir = 'auto'; b.appendChild(name);
+      const x = el('button', 'pv-tab-x'); x.type = 'button'; x.title = 'Close terminal'; x.setAttribute('aria-label', 'Close terminal');
+      x.innerHTML = '<svg viewBox="0 0 20 20" width="11" height="11"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
+      x.addEventListener('click', (e) => { e.stopPropagation(); closeTermTab(tab); });
+      b.appendChild(x);
+      b.addEventListener('click', () => showTerminalTab(tab.id));
+      termTabsEl.appendChild(b);
+    }
+    termPill.querySelector('.term-pill-dot')?.classList.toggle('running', term.tabs.some((t) => t.running));
+  }
+  async function newTermTab(cwd) {
+    let info;
+    try { info = await api(`/sessions/${state.current}/terminal/tabs`, { method: 'POST', body: JSON.stringify({ cwd: cwd || state.cwd || '' }) }); }
+    catch (e) { toast(e.message); return null; }
+    const tab = await addTabView(info);
+    paintTermTabs();
+    showTerminalTab(tab.id);
+    return tab;
+  }
+  // A command still running is the one thing closing a tab should not do by surprise -
+  // Desktop's own words for asking first.
+  function closeTermTab(tab) {
+    if (tab.running && !confirm(`A command is still running in ${tab.title || 'this terminal'}. Closing the terminal stops it.`)) return;
+    api(`/sessions/${state.current}/terminal/tabs/${tab.id}`, { method: 'DELETE' }).catch(() => {});
+    try { tab.ws?.close(); } catch {}
+    try { tab.xterm.dispose(); } catch {}
+    tab.el.remove();
+    term.tabs = term.tabs.filter((t) => t !== tab);
+    if (term.active === tab.id) { term.active = null; if (term.tabs.length) showTerminalTab(term.tabs[term.tabs.length - 1].id); else closeTerminal(); }
+    else paintTermTabs();
+  }
+  function disposeTermTabs() {
+    for (const t of term.tabs) { try { t.ws?.close(); } catch {} try { t.xterm.dispose(); } catch {} t.el.remove(); }
+    term.tabs = []; term.active = null;
+  }
+  async function loadTermTabs() {
+    disposeTermTabs();
+    term.cwd = state.cwd || '';
+    let list = [];
+    try { list = (await api(`/sessions/${state.current}/terminal/tabs`)).tabs; } catch (e) { toast(e.message); }
+    if (!list.length) { await newTermTab(); return; }
+    for (const info of list) await addTabView(info);
+    paintTermTabs();
+    showTerminalTab(term.tabs[0].id);
+  }
+  async function openTerminal() {
+    if (!state.current) { toast('Start a conversation first.'); return; }
+    if (tasksOpen) closeTasks(); if (previewOpen) closePreview(); if (filesOpen) closeFiles(); if (changesOpen) closeChanges();
+    terminalOpen = true; terminalMinimized = false;
+    termPanel.classList.remove('hidden', 'minimized'); termPill.classList.add('hidden');
+    app.classList.add('panel-open');
+    if (term.cwd !== (state.cwd || '') || !term.tabs.length) await loadTermTabs();
+    else doubleRaf(resizeActiveTerm);
+  }
+  function closeTerminal() { terminalOpen = false; termPanel.classList.add('hidden'); termPill.classList.add('hidden'); app.classList.remove('panel-open'); }
+  function minimizeTerminal(on) {
+    terminalMinimized = on;
+    termPanel.classList.toggle('minimized', on);
+    termPill.classList.toggle('hidden', !on);
+    if (!on) doubleRaf(resizeActiveTerm);
+  }
+  async function toggleTerminal() { terminalOpen && !terminalMinimized ? closeTerminal() : await openTerminal(); }
+  $('#term-new').addEventListener('click', () => newTermTab());
+  $('#term-close').addEventListener('click', closeTerminal);
+  $('#term-min').addEventListener('click', () => minimizeTerminal(!terminalMinimized));
+  termPill.addEventListener('click', () => minimizeTerminal(false));
+  // Right-click on the pane itself: Copy, Paste, Attach selection as context - the same
+  // menu element the sidebar and Worktrees use, built for this instead.
+  function showTermCtxMenu(tab, x, y) {
+    const sel = tab.xterm.getSelection();
+    ctx.innerHTML = '';
+    const add = (label, fn, disabled) => {
+      const b = item(label, '', false, () => { ctx.classList.add('hidden'); fn(); });
+      if (disabled) { b.disabled = true; b.classList.add('disabled'); }
+      ctx.appendChild(b);
+    };
+    add('Copy', () => { if (sel) navigator.clipboard?.writeText(sel).catch(() => {}); }, !sel);
+    add('Paste', async () => { try { const t = await navigator.clipboard.readText(); if (t) writeTermInput(tab, t); } catch {} });
+    add('Attach selection as context', () => attachContext({ label: 'Terminal · ' + (tab.title || 'Terminal'), text: sel }), !sel);
+    ctx.classList.remove('hidden');
+    if (!isPhone()) { const r = ctx.getBoundingClientRect(); ctx.style.left = Math.min(x, window.innerWidth - r.width - 8) + 'px'; ctx.style.top = Math.min(y, window.innerHeight - r.height - 8) + 'px'; }
+  }
+  // Claude opened or used a tab: shown right away, the same pane the person would open.
+  async function onTerminalTabEvent(info) {
+    if (!terminalOpen) await openTerminal();
+    if (!findTermTab(info.id)) { await addTabView(info); paintTermTabs(); }
+    showTerminalTab(info.id);
+  }
+  // openTerminalAt(dir): what the Files package's "Open in terminal" calls. runInTerminal:
+  // what the composer's "!" command and Claude's own run_in_terminal share - run a command
+  // in a tab the person can see, and (unless told not to) hand its output to the next message.
+  async function openTerminalAt(dir) {
+    if (!state.current) { toast('Start a conversation first.'); return null; }
+    await openTerminal();
+    return newTermTab(dir);
+  }
+  async function runInTerminal(command, { send = true, cwd } = {}) {
+    if (!state.current) { toast('Start a conversation first.'); return null; }
+    await openTerminal();
+    let tab = term.active ? findTermTab(term.active) : null;
+    if (!tab || !tab.alive) tab = await newTermTab(cwd);
+    if (!tab) return null;
+    showTerminalTab(tab.id);
+    let r;
+    try { r = await api(`/sessions/${state.current}/terminal/tabs/${tab.id}/run`, { method: 'POST', body: JSON.stringify({ command }) }); }
+    catch (e) { toast(e.message); return null; }
+    if (r.error) { toast(r.error); return r; }
+    if (send) attachContext({ label: 'Terminal · ' + command, text: (r.output || '(no output)') + (r.exitCode ? '\n(exit code ' + r.exitCode + ')' : '') });
+    return r;
   }
 
   // ---------- worktrees: a second checkout of the same repository, on its own branch ----------
@@ -3246,7 +4466,9 @@
     chip.classList.remove('hidden');
     $('#sb-pr').classList.add('hidden'); // there is already one: no point offering to make another
   }
-  menuFor('#sb-pr-state', '#pr-menu', (m) => {
+  // A PR row for the Related / Stacked lists below: "#123 title", a draft tag, opens on GitHub.
+  const prRow = (p) => item('#' + p.number + ' ' + (p.title || ''), '', false, () => window.open(p.url, '_blank', 'noopener'), { tag: p.draft ? 'draft' : '' });
+  function renderPrMenu(m) {
     m.innerHTML = '';
     if (!prData?.has) return;
     const row = (k, v) => { const r = el('div', 'row'); r.appendChild(el('span', 'k', k)); r.appendChild(el('span', 'v', v)); m.appendChild(r); };
@@ -3268,15 +4490,44 @@
       m.appendChild(d);
     }
     if (prData.commentCount > 3) m.appendChild(el('div', 'cmt muted', prData.commentCount - 3 + ' more on GitHub'));
+    if (prData.related?.length || prData.stack?.length) {
+      m.appendChild(el('div', 'menu-sep'));
+      if (prData.stack?.length) { m.appendChild(el('div', 'menu-title', 'Stacked on')); for (const p of prData.stack) m.appendChild(prRow(p)); }
+      if (prData.related?.length) { m.appendChild(el('div', 'menu-title', 'Related')); for (const p of prData.related) m.appendChild(prRow(p)); }
+    }
     m.appendChild(el('div', 'menu-sep'));
-    m.appendChild(item(prData.autoMerge ? 'Turn off auto-merge' : 'Merge when the checks pass', '', false, async () => {
-      m.classList.add('hidden');
-      try { prData = await api(`/sessions/${state.current}/pr/auto-merge`, { method: 'POST', body: JSON.stringify({ on: !prData.autoMerge, method: 'squash' }) }); refreshPr(); }
+    if (prData.state === 'OPEN' && prData.draft) {
+      m.appendChild(item('Mark ready for review', '', false, async () => {
+        try { await api(`/sessions/${state.current}/git/mark-ready`, { method: 'POST' }); toast('Marked ready for review.'); refreshPr(true); }
+        catch (e) { alert(e.message); }
+      }));
+    } else if (prData.state === 'OPEN' && !prData.autoMerge) {
+      m.appendChild(item('Confirm merge', '', false, async () => {
+        if (!confirm(`Merge pull request #${prData.number}?`)) return;
+        m.classList.add('hidden');
+        try { await api(`/sessions/${state.current}/git/merge`, { method: 'POST' }); toast('Merged.'); refreshPr(true); }
+        catch (e) { alert(e.message); }
+      }));
+    }
+    // Merge when ready, Auto-fix and Auto-archive: checkmark toggles, same item left open so
+    // more than one can be flipped without reopening the menu each time.
+    m.appendChild(item('Merge when ready', '', !!prData.autoMerge, async () => {
+      try { prData = await api(`/sessions/${state.current}/pr/auto-merge`, { method: 'POST', body: JSON.stringify({ on: !prData.autoMerge, method: 'squash' }) }); renderPrMenu(m); refreshPr(); }
       catch (e) { alert(e.message); }
     }));
+    m.appendChild(item('Auto-fix', 'Wakes Claude in this session to fix failing checks, merge conflicts and review comments.', !!prData.autoFix, async () => {
+      try { const r = await api(`/sessions/${state.current}/pr/auto-fix`, { method: 'POST', body: JSON.stringify({ on: !prData.autoFix }) }); prData.autoFix = r.on; renderPrMenu(m); }
+      catch (e) { alert(e.message); }
+    }));
+    m.appendChild(item('Auto-archive after PR merge or close', '', !!prData.autoArchive, async () => {
+      try { const r = await api(`/sessions/${state.current}/pr/auto-archive`, { method: 'POST', body: JSON.stringify({ on: !prData.autoArchive }) }); prData.autoArchive = r.on; renderPrMenu(m); }
+      catch (e) { alert(e.message); }
+    }));
+    m.appendChild(el('div', 'menu-sep'));
     m.appendChild(item('Open on GitHub', '', false, () => { m.classList.add('hidden'); window.open(prData.url, '_blank', 'noopener'); }));
     m.appendChild(item('Refresh', '', false, () => { m.classList.add('hidden'); refreshPr(true); }));
-  });
+  }
+  menuFor('#sb-pr-state', '#pr-menu', renderPrMenu);
 
   // ---------- keep this computer awake ----------
   // It holds a system request while it is on, and lets go when it is off; nothing in
@@ -3286,16 +4537,123 @@
   async function loadAwake() { try { awakeMode = (await api('/awake')).mode; } catch {} }
   async function setAwake(mode) { try { awakeMode = (await api('/awake', { method: 'POST', body: JSON.stringify({ mode }) })).mode; toast('Keep awake: ' + (AWAKE.find((a) => a[0] === awakeMode) || [])[1]); } catch (e) { alert(e.message); } }
 
+  // ---------- git actions: commit, push, draft PR, ready for review, merge ----------
+  // A short subject line from what changed, in this repo's own style (CONTRIBUTING.md: lower
+  // case, no trailing period) - a starting point to edit, not a message anyone has to accept.
+  function summarizeChangedFiles(files) {
+    if (!files?.length) return '';
+    if (files.length <= 3) return 'update ' + files.map((f) => f.path.split(/[\\/]/).pop()).join(', ').replace(/, ([^,]*)$/, ' and $1');
+    const added = files.filter((f) => f.status === 'A' || f.status === '?').length;
+    const removed = files.filter((f) => f.status === 'D').length;
+    const changed = files.length - added - removed;
+    const bits = [changed && changed + ' changed', added && added + ' added', removed && removed + ' removed'].filter(Boolean);
+    return `update ${files.length} files (${bits.join(', ')})`;
+  }
+  // Dynamically built, like #rewind-modal below: one dialog, reused for every commit.
+  const commitModal = (() => {
+    const m = el('div', 'modal hidden'); m.id = 'commit-modal';
+    const card = el('div', 'modal-card');
+    const head = el('div', 'modal-head'); head.appendChild(el('span', null, 'Commit changes'));
+    const close = el('button', 'icon-btn'); close.type = 'button'; close.setAttribute('aria-label', 'Close');
+    close.innerHTML = '<svg viewBox="0 0 20 20" width="16" height="16"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+    close.addEventListener('click', () => m.classList.add('hidden'));
+    head.appendChild(close); card.appendChild(head);
+    card.appendChild(el('p', 'modal-hint', 'Stages every change in this folder and pushes the branch (setting its upstream if it has none).'));
+    const ta = el('textarea', 'commit-msg'); ta.rows = 3; card.appendChild(ta);
+    const row = el('div', 'commit-row');
+    const err = el('span', 'note error hidden'); row.appendChild(err);
+    const go = el('button', 'btn btn-primary small', 'Commit and push'); go.type = 'button';
+    go.addEventListener('click', async () => {
+      const message = ta.value.trim(); if (!message) return;
+      go.disabled = true; err.classList.add('hidden');
+      try {
+        await api(`/sessions/${state.current}/git/commit-push`, { method: 'POST', body: JSON.stringify({ message }) });
+        m.classList.add('hidden'); toast('Committed and pushed.'); loadChanges(); refreshGit(); refreshPr(true);
+      } catch (e) { err.textContent = e.message; err.classList.remove('hidden'); }
+      go.disabled = false;
+    });
+    row.appendChild(go); card.appendChild(row);
+    m.appendChild(card); document.body.appendChild(m);
+    return m;
+  })();
+  function openCommitDialog() {
+    commitModal.querySelector('.commit-msg').value = summarizeChangedFiles(changesData?.files || []);
+    commitModal.querySelector('.note').classList.add('hidden');
+    commitModal.classList.remove('hidden');
+    commitModal.querySelector('.commit-msg').focus();
+  }
+  $('#ch-commit-push').addEventListener('click', openCommitDialog);
+  $('#ch-commit-wip').addEventListener('click', async () => {
+    try { await api(`/sessions/${state.current}/git/commit-wip`, { method: 'POST' }); toast('Committed as WIP.'); loadChanges(); refreshGit(); }
+    catch (e) { alert(e.message); }
+  });
+  $('#ch-create-pr').addEventListener('click', async () => {
+    try { const r = await api(`/sessions/${state.current}/git/create-draft-pr`, { method: 'POST' }); toast('Draft PR created.'); refreshPr(true); if (r.url) window.open(r.url, '_blank', 'noopener'); }
+    catch (e) { alert(e.message); }
+  });
+
+  // A worktree for a brand-new session (chosen in the folder menu, below): "step-by-step
+  // progress and a Stop button while a session's worktree is being set up" (Desktop). The job
+  // itself runs server-side (lib/worktrees.mjs addForSession via /api/worktrees/begin) since a
+  // big repository's `git worktree add` is minutes, not a request this page can just await.
+  const WT_STEPS = [['branch', 'Naming a branch from your message'], ['worktree', 'Setting up the worktree']];
+  const wtModal = (() => {
+    const m = el('div', 'modal hidden'); m.id = 'wt-setup-modal';
+    const card = el('div', 'modal-card');
+    const head = el('div', 'modal-head'); head.appendChild(el('span', null, 'Setting up the worktree'));
+    card.appendChild(head);
+    const steps = el('ul', 'wt-steps');
+    for (const [key, label] of WT_STEPS) { const li = el('li'); li.dataset.step = key; li.appendChild(el('span', 'dot')); li.appendChild(document.createTextNode(label)); steps.appendChild(li); }
+    card.appendChild(steps);
+    const err = el('p', 'modal-hint note error hidden'); card.appendChild(err);
+    const row = el('div', 'wt-setup-row');
+    const stop = el('button', 'btn small', 'Stop'); stop.type = 'button';
+    row.appendChild(stop); card.appendChild(row);
+    m.appendChild(card); document.body.appendChild(m);
+    return { m, steps, err, stop };
+  })();
+  function paintWtSteps(step) {
+    const order = WT_STEPS.map((s) => s[0]), at = order.indexOf(step);
+    wtModal.steps.querySelectorAll('li').forEach((li) => {
+      const i = order.indexOf(li.dataset.step);
+      li.classList.toggle('done', step === 'done' || at > i);
+      li.classList.toggle('active', step !== 'done' && i === at);
+    });
+  }
+  // Resolves to { path, branch } once the worktree is ready, or null if it was stopped or
+  // failed (either way the caller's own message is left untouched, to send or edit again).
+  async function setUpSessionWorktree(cwd, message) {
+    wtModal.err.classList.add('hidden'); paintWtSteps('branch'); wtModal.m.classList.remove('hidden');
+    let jobId = null, stopped = false;
+    wtModal.stop.disabled = false; wtModal.stop.textContent = 'Stop';
+    wtModal.stop.onclick = async () => { stopped = true; wtModal.stop.disabled = true; if (jobId) try { await api('/worktrees/begin/' + jobId + '/cancel', { method: 'POST' }); } catch {} };
+    const giveUp = async (msg) => {
+      if (!stopped && msg) { wtModal.err.textContent = msg; wtModal.err.classList.remove('hidden'); await new Promise((r) => setTimeout(r, 1800)); }
+      wtModal.m.classList.add('hidden');
+      return null;
+    };
+    try {
+      jobId = (await api('/worktrees/begin', { method: 'POST', body: JSON.stringify({ cwd, message }) })).jobId;
+      paintWtSteps('worktree');
+      let job;
+      do { job = await api('/worktrees/begin/' + jobId); if (!job.done) await new Promise((r) => setTimeout(r, 400)); } while (!job.done);
+      if (job.error) return giveUp(job.error);
+      paintWtSteps('done'); await new Promise((r) => setTimeout(r, 250));
+      wtModal.m.classList.add('hidden');
+      return job.result;
+    } catch (e) { return giveUp(e.message); }
+  }
+
   // ---------- Changes: the files this folder has changed, and their diffs (Desktop's Changes pane) ----------
   const changesPanel = $('#changes-panel'), chList = $('#ch-list'), chDiff = $('#ch-diff');
   let changesOpen = false, changesData = null, changesFile = null;
-  function openChanges() { if (tasksOpen) closeTasks(); if (previewOpen) closePreview(); if (filesOpen) closeFiles(); changesOpen = true; changesPanel.classList.remove('hidden'); app.classList.add('panel-open'); showChangesList(); loadChanges(); }
+  function openChanges() { if (tasksOpen) closeTasks(); if (previewOpen) closePreview(); if (filesOpen) closeFiles(); if (terminalOpen) closeTerminal(); changesOpen = true; changesPanel.classList.remove('hidden'); app.classList.add('panel-open'); showChangesList(); loadChanges(); }
   function closeChanges() { changesOpen = false; changesFile = null; changesPanel.classList.add('hidden'); app.classList.remove('panel-open'); }
   $('#ch-close').addEventListener('click', closeChanges);
   $('#ch-refresh').addEventListener('click', () => loadChanges());
   $('#ch-back').addEventListener('click', () => showChangesList());
   $('#sb-diff').addEventListener('click', () => changesOpen ? closeChanges() : openChanges());
-  function showChangesList() { changesFile = null; chDiff.classList.add('hidden'); chList.classList.remove('hidden'); $('#ch-back').classList.add('hidden'); $('#ch-file').textContent = ''; }
+  function showChangesList() { changesFile = null; chDiff.classList.add('hidden'); chList.classList.remove('hidden'); $('#ch-back').classList.add('hidden'); $('#ch-file').classList.add('hidden'); $('#ch-file-name').textContent = ''; $('#ch-open-editor').classList.add('hidden'); }
   async function loadChanges() {
     if (!state.current) return;
     try {
@@ -3307,6 +4665,8 @@
   const fmtN = (n) => Number(n || 0).toLocaleString();
   function paintChanges() {
     const d = changesData; chList.innerHTML = '';
+    $('#ch-actions').classList.toggle('hidden', !d?.git);
+    $('#ch-create-pr').classList.toggle('hidden', !!prData?.has);
     if (!d || !d.git) { $('#ch-meta').textContent = ''; chList.appendChild(el('div', 'muted small pad', 'This folder is not a git repository.')); return; }
     $('#ch-meta').textContent = d.branch + ' · ' + d.files.length + (d.files.length === 1 ? ' file' : ' files');
     $('#ch-stat').innerHTML = d.files.length ? `<span class="add">+${fmtN(d.added)}</span> <span class="del">−${fmtN(d.removed)}</span>` : '';
@@ -3327,8 +4687,11 @@
   }
   async function loadDiff(rel) {
     changesFile = rel;
-    chList.classList.add('hidden'); chDiff.classList.remove('hidden'); $('#ch-back').classList.remove('hidden');
-    $('#ch-file').textContent = rel; $('#ch-file').title = rel;
+    chList.classList.add('hidden'); chDiff.classList.remove('hidden'); $('#ch-back').classList.remove('hidden'); $('#ch-file').classList.remove('hidden');
+    $('#ch-file-name').textContent = rel; $('#ch-file-name').title = rel;
+    const editorBtn = $('#ch-open-editor');
+    editorBtn.classList.toggle('hidden', !changesData?.cwd);
+    editorBtn.onclick = () => openInEditor(changesData.cwd.replace(/[\\/]+$/, '') + '/' + rel);
     chDiff.innerHTML = ''; chDiff.appendChild(el('div', 'muted small pad', 'Loading…'));
     try {
       const r = await api(`/sessions/${state.current}/changes/diff?path=${encodeURIComponent(rel)}`);
@@ -3336,12 +4699,15 @@
       if (r.binary) { chDiff.appendChild(el('div', 'muted small pad', 'Binary file.')); return; }
       if (r.missing) { chDiff.appendChild(el('div', 'muted small pad', 'The file is gone.')); return; }
       if (!r.diff) { chDiff.appendChild(el('div', 'muted small pad', 'No differences.')); return; }
-      chDiff.appendChild(renderDiff(r.diff));
+      chDiff.appendChild(renderDiff(r.diff, rel));
       if (r.truncated) chDiff.appendChild(el('div', 'muted small pad', 'Showing the first 4,000 lines.'));
     } catch (e) { chDiff.innerHTML = ''; chDiff.appendChild(el('div', 'muted small pad', e.message)); }
   }
   // A unified diff as rows: old/new line numbers, then the line. Hunk headers stay as dividers.
-  function renderDiff(text) {
+  // A "+" beside a line (shown on hover) adds a review comment, sent with the next message via
+  // attachContext, same as a comment on a line of an open file; resolving one collapses it so
+  // the diff reads as what is still open, not everything ever said about it.
+  function renderDiff(text, rel) {
     const pre = el('div', 'diff');
     let o = 0, n = 0;
     for (const raw of text.split('\n')) {
@@ -3355,6 +4721,10 @@
       if (raw.startsWith('\\')) continue; // "No newline at end of file"
       const kind = raw[0] === '+' ? 'add' : raw[0] === '-' ? 'del' : 'ctx';
       line.classList.add(kind);
+      const lineNo = kind === 'del' ? o : n;
+      const add = el('button', 'dl-add', '+'); add.type = 'button'; add.title = 'Add review comment';
+      add.addEventListener('click', (e) => { e.stopPropagation(); openDiffComment(rel, lineNo, line); });
+      line.appendChild(add);
       line.appendChild(el('span', 'no', kind === 'add' ? '' : String(o)));
       line.appendChild(el('span', 'no', kind === 'del' ? '' : String(n)));
       line.appendChild(el('span', 'tx', raw.slice(1)));
@@ -3362,6 +4732,38 @@
       pre.appendChild(line);
     }
     return pre;
+  }
+  // A review comment on one diff line: the same popover the Files editor uses for a line
+  // comment (fx-comment-pop), anchored under the row instead of beside a gutter number.
+  function openDiffComment(rel, lineNo, anchorRow) {
+    closeFxPopover();
+    const pop = el('div', 'fx-comment-pop');
+    const ta = el('textarea', 'fx-comment-ta'); ta.placeholder = 'Add a review comment for Claude…'; ta.rows = 3;
+    pop.appendChild(ta);
+    const row = el('div', 'fx-comment-row');
+    const cancel = el('button', 'link-btn small', 'Cancel'); cancel.type = 'button'; cancel.addEventListener('click', closeFxPopover);
+    const addBtn = el('button', 'btn btn-primary small', 'Add comment'); addBtn.type = 'button';
+    addBtn.addEventListener('click', () => {
+      const text = ta.value.trim(); if (!text) return;
+      attachContext({ label: rel + '#L' + lineNo, text });
+      addDiffCommentCard(lineNo, text, anchorRow);
+      closeFxPopover();
+    });
+    row.appendChild(cancel); row.appendChild(addBtn); pop.appendChild(row);
+    document.body.appendChild(pop);
+    const r = anchorRow.getBoundingClientRect();
+    pop.style.left = Math.max(4, Math.min(r.left + 40, innerWidth - 300)) + 'px'; pop.style.top = Math.max(4, Math.min(r.bottom, innerHeight - 160)) + 'px';
+    ta.focus(); fxPopover = pop;
+    setTimeout(() => document.addEventListener('mousedown', onFxPopoverOutside, true), 0);
+  }
+  function addDiffCommentCard(lineNo, text, anchorRow) {
+    const card = el('div', 'dl-comment');
+    card.appendChild(el('div', 'dl-comment-head', 'Comment on line ' + lineNo));
+    card.appendChild(el('div', 'dl-comment-text', text));
+    const resolveBtn = el('button', 'link-btn small', 'Resolve'); resolveBtn.type = 'button';
+    resolveBtn.addEventListener('click', () => { const resolved = card.classList.toggle('resolved'); resolveBtn.textContent = resolved ? 'Reopen' : 'Resolve'; });
+    card.appendChild(resolveBtn);
+    anchorRow.after(card);
   }
 
   // ---------- live turn ----------
@@ -3486,20 +4888,23 @@
         }
         case 'queued': {
           const mine = bubbleFor(ev);
-          if (mine) { mine.dataset.promptId = ev.id; delete mine.dataset.pending; break; }
-          thread.appendChild(userMsg(ev.text, { queued: true, id: ev.id })); autoscroll(); break;
+          if (mine) { mine.dataset.promptId = ev.id; delete mine.dataset.pending; restackQueue(); break; }
+          thread.appendChild(userMsg(ev.text, { queued: true, id: ev.id })); autoscroll(); restackQueue(); break;
         }
         case 'prompt': {
           state.live = null;
           const q = bubbleFor(ev);
-          if (q) { q.classList.remove('queued'); q.querySelector('.queued-label')?.remove(); if (ev.id) q.dataset.promptId = ev.id; delete q.dataset.pending; }
-          else thread.appendChild(userMsg(ev.text, { id: ev.id, images: ev.images || [] }));
+          if (q) { q.classList.remove('queued'); q.querySelector('.queued-label')?.remove(); q.querySelector('.queue-row-actions')?.remove(); q.draggable = false; if (ev.id) { q.dataset.promptId = ev.id; rewindRow(q, ev.id, ev.text || ''); } delete q.dataset.pending; }
+          else thread.appendChild(userMsg(ev.text, { id: ev.id, uuid: ev.id || null, images: ev.images || [] }));
+          restackQueue();
           // A prompt being taken up is a turn starting - including a queued message that runs
           // after only a background task was left, when the composer had gone idle. Relight it.
           if (!replaying) { status.startedAt = ev.at || Date.now(); setAnswering(true); }
           else if (ev.at) { status.startedAt = ev.at; if (state.answering) statusStart(); }
           autoscroll(); break;
         }
+        // Drag-to-reorder: the ids keep their bubbles, only the order changes.
+        case 'reordered': reorderBubbles(ev.ids || []); break;
         case 'init':
           mode = 'run'; setRunning(true);
           if (ev.controls) { if (ev.controls.permissionMode) state.mode = ev.controls.permissionMode; if (ev.controls.model) state.model = ev.controls.model; state.effort = ev.controls.effort || ''; if (ev.controls.ultracode !== undefined) state.ultracode = !!ev.controls.ultracode; if (ev.controls.fast !== undefined) state.fast = !!ev.controls.fast; renderModeChip(); renderModelChip(); renderEffortChip(); }
@@ -3518,9 +4923,21 @@
           break;
         }
         case 'tasks': state.tasks = ev.tasks || []; paintTasks(); break;
+        // commands_changed: Claude Code's own slash-command list moved (a skill discovered mid-
+        // session, say). Replace, as its own doc comment says to - never merged edge by edge.
+        case 'commands': slashCommands = ev.commands || []; if (cpopMode === 'slash') openSlashMenu(cpopTrigger?.query || ''); break;
+
+        // Claude opened or used a terminal tab: the person sees it, same as if they had.
+        case 'terminal_tab': onTerminalTabEvent(ev.tab); break;
+        case 'terminal_focus': showTerminalTab(ev.tabId); break;
+        case 'session_status': { const srow = state.sessions.find((x) => x.id === sessionId); if (srow) srow.status = { status: ev.status, note: ev.note }; renderSessions(); break; }
         case 'note': thread.appendChild(el('div', 'note' + (ev.level === 'warning' ? ' warning' : ''), ev.text)); statusPaint(); autoscroll(); break;
-        // Stop took back messages typed mid-turn: their dashed bubbles go, on every device.
-        case 'unqueued': for (const id of ev.ids || []) thread.querySelector('.msg.user.queued[data-prompt-id="' + CSS.escape(id) + '"]')?.remove(); break;
+        // Stop took back messages typed mid-turn (or Remove took one out): its dashed bubble goes, on every device.
+        case 'unqueued': for (const id of ev.ids || []) thread.querySelector('.msg.user.queued[data-prompt-id="' + CSS.escape(id) + '"]')?.remove(); restackQueue(); break;
+        // A plan limit was just hit: the usage popover's own numbers are stale until the next
+        // post-turn refresh, so ask for them now - this is also what flips the composer over to
+        // holding messages above it instead of sending them straight through.
+        case 'rate_limit': if (ev.status === 'rejected' && state.current) api(`/sessions/${state.current}/usage`).then((u) => { usage.context = u.context || usage.context; usage.limits = u.limits || usage.limits; paintUsage(); }).catch(() => {}); break;
         // /clear: Claude Code goes on in a new session, and the page goes with it. Only the page on
         // the old session moves: the new session's stream replays this same event while the /clear
         // turn is still under way, and acting on it there closed the stream it had just opened.
@@ -3541,7 +4958,7 @@
         case 'delta': {
           const p = partial.get(ev.index); if (!p || !state.live) break;
           if (ev.kind === 'text_delta') { p.text += ev.text; renderBlock(state.live, key(ev.index), { type: 'text', text: p.text }); state.live.blocks.get(key(ev.index))?.classList.add('cursor'); }
-          else if (ev.kind === 'input_json_delta') { p.json += ev.text; const n = state.live.blocks.get(key(ev.index)); if (n) n.querySelector('.arg').textContent = p.json.slice(0, 200); }
+          else if (ev.kind === 'input_json_delta') { p.json += ev.text; const n = state.live.blocks.get(key(ev.index)); const a = n?.querySelector('.arg'); if (a) a.textContent = p.json.slice(0, 200); }
           autoscroll(); break;
         }
         case 'block_stop': {
@@ -3551,6 +4968,7 @@
         case 'assistant':
           // final blocks for the message being streamed: re-render with full data
           if (!state.live) { state.live = assistantMsg(); thread.appendChild(state.live.root); }
+          if (!state.live.root.dataset.uuid) state.live.root.dataset.uuid = ev.uuid; // the row's anchor, as historyRenderer gives it
           if (ev.tail) {
             // From the transcript file: one finished block per line, keyed by its uuid.
             ev.content.forEach((b, i) => { const s = asShown(b); if (s) renderBlock(state.live, ev.uuid + ':' + i, s); });
@@ -3748,6 +5166,7 @@
     // A reconnect replays the turn from its start, so the same request can arrive twice.
     if (ev.reqId && thread.querySelector(`[data-req-id="${ev.reqId}"]`)) return;
     if (isAskTool(ev.tool) && showQuestion(ev)) return;
+    if (ev.tool === 'ExitPlanMode' && showPlanApproval(ev)) return;
     const t = $('#tpl-permission').content.firstElementChild.cloneNode(true);
     t.dataset.reqId = ev.reqId;
     t.querySelector('.perm-tool').textContent = ev.tool;
@@ -3775,6 +5194,19 @@
 
   // ---------- composer ----------
   const input = $('#input'), send = $('#send');
+  // Commands the app runs itself when typed as /name in the box (/rename, /usage, /btw…), as
+  // Desktop does; any other /name goes to Claude Code. Features add theirs with registerCommand.
+  const appCommands = new Map(); // name -> { description, argumentHint, run(args) }
+  function registerCommand(name, spec) { appCommands.set(String(name).replace(/^\//, ''), spec); }
+  // "Attach as context": a message, a selection, lines of a file, a terminal's output - quoted
+  // before the next message. A removable chip above the box, not text stuffed into it, so what
+  // you type next stays legible - the composer block below turns this into chips and quotes
+  // them into the message when it is sent.
+  function attachContext({ label, text }) {
+    if (!text) return;
+    contextChips.push({ id: newId(), label: label || '', text: String(text) });
+    renderContextChips(); input.focus();
+  }
   // Unsent text survives a refresh, per chat.
   const draftKey = (id) => 'cr.draft.' + (id || 'new');
   function applyPrefill() { if (!pendingPrefill) return false; input.value = pendingPrefill; pendingPrefill = ''; input.dispatchEvent(new Event('input')); input.focus(); return true; }
@@ -3789,10 +5221,416 @@
     paintSendButton();
   });
   input.addEventListener('keydown', (e) => {
+    // The "/" and "@" popover owns these keys while it is open; its own listener, registered
+    // below, handles them instead - so Enter picks a row rather than sending the message.
+    if (composerPopOpen() && (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Enter' || e.key === 'Tab' || e.key === 'Escape')) return;
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && window.matchMedia('(min-width: 861px)').matches) { e.preventDefault(); submit(); }
     if (e.key === 'Escape' && state.answering) { e.preventDefault(); stop(); }
   });
-  send.addEventListener('click', () => { if (state.answering && !input.value.trim() && !pending.length) stop(); else submit(); });
+  send.addEventListener('click', () => { if (state.answering && !input.value.trim() && !pending.length && !contextChips.length) stop(); else submit(); });
+
+  // ---------- composer: context chips, "/" commands, "@" files, "!" shell, dictation, number-key answers ----------
+  // Everything Desktop's message box does beyond plain text and attachments. One intercept point
+  // (runComposerIntercepts) sits ahead of submit() in the hook above; everything else is its own
+  // corner of the box.
+
+  // "Attach as context": a removable chip, quoted ahead of the next message when it is sent
+  // (attachContext, above, only pushes into this array and repaints the strip).
+  let contextChips = [];
+  const quoteContext = (c) => (c.label ? c.label + ':\n' : '') + String(c.text).split('\n').map((l) => '> ' + l).join('\n');
+  function renderContextChips() {
+    const strip = $('#context-chips');
+    strip.innerHTML = ''; strip.classList.toggle('hidden', !contextChips.length);
+    contextChips.forEach((c, i) => {
+      const chip = el('div', 'ctx-chip');
+      chip.title = quoteContext(c).slice(0, 2000); // what will be sent, on hover: the label alone does not say
+      chip.appendChild(el('span', 'ctx-chip-label', c.label || c.text.replace(/\s+/g, ' ').trim().slice(0, 60)));
+      const x = el('button', 'ctx-chip-x'); x.type = 'button'; x.title = 'Remove'; x.textContent = '×';
+      x.addEventListener('click', () => { contextChips.splice(i, 1); renderContextChips(); });
+      chip.appendChild(x); strip.appendChild(chip);
+    });
+    paintSendButton();
+  }
+
+  // Selecting text in the thread offers the same "Attach as context" a right-click would
+  // (the right-click menu is another package's). mousedown on the button is prevented so the
+  // click never collapses the selection before the click handler reads it.
+  const ctxFloatBtn = $('#ctx-float-btn');
+  function hideCtxFloatBtn() { ctxFloatBtn.classList.add('hidden'); }
+  document.addEventListener('selectionchange', () => {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !sel.toString().trim() || !thread.contains(sel.anchorNode) || !thread.contains(sel.focusNode)) return hideCtxFloatBtn();
+    const rect = sel.getRangeAt(0).getBoundingClientRect();
+    if (!rect.width && !rect.height) return hideCtxFloatBtn();
+    ctxFloatBtn.style.left = Math.round(rect.left + rect.width / 2) + 'px';
+    ctxFloatBtn.style.top = Math.round(Math.max(8, rect.top - 8)) + 'px';
+    ctxFloatBtn.classList.remove('hidden');
+  });
+  scroll.addEventListener('scroll', hideCtxFloatBtn);
+  ctxFloatBtn.addEventListener('mousedown', (e) => e.preventDefault());
+  ctxFloatBtn.addEventListener('click', () => {
+    const sel = window.getSelection(), text = sel ? sel.toString() : '';
+    hideCtxFloatBtn(); sel?.removeAllRanges();
+    if (text.trim()) attachContext({ text });
+  });
+
+  // ---------- "/" commands and "@" file mentions: one popover above the box, two sources ----------
+  const cpop = $('#composer-pop');
+  let cpopMode = '', cpopRows = [], cpopAt = 0, cpopTrigger = null; // cpopTrigger: { mode, query, start, end } - the span in input.value a pick replaces
+  let slashCommands = []; // Claude Code's own, for the session's folder (or the one picked for a new chat)
+  let slashAskedFor = null; // what loadSlashCommands last answered for, so reopening "/" does not re-ask every time
+  let slashPromise = null, slashPromiseKey = null; // a call already in flight for this key, so a second "/" keystroke before it lands awaits the same answer rather than painting a stale one
+  let mentionTimer = null, mentionSeq = 0;
+
+  const composerPopOpen = () => !cpop.classList.contains('hidden');
+  function closeComposerPop() { cpop.classList.add('hidden'); cpop.innerHTML = ''; cpopMode = ''; cpopRows = []; cpopTrigger = null; }
+  function paintComposerPop() {
+    cpop.innerHTML = '';
+    cpopRows.forEach((r, i) => {
+      const b = el('button', 'cpop-item' + (i === cpopAt ? ' on' : '')); b.type = 'button';
+      b.appendChild(el('span', 'cpop-name', (cpopMode === 'mention' ? '@' : '/') + r.name));
+      if (r.desc) b.appendChild(el('span', 'cpop-desc', r.desc));
+      if (r.hint) b.appendChild(el('span', 'cpop-hint', r.hint));
+      // mousedown, not click: a click first fires mousedown, which would otherwise move focus
+      // and the caret out of the textarea before the row's own handler ever runs.
+      b.addEventListener('mousedown', (e) => { e.preventDefault(); pickComposerPop(i); });
+      cpop.appendChild(b);
+    });
+    if (!cpopRows.length) cpop.appendChild(el('div', 'cpop-empty', cpopMode === 'mention' ? 'No files match.' : 'No commands match.'));
+    cpop.classList.remove('hidden');
+  }
+
+  // Claude Code's own list for this folder, asked for once per "/" opened (not per keystroke);
+  // commands_changed (the live-turn switch, above) replaces it without a re-ask.
+  async function loadSlashCommands() {
+    const cwd = state.cwd || '', key = cwd + '|' + (state.current || '');
+    if (slashAskedFor === key) return;
+    if (slashPromiseKey === key) return slashPromise; // already asking - a second keystroke before it lands joins the same answer
+    slashPromiseKey = key;
+    slashPromise = (async () => {
+      try { slashCommands = (await api('/commands?cwd=' + encodeURIComponent(cwd) + (state.current ? '&sessionId=' + encodeURIComponent(state.current) : ''))).commands || []; }
+      catch { slashCommands = []; }
+      slashAskedFor = key; slashPromiseKey = null;
+    })();
+    return slashPromise;
+  }
+  // A name this app already runs itself wins the row - Claude Code's own command of that name
+  // is never reachable by typing it, so it is left out rather than shown and then ignored.
+  function openSlashMenu(q) {
+    const query = (q || '').toLowerCase();
+    const appNames = new Set(appCommands.keys());
+    const app = [...appCommands].map(([name, spec]) => ({ name, desc: spec.description || '', hint: spec.argumentHint || '' })).filter((r) => !query || r.name.toLowerCase().startsWith(query));
+    const cc = slashCommands.filter((c) => !appNames.has(c.name) && (c.name.toLowerCase().startsWith(query) || (c.aliases || []).some((a) => a.toLowerCase().startsWith(query)))).map((c) => ({ name: c.name, desc: c.description || '', hint: c.argumentHint || '' }));
+    cpopMode = 'slash'; cpopRows = [...app, ...cc]; cpopAt = 0; paintComposerPop();
+  }
+  // "@": the session's folder (or the one chosen for a new chat), fuzzy-ranked server side.
+  // Debounced and sequenced, so a fast typist's last keystroke is the one that wins the paint.
+  function openMentionMenu(q) {
+    cpopMode = 'mention'; paintComposerPop(); // keep the last list on screen while the new one loads
+    const seq = ++mentionSeq;
+    clearTimeout(mentionTimer);
+    mentionTimer = setTimeout(async () => {
+      try {
+        const r = await api('/files/search?cwd=' + encodeURIComponent(state.cwd || '') + '&q=' + encodeURIComponent(q));
+        if (seq !== mentionSeq || cpopMode !== 'mention') return; // a newer keystroke, or the box moved on, already asked again
+        cpopRows = (r.files || []).map((f) => ({ name: f })); cpopAt = 0; paintComposerPop();
+      } catch { if (seq === mentionSeq) { cpopRows = []; paintComposerPop(); } }
+    }, 120);
+  }
+
+  // Where the box is now: "/" only as the very first thing typed (Claude Code commands only
+  // ever start a line); "@" anywhere, as long as it starts a run with no space in it and is
+  // itself preceded by whitespace or the start of the box - "ask @backend about" is a mention,
+  // "nice work @ 5pm" is not a file that does not exist.
+  function composerTrigger() {
+    if (input.selectionStart !== input.selectionEnd) return null;
+    const pos = input.selectionStart, head = input.value.slice(0, pos);
+    if (input.value[0] === '/') { const m = /^\/(\S*)$/.exec(head); if (m) return { mode: 'slash', query: m[1], start: 0, end: pos }; return null; }
+    const m = /(?:^|[\s])@([^\s@]*)$/.exec(head);
+    if (m) return { mode: 'mention', query: m[1], start: pos - m[1].length - 1, end: pos };
+    return null;
+  }
+  async function updateComposerTrigger() {
+    const trig = composerTrigger();
+    if (!trig) { if (cpopMode) closeComposerPop(); return; }
+    cpopTrigger = trig;
+    if (trig.mode === 'slash') { await loadSlashCommands(); openSlashMenu(trig.query); }
+    else openMentionMenu(trig.query);
+  }
+  input.addEventListener('input', updateComposerTrigger);
+  document.addEventListener('selectionchange', () => { if (document.activeElement === input) updateComposerTrigger(); });
+
+  // Picking a row: "@file" always inserts and waits (more text, or Enter to send it as a
+  // mention); a command - app or Claude Code's - is inserted as "/name " the same way, so
+  // arguments can follow. What then happens on Enter is runComposerIntercepts' job, below:
+  // an app command runs instead of being sent; a Claude Code one goes to Claude as text,
+  // exactly as it always has.
+  function pickComposerPop(i) {
+    const r = cpopRows[i], trig = cpopTrigger; if (!r || !trig) return;
+    const insert = (cpopMode === 'mention' ? '@' : '/') + r.name + ' ';
+    input.value = input.value.slice(0, trig.start) + insert + input.value.slice(trig.end);
+    const caret = trig.start + insert.length;
+    closeComposerPop();
+    input.focus(); input.setSelectionRange(caret, caret);
+    input.dispatchEvent(new Event('input'));
+  }
+  // The popover's own keys, while it is open (the guard in the box's keydown handler, above,
+  // keeps the ordinary Enter-to-send from also firing on the same press).
+  input.addEventListener('keydown', (e) => {
+    if (!composerPopOpen()) return;
+    if (e.key === 'ArrowDown') { e.preventDefault(); cpopAt = Math.min(cpopAt + 1, cpopRows.length - 1); paintComposerPop(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); cpopAt = Math.max(cpopAt - 1, 0); paintComposerPop(); }
+    else if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault();
+      if (!cpopRows.length) return closeComposerPop();
+      const row = cpopRows[cpopAt], slash = cpopMode === 'slash', typed = cpopTrigger?.query || '';
+      pickComposerPop(cpopAt);
+      // Typed out in full, a command that takes nothing more runs on Enter, as in Desktop and the
+      // CLI: "/clear" and Enter clears. A half-typed one is completed first (Enter again runs it),
+      // Tab only completes, and a command with an argument waits for it.
+      if (e.key === 'Enter' && slash && typed.toLowerCase() === row.name.toLowerCase() && !(row.argumentHint || '').trim()) submit();
+    }
+    else if (e.key === 'Escape') { e.preventDefault(); closeComposerPop(); }
+  });
+
+  // app commands Desktop's own menu offers from the box: an existing API each, not a new one.
+  registerCommand('rename', {
+    description: 'Rename this chat', argumentHint: '<title>',
+    async run(args) {
+      const title = (args || '').trim() || prompt('Session name', (state.sessions.find((s) => s.id === state.current) || {}).title || '');
+      if (!title || !title.trim() || !state.current) return;
+      await api(`/sessions/${state.current}/rename`, { method: 'POST', body: JSON.stringify({ title: title.trim() }) });
+      $('#chat-title').textContent = title.trim(); loadSessions();
+    },
+  });
+  registerCommand('usage', { description: 'Show session cost, plan usage, and what’s contributing to your limits', argumentHint: '', run: () => $('#usage-btn').click() });
+  registerCommand('model', {
+    description: 'Set the AI model for Claude Code', argumentHint: '<model>',
+    run(args) {
+      const q = (args || '').trim().toLowerCase();
+      if (!q) { $('#model-btn').click(); return; }
+      const row = MODELS.find((m) => m.displayName.toLowerCase() === q) || MODELS.find((m) => m.displayName.toLowerCase().includes(q)) || MODELS.find((m) => m.value.toLowerCase().includes(q));
+      if (!row) return toast('No model matches "' + args.trim() + '".');
+      state.model = row.value; try { localStorage.setItem('cr.model', row.value); } catch {}
+      renderModelChip(); renderEffortChip(); pushControls({ model: row.value });
+    },
+  });
+  registerCommand('mcp', { description: 'Open Connectors in Settings', argumentHint: '', run: () => openConnectors() });
+  registerCommand('resume', { description: 'Find and resume a session', argumentHint: '', run: () => { const sb = $('#sidebar'); if (!sb.classList.contains('searching')) $('#search-btn').click(); else $('#search-input').focus(); app.classList.add('sidebar-open'); } });
+
+  // ---------- "!" shell command: runs on this computer, in the session's folder ----------
+  // Desktop's own wording throughout: "Run a shell command in the terminal and send the output
+  // to Claude", "You ran …", "A shell command is already running".
+  let shellBusy = false;
+  async function runShellCommand(command) {
+    if (!command) return;
+    if (!state.current) { thread.appendChild(el('div', 'note error', 'Shell commands are only available in local sessions.')); autoscroll(); return; }
+    if (shellBusy) { thread.appendChild(el('div', 'note error', 'A shell command is already running')); autoscroll(); return; }
+    const step = stepEl('shell', 'You ran', command);
+    step.open = true;
+    const out = el('pre', 'step-shell-out', '');
+    step.querySelector('.step-body').appendChild(out);
+    thread.appendChild(step); autoscroll();
+    let runId = null;
+    const killBtn = el('button', 'btn btn-ghost small step-shell-kill', 'Stop'); killBtn.type = 'button';
+    killBtn.addEventListener('click', async () => { killBtn.disabled = true; if (runId) try { await api(`/sessions/${state.current}/shell/${runId}/kill`, { method: 'POST' }); } catch {} });
+    step.querySelector('summary').appendChild(killBtn);
+    shellBusy = true;
+    try {
+      const r = await api(`/sessions/${state.current}/shell`, { method: 'POST', body: JSON.stringify({ command }) });
+      runId = r.id;
+      const res = await fetch(`/api/sessions/${state.current}/shell/${runId}/stream`, { headers: { Authorization: 'Bearer ' + state.token } });
+      const reader = res.body.getReader(); const decoder = new TextDecoder(); let buf = '', exitCode = null;
+      for (;;) {
+        const { value, done } = await reader.read(); if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let nl;
+        while ((nl = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
+          if (!line) continue;
+          const ev = JSON.parse(line);
+          if (ev.t === 'start' && ev.buffered) out.textContent += ev.buffered;
+          else if (ev.t === 'chunk') { out.textContent += ev.text; autoscroll(); }
+          else if (ev.t === 'done') exitCode = ev.exitCode;
+        }
+      }
+      killBtn.remove();
+      step.querySelector('summary .arg').textContent = command + (exitCode ? ' (exit ' + exitCode + ')' : '');
+      // "Terminal output attached to chat": the result becomes context for what you send next,
+      // exactly like selecting text and choosing "Attach as context" - the same chip, the same quoting.
+      attachContext({ label: 'You ran: ' + command, text: out.textContent || '(no output)' });
+    } catch (e) {
+      killBtn.remove();
+      out.textContent += '\n' + (e.message || String(e));
+    } finally { shellBusy = false; }
+  }
+
+  // Both app commands and "!" are caught here, ahead of the normal send - an app command never
+  // reaches Claude Code, and a shell command never becomes a turn at all.
+  function matchAppCommand(text) {
+    const m = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(text);
+    const spec = m && appCommands.get(m[1]);
+    return spec ? { args: (m[2] || '').trim(), spec } : null;
+  }
+  async function runComposerIntercepts(typed) {
+    const cmd = matchAppCommand(typed);
+    if (cmd) {
+      input.value = ''; input.style.height = 'auto'; try { localStorage.removeItem(draftKey(state.current)); } catch {}
+      closeComposerPop();
+      try { await cmd.spec.run(cmd.args); } catch (e) { thread.appendChild(el('div', 'note error', e.message)); autoscroll(); }
+      return true;
+    }
+    if (/^!/.test(typed) && !pending.length) {
+      input.value = ''; input.style.height = 'auto'; try { localStorage.removeItem(draftKey(state.current)); } catch {}
+      closeComposerPop();
+      runShellCommand(typed.slice(1).trim());
+      return true;
+    }
+    return false;
+  }
+
+  // ---------- dictation: a microphone button, Web Speech API ----------
+  // Safari and Firefox have no SpeechRecognition at all; the button simply never appears there
+  // rather than offering something that would fail the moment it is pressed.
+  (function dictation() {
+    const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const btn = $('#dictate-btn');
+    if (!Recognition) return;
+    btn.classList.remove('hidden');
+    let rec = null, base = ''; // base: what was already in the box when dictation started, so a result replaces only what it added
+    function stop() {
+      // rec is cleared before stop() is called on it: onend fires (some engines do it inline,
+      // not only after a tick) and its own "if (rec)" guard must already see it gone, or a
+      // stop that triggers onend synchronously recurses into this function forever.
+      const r = rec; rec = null; r?.stop();
+      btn.classList.remove('recording'); btn.title = 'Dictation'; btn.setAttribute('aria-label', 'Dictation');
+    }
+    btn.addEventListener('click', () => {
+      if (rec) return stop(); // "Cancel dictation": the same button starts and stops it
+      base = input.value; rec = new Recognition();
+      rec.continuous = true; rec.interimResults = true; rec.lang = navigator.language || 'en-US';
+      rec.onresult = (e) => {
+        let final = '', interim = '';
+        for (let i = e.resultIndex; i < e.results.length; i++) { const r = e.results[i]; if (r.isFinal) final += r[0].transcript; else interim += r[0].transcript; }
+        if (final) base = (base ? base.replace(/\s+$/, '') + ' ' : '') + final.trim() + ' ';
+        input.value = base + interim;
+        input.dispatchEvent(new Event('input'));
+      };
+      rec.onerror = () => { thread.appendChild(el('div', 'note error', 'Couldn’t start dictation. You can try again.')); autoscroll(); stop(); };
+      rec.onend = () => { if (rec) stop(); }; // silence, or the browser ending it on its own
+      try { rec.start(); btn.classList.add('recording'); btn.title = 'Cancel dictation'; btn.setAttribute('aria-label', 'Cancel dictation'); }
+      catch { stop(); }
+    });
+  })();
+
+  // ---------- number keys 1-9 pick an option on an open question card ----------
+  // Desktop's own wording for the hint: "Press a number key to pick an option when Claude asks
+  // a question." Only when focus is not in a text field, so typing "I'll pick option 2" in the
+  // box - or in the question's own "Something else" field - does not hijack the digit.
+  const isTextField = (n) => n && (n.tagName === 'TEXTAREA' || (n.tagName === 'INPUT' && !['button', 'checkbox', 'radio', 'submit'].includes(n.type)) || n.isContentEditable);
+  document.addEventListener('keydown', (e) => {
+    if (isTextField(document.activeElement) || e.ctrlKey || e.metaKey || e.altKey) return;
+    const n = Number(e.key); if (!(n >= 1 && n <= 9)) return;
+    const card = thread.querySelector('.question-card:not(.answered)'); if (!card) return;
+    const opts = card.querySelectorAll('.q-opt'); if (n > opts.length) return;
+    e.preventDefault(); opts[n - 1].click();
+  });
+
+  // ---------- annotate: click a staged image to draw on it before sending ----------
+  // Pointer Events, not mouse/touch separately, so a finger on a phone draws the same way a
+  // mouse does; the canvas itself is touch-action:none (CSS) so a stroke never scrolls the page.
+  const AN_COLORS = ['#ef4444', '#f59e0b', '#22c55e', '#3b82f6', '#000000', '#ffffff'];
+  const anModal = $('#annotate-modal'), anCanvas = $('#an-canvas'), anCtx = anCanvas.getContext('2d'), anWrap = $('#an-canvas-wrap');
+  let an = null; // { idx, tool, color, undo: ImageData[], drag: {x,y}|null }
+  function anLineWidth() { return Math.max(3, Math.round(Math.min(anCanvas.width, anCanvas.height) / 180)); }
+  function anPoint(e) {
+    const r = anCanvas.getBoundingClientRect();
+    return { x: (e.clientX - r.left) * (anCanvas.width / r.width), y: (e.clientY - r.top) * (anCanvas.height / r.height) };
+  }
+  function anPushUndo() { an.undo.push(anCtx.getImageData(0, 0, anCanvas.width, anCanvas.height)); if (an.undo.length > 25) an.undo.shift(); }
+  function anPaintTools() { document.querySelectorAll('.an-tool').forEach((b) => b.classList.toggle('on', b.dataset.tool === an.tool)); }
+  function anPaintColors() {
+    const box = $('#an-colors'); box.innerHTML = '';
+    for (const c of AN_COLORS) {
+      const b = el('button', 'an-color' + (c === an.color ? ' on' : '')); b.type = 'button'; b.style.background = c; b.title = c; b.setAttribute('aria-label', 'Colour ' + c);
+      b.addEventListener('click', () => { an.color = c; anPaintColors(); });
+      box.appendChild(b);
+    }
+  }
+  function openAnnotate(idx) {
+    const item = pending[idx]; if (!item || item.kind !== 'image') return;
+    const img = new Image();
+    img.onload = () => {
+      anCanvas.width = img.naturalWidth; anCanvas.height = img.naturalHeight;
+      anCtx.drawImage(img, 0, 0);
+      an = { idx, tool: 'pen', color: AN_COLORS[0], undo: [] };
+      anPaintTools(); anPaintColors();
+      anModal.classList.remove('hidden');
+    };
+    img.src = item.dataUrl;
+  }
+  function closeAnnotate() { anModal.classList.add('hidden'); anWrap.querySelector('.an-text-input')?.remove(); an = null; }
+  document.querySelectorAll('.an-tool').forEach((b) => b.addEventListener('click', () => { an.tool = b.dataset.tool; anPaintTools(); }));
+  $('#an-undo').addEventListener('click', () => { if (an?.undo.length) anCtx.putImageData(an.undo.pop(), 0, 0); });
+  $('#an-close').addEventListener('click', closeAnnotate);
+  $('#an-cancel').addEventListener('click', closeAnnotate);
+  $('#an-done').addEventListener('click', () => {
+    const { idx } = an;
+    const dataUrl = anCanvas.toDataURL('image/png');
+    pending[idx] = { kind: 'image', name: pending[idx].name.replace(/\.\w+$/, '') + '.png', media_type: 'image/png', data: dataUrl.split(',')[1], dataUrl };
+    renderPending(); closeAnnotate();
+  });
+  // A text box placed over the canvas at the click point - Enter or losing focus commits it
+  // (empty: nothing is drawn, and nothing was pushed onto Undo for it either).
+  function anPlaceText(canvasPt, displayPt) {
+    const input = el('input', 'an-text-input'); input.type = 'text';
+    input.style.left = displayPt.x + 'px'; input.style.top = (displayPt.y - 11) + 'px'; input.style.color = an.color;
+    anWrap.appendChild(input); input.focus();
+    const commit = () => {
+      const text = input.value; input.remove();
+      if (!text.trim()) return;
+      anPushUndo();
+      anCtx.fillStyle = an.color; anCtx.font = Math.round(anLineWidth() * 4.5) + 'px ' + getComputedStyle(document.body).fontFamily;
+      anCtx.textBaseline = 'top'; anCtx.fillText(text, canvasPt.x, canvasPt.y);
+    };
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); input.blur(); } else if (e.key === 'Escape') { input.value = ''; input.blur(); } });
+    input.addEventListener('blur', commit, { once: true });
+  }
+  function anArrowHead(to, angle) {
+    const len = anLineWidth() * 3.2;
+    anCtx.beginPath(); anCtx.moveTo(to.x, to.y);
+    anCtx.lineTo(to.x - len * Math.cos(angle - Math.PI / 7), to.y - len * Math.sin(angle - Math.PI / 7));
+    anCtx.moveTo(to.x, to.y);
+    anCtx.lineTo(to.x - len * Math.cos(angle + Math.PI / 7), to.y - len * Math.sin(angle + Math.PI / 7));
+    anCtx.stroke();
+  }
+  anCtx.lineCap = 'round'; anCtx.lineJoin = 'round';
+  anCanvas.addEventListener('pointerdown', (e) => {
+    if (!an) return;
+    // A fast stroke that leaves the canvas mid-drag keeps being heard with capture; without it,
+    // pointermove just stops until the finger (or mouse) comes back. Not essential, so a pointer
+    // id the engine does not recognise as active (WebKit throws on one it did not originate) is
+    // not worth losing the stroke over.
+    try { anCanvas.setPointerCapture(e.pointerId); } catch {}
+    const p = anPoint(e);
+    if (an.tool === 'text') return anPlaceText(p, { x: e.clientX - anCanvas.getBoundingClientRect().left, y: e.clientY - anCanvas.getBoundingClientRect().top });
+    anPushUndo();
+    an.drag = p;
+    anCtx.strokeStyle = an.color; anCtx.lineWidth = anLineWidth();
+    if (an.tool === 'pen') { anCtx.beginPath(); anCtx.moveTo(p.x, p.y); }
+  });
+  anCanvas.addEventListener('pointermove', (e) => {
+    if (!an?.drag) return;
+    const p = anPoint(e);
+    if (an.tool === 'pen') { anCtx.lineTo(p.x, p.y); anCtx.stroke(); an.drag = p; return; }
+    // Rectangle and arrow redraw live from the snapshot taken on pointerdown, the way a drag
+    // preview has to - committing on every move would stack hundreds of overlapping shapes.
+    anCtx.putImageData(an.undo[an.undo.length - 1], 0, 0);
+    anCtx.strokeStyle = an.color; anCtx.lineWidth = anLineWidth();
+    if (an.tool === 'rect') anCtx.strokeRect(Math.min(an.drag.x, p.x), Math.min(an.drag.y, p.y), Math.abs(p.x - an.drag.x), Math.abs(p.y - an.drag.y));
+    else if (an.tool === 'arrow') { anCtx.beginPath(); anCtx.moveTo(an.drag.x, an.drag.y); anCtx.lineTo(p.x, p.y); anCtx.stroke(); anArrowHead(p, Math.atan2(p.y - an.drag.y, p.x - an.drag.x)); }
+  });
+  anCanvas.addEventListener('pointerup', () => { if (an) an.drag = null; });
 
   // ---------- attachments: images go to Claude as images; other files are saved on the PC and referenced ----------
   const pending = []; // { kind: 'image'|'file', name, media_type, data (base64), dataUrl }
@@ -3801,7 +5639,7 @@
     strip.innerHTML = ''; strip.classList.toggle('hidden', !pending.length);
     pending.forEach((a, i) => {
       const chip = el('div', 'att' + (a.kind === 'image' ? ' att-img' : ''));
-      if (a.kind === 'image') { const im = el('img'); im.src = a.dataUrl; chip.appendChild(im); } else chip.appendChild(el('span', 'att-name', a.name));
+      if (a.kind === 'image') { const im = el('img'); im.src = a.dataUrl; im.title = 'Click to annotate'; im.addEventListener('click', () => openAnnotate(i)); chip.appendChild(im); } else chip.appendChild(el('span', 'att-name', a.name));
       const x = el('button', 'att-x'); x.type = 'button'; x.title = 'Remove'; x.textContent = '×';
       x.addEventListener('click', () => { pending.splice(i, 1); renderPending(); paintSendButton(); });
       chip.appendChild(x); strip.appendChild(chip);
@@ -3821,8 +5659,9 @@
     return { kind: 'image', name: file.name.replace(/\.\w+$/, '') + '.jpg', media_type: 'image/jpeg', data: out.split(',')[1], dataUrl: out };
   }
   async function addFiles(files) {
+    // Desktop's own ceiling ("Attach up to 20 images in a single message for local sessions").
     for (const f of files) {
-      if (pending.length >= 10) break;
+      if (pending.length >= 20) break;
       try {
         if (f.type.startsWith('image/')) pending.push(await prepareImage(f));
         else if (f.size <= 25 * 1024 * 1024) pending.push({ kind: 'file', name: f.name, media_type: f.type || 'application/octet-stream', data: (await readAsDataUrl(f)).split(',')[1] });
@@ -3873,12 +5712,27 @@
   })();
 
   async function submit() {
-    const text = input.value.trim(); if (!text && !pending.length) return;
+    const typed = input.value.trim(); if (!typed && !pending.length && !contextChips.length) return;
+    if (await runComposerIntercepts(typed)) return;
+    // Context chips are quoted ahead of what you typed, the same shape "Attach as context" used
+    // to drop straight into the box - just kept out of it, as chips, while you are still typing.
+    const text = contextChips.length ? contextChips.map((c) => quoteContext(c)).join('\n\n') + (typed ? '\n\n' + typed : '') : typed;
+    // A Worktree was chosen for this new session: make it now, from this very message, before
+    // anything else about the message is touched - a Stop here must leave the box exactly as
+    // typed, same as never having sent it.
+    if (!state.current && state.cwdWorktreePending) {
+      const made = await setUpSessionWorktree(state.cwd, text);
+      if (!made) return;
+      state.cwd = made.path; state.cwdWorktreePending = false;
+      try { localStorage.setItem('cr.cwd', made.path); } catch {}
+      renderProjectChip();
+    }
     const attachments = pending.filter((a) => a.kind === 'image').map((a) => ({ media_type: a.media_type, data: a.data }));
     const files = pending.filter((a) => a.kind === 'file').map((a) => ({ name: a.name, media_type: a.media_type, data: a.data }));
     const images = pending.filter((a) => a.kind === 'image').map((a) => a.dataUrl);
     const shown = text || (files.length ? files.map((f) => f.name).join(', ') : '');
     pending.length = 0; renderPending();
+    contextChips.length = 0; renderContextChips();
     input.value = ''; input.style.height = 'auto'; try { localStorage.removeItem(draftKey(state.current)); } catch {}
     empty.classList.remove('show'); stickToBottom = true;
     // The message's own id, drawn on its bubble now and sent with it: every event about the
@@ -3904,6 +5758,9 @@
     try {
       if (state.current) {
         const r = await api(`/sessions/${state.current}/send`, { method: 'POST', body: JSON.stringify({ ...body, ...turnOptions() }) });
+        // A usage limit was already known to be hit: it waits above the composer instead - not a
+        // message in the thread, since Claude has not seen it (onHeldSend, below).
+        if (r.held) { mine.remove(); setRunning(false); onHeldSend(r); return; }
         if (r.id && r.id !== cid) mine.dataset.promptId = r.id;
         subscribe(state.current, { fromTurn: true }); // the turn from its prompt - this bubble, found by its id
       } else {
@@ -3929,6 +5786,244 @@
     if (back.length && !input.value.trim()) { input.value = back.join('\n\n'); input.dispatchEvent(new Event('input')); }
   }
 
+  // ---------- queued message controls, the usage-limit queue, rewind that restores files, and automatic resume ----------
+  // House rule (CLAUDE.md): a message typed mid-turn is still yielded into Claude Code the instant
+  // it is typed - "steer" stays the default. Everything here only changes what can be done to a
+  // message AFTER it is already there, waiting its turn, or to files after Claude has changed them.
+  let lastEscAt = 0;
+  const autoResumed = new Set(); // 'sessionId:at' already auto-resumed this page load - never twice for the same interruption
+  const CONTINUE_TEXT = 'Continue where you left off. Check what was already done before redoing anything, then finish the task.';
+
+  // ---- queued message controls: Edit in composer / Send now / Remove (row menu + right-click),
+  // drag to reorder, and several collapse into a stack ----
+  const queueCtxMenu = el('div', 'menu hidden'); queueCtxMenu.id = 'queue-ctx-menu'; document.body.appendChild(queueCtxMenu);
+  document.addEventListener('click', (e) => { if (!queueCtxMenu.contains(e.target)) queueCtxMenu.classList.add('hidden'); });
+  const queueMsgText = (bubble) => bubble.querySelector('.msg-text')?.textContent || '';
+  async function removeQueuedMsg(bubble) {
+    const id = bubble.dataset.promptId; if (!id || !state.current) return;
+    if (!confirm('Discard queued message?\n\nCancelling a queued message no longer interrupts the turn in progress.')) return;
+    try {
+      const r = await api(`/sessions/${state.current}/queue/${id}/remove`, { method: 'POST' });
+      if (!r.ok) return toast('That message already started.');
+      bubble.remove(); restackQueue();
+    } catch (e) { toast(e.message); }
+  }
+  async function sendQueuedNow(bubble) {
+    const id = bubble.dataset.promptId; if (!id || !state.current) return;
+    try { await api(`/sessions/${state.current}/queue/${id}/send-now`, { method: 'POST' }); } catch (e) { toast(e.message); }
+  }
+  async function editQueuedInComposer(bubble) {
+    const id = bubble.dataset.promptId; if (!id || !state.current) return;
+    const text = queueMsgText(bubble);
+    try {
+      const r = await api(`/sessions/${state.current}/queue/${id}/remove`, { method: 'POST' });
+      if (!r.ok) return toast('That message already started.');
+      bubble.remove(); restackQueue();
+      input.value = text; input.dispatchEvent(new Event('input')); input.focus();
+    } catch (e) { toast(e.message); }
+  }
+  function showQueueMenu(bubble, x, y) {
+    queueCtxMenu.innerHTML = '';
+    const add = (label, fn) => queueCtxMenu.appendChild(item(label, '', false, () => { queueCtxMenu.classList.add('hidden'); fn(); }));
+    add('Edit in composer', () => editQueuedInComposer(bubble));
+    add('Send now', () => sendQueuedNow(bubble));
+    add('Remove', () => removeQueuedMsg(bubble));
+    queueCtxMenu.classList.remove('hidden');
+    if (window.matchMedia('(max-width: 860px)').matches) { queueCtxMenu.style.left = queueCtxMenu.style.top = ''; return; } // a bottom sheet there, like #ctx-menu
+    const r = queueCtxMenu.getBoundingClientRect();
+    queueCtxMenu.style.left = Math.min(x, window.innerWidth - r.width - 8) + 'px';
+    queueCtxMenu.style.top = Math.min(y, window.innerHeight - r.height - 8) + 'px';
+  }
+  // Added to every queued bubble (userMsg, above): the row menu button, right-click, and a drag
+  // handle - the last harmless with only one message in the stack.
+  function queueRowActions(bubble) {
+    const row = el('div', 'msg-actions user-actions queue-row-actions');
+    const kebab = el('button', 'icon-btn small'); kebab.type = 'button'; kebab.title = 'Queued message actions'; kebab.innerHTML = KEBAB_SVG;
+    kebab.addEventListener('click', (e) => { e.stopPropagation(); const r = kebab.getBoundingClientRect(); showQueueMenu(bubble, r.left, r.bottom + 4); });
+    row.appendChild(kebab);
+    bubble.appendChild(row);
+    bubble.addEventListener('contextmenu', (e) => { e.preventDefault(); showQueueMenu(bubble, e.clientX, e.clientY); });
+    // Drag-and-drop lives entirely client-side until the drop: only then is the new order sent
+    // (lib/runs.mjs reorderQueued), so a drag that is abandoned mid-way never touches the CLI.
+    bubble.draggable = true;
+    bubble.addEventListener('dragstart', (e) => { e.dataTransfer.setData('text/plain', bubble.dataset.promptId || ''); e.dataTransfer.effectAllowed = 'move'; bubble.classList.add('dragging'); });
+    bubble.addEventListener('dragend', () => bubble.classList.remove('dragging'));
+    bubble.addEventListener('dragover', (e) => {
+      if (!bubble.classList.contains('queued')) return;
+      e.preventDefault();
+      const dragging = thread.querySelector('.msg.user.queued.dragging');
+      if (!dragging || dragging === bubble) return;
+      const r = bubble.getBoundingClientRect();
+      e.clientY - r.top < r.height / 2 ? bubble.before(dragging) : bubble.after(dragging);
+    });
+    bubble.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      const body = thread.querySelector('.queue-stack-body') || thread;
+      const ids = [...body.querySelectorAll('.msg.user.queued')].map((n) => n.dataset.promptId).filter(Boolean);
+      if (ids.length < 2 || !state.current) return;
+      try { await api(`/sessions/${state.current}/queue/reorder`, { method: 'POST', body: JSON.stringify({ order: ids }) }); }
+      catch (e2) { toast("Couldn't reorder the queued messages. Try again."); }
+    });
+  }
+  function queueStackEl() {
+    const found = thread.querySelector('.queue-stack'); if (found) return found;
+    const s = el('div', 'queue-stack collapsed');
+    const head = el('button', 'queue-stack-head'); head.type = 'button';
+    head.addEventListener('click', () => { s.classList.toggle('collapsed'); paintQueueStackHead(s); });
+    s.appendChild(head); s.appendChild(el('div', 'queue-stack-body'));
+    return s;
+  }
+  function paintQueueStackHead(s) {
+    s.querySelector('.queue-stack-head').textContent = s.classList.contains('collapsed') ? 'Queued messages collapse into a stack — click to expand' : 'Collapse queued messages';
+  }
+  // Several queued messages collapse into a stack (Desktop's own words for it); one alone is a
+  // plain bubble, same as any other message in the thread.
+  function restackQueue() {
+    const bubbles = [...thread.querySelectorAll('.msg.user.queued')];
+    const existing = thread.querySelector('.queue-stack');
+    if (bubbles.length < 2) {
+      if (existing) { for (const b of [...existing.querySelectorAll('.msg.user.queued')]) existing.before(b); existing.remove(); }
+      return;
+    }
+    const s = queueStackEl();
+    if (!s.isConnected) bubbles[0].before(s);
+    const body = s.querySelector('.queue-stack-body');
+    for (const b of bubbles) body.appendChild(b); // a DOM move, not a clone - listeners and dataset ride along
+    paintQueueStackHead(s);
+  }
+  // A reorder lands as the new id order; the bubbles already exist (nothing here ever recreates
+  // one), so this only has to place them.
+  function reorderBubbles(ids) {
+    const body = thread.querySelector('.queue-stack-body') || thread;
+    for (const id of ids) { const n = body.querySelector('.msg.user.queued[data-prompt-id="' + CSS.escape(id) + '"]'); if (n) body.appendChild(n); }
+  }
+
+  // ---- the usage-limit queue: a message waits above the composer instead of failing, and goes
+  // in by itself when the limit resets; each can be edited, cancelled, or sent early ----
+  const heldQueue = $('#held-queue'), heldList = $('#held-list');
+  function onHeldSend() { toast("You hit your usage limit. Held messages will send when it resets."); refreshHeldQueue(); }
+  function heldRow(it) {
+    const row = el('div', 'held-row');
+    row.appendChild(el('div', 'held-text', it.text));
+    const actions = el('div', 'held-actions');
+    const editBtn = el('button', 'btn btn-ghost small', 'Edit'); editBtn.type = 'button';
+    editBtn.addEventListener('click', async () => {
+      try { await api(`/sessions/${state.current}/limit-queue/${it.id}/remove`, { method: 'POST' }); input.value = it.text; input.dispatchEvent(new Event('input')); input.focus(); refreshHeldQueue(); }
+      catch (e) { toast(e.message); }
+    });
+    const sendBtn = el('button', 'btn btn-ghost small', 'Send now'); sendBtn.type = 'button';
+    sendBtn.addEventListener('click', async () => {
+      sendBtn.disabled = true;
+      try { await api(`/sessions/${state.current}/limit-queue/${it.id}/send-now`, { method: 'POST' }); await refreshHeldQueue(); }
+      catch (e) { sendBtn.disabled = false; toast(e.message); }
+    });
+    const cancelBtn = el('button', 'btn btn-ghost small', 'Cancel'); cancelBtn.type = 'button';
+    cancelBtn.addEventListener('click', async () => {
+      try { await api(`/sessions/${state.current}/limit-queue/${it.id}/remove`, { method: 'POST' }); refreshHeldQueue(); } catch (e) { toast(e.message); }
+    });
+    actions.append(editBtn, sendBtn, cancelBtn);
+    row.appendChild(actions);
+    return row;
+  }
+  async function refreshHeldQueue() {
+    if (!state.current) { heldQueue.classList.add('hidden'); return; }
+    let r; try { r = await api(`/sessions/${state.current}/limit-queue`); } catch { return; }
+    const items = r.items || [];
+    if (!items.length) {
+      const wasShown = !heldQueue.classList.contains('hidden');
+      heldQueue.classList.add('hidden'); heldList.innerHTML = '';
+      if (wasShown) openSession(state.current); // they were just sent off: pick up the turn they started
+      return;
+    }
+    heldList.innerHTML = '';
+    for (const it of items) heldList.appendChild(heldRow(it));
+    $('#held-resets').textContent = r.resetsAt ? 'Resets ' + new Date(r.resetsAt).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
+    heldQueue.classList.remove('hidden');
+  }
+  setInterval(() => { if (state.current) refreshHeldQueue(); }, 8000);
+
+  // ---- rewind that restores files: a dry-run preview, the choice of scope, and Redo rewind ----
+  const rewindModal = (() => {
+    const m = el('div', 'modal hidden'); m.id = 'rewind-modal';
+    const card = el('div', 'modal-card');
+    const head = el('div', 'modal-head'); head.appendChild(el('span', null, 'Rewind to this message?'));
+    const close = el('button', 'icon-btn'); close.type = 'button'; close.setAttribute('aria-label', 'Close');
+    close.innerHTML = '<svg viewBox="0 0 20 20" width="16" height="16"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+    close.addEventListener('click', closeRewindDialog);
+    head.appendChild(close); card.appendChild(head);
+    card.appendChild(el('p', 'modal-hint rewind-preview'));
+    card.appendChild(el('div', 'rewind-choices'));
+    m.appendChild(card);
+    m.addEventListener('click', (e) => { if (e.target === m) closeRewindDialog(); });
+    document.body.appendChild(m);
+    return m;
+  })();
+  function closeRewindDialog() { rewindModal.classList.add('hidden'); }
+  function lastRewindableUuid() {
+    const nodes = [...thread.querySelectorAll('.msg.user[data-uuid]:not(.queued)')];
+    const n = nodes[nodes.length - 1];
+    return n ? { uuid: n.dataset.uuid, text: n.querySelector('.msg-text')?.textContent || '' } : null;
+  }
+  async function openRewindDialog(uuid, text) {
+    if (!state.current) return;
+    const hint = rewindModal.querySelector('.rewind-preview'), choices = rewindModal.querySelector('.rewind-choices');
+    hint.textContent = 'Looking at what would change…'; choices.innerHTML = '';
+    rewindModal.classList.remove('hidden');
+    let preview; try { preview = await api(`/sessions/${state.current}/rewind/preview`, { method: 'POST', body: JSON.stringify({ uuid }) }); } catch (e) { preview = { canRewind: false, error: e.message }; }
+    if (rewindModal.classList.contains('hidden')) return; // closed while the preview was in flight
+    const n = (preview.filesChanged || []).length;
+    hint.textContent = preview.canRewind
+      ? (n ? `${n} file${n === 1 ? '' : 's'} would be restored (+${preview.insertions || 0} −${preview.deletions || 0}).` : 'No tracked files changed after this point.')
+      : (preview.error || "This session doesn't support rewind.");
+    const addChoice = (label, scope, primary) => {
+      const b = el('button', 'btn ' + (primary ? 'btn-primary' : 'btn-ghost'), label); b.type = 'button';
+      b.addEventListener('click', () => confirmRewind(uuid, text, scope));
+      choices.appendChild(b);
+    };
+    addChoice('Conversation and code', 'both', true);
+    addChoice('Conversation only', 'conversation');
+    addChoice('Code only', 'code');
+    const cancel = el('button', 'btn btn-ghost', 'Cancel'); cancel.type = 'button'; cancel.addEventListener('click', closeRewindDialog);
+    choices.appendChild(cancel);
+  }
+  async function confirmRewind(uuid, text, scope) {
+    closeRewindDialog();
+    try {
+      const r = await api(`/sessions/${state.current}/rewind`, { method: 'POST', body: JSON.stringify({ uuid, scope }) });
+      if (r.filesOnly) { toast('Restored the code from this point.'); showRedoToast(); refreshGit(); if (changesOpen) loadChanges(); return; }
+      if (scope !== 'conversation') showRedoToast(); // the code side moved too ('both'); offer to undo just that part
+      pendingPrefill = text || '';
+      await loadSessions();
+      if (r.sessionId) location.hash = '#/s/' + r.sessionId;
+      else { if (r.cwd) { state.cwd = r.cwd; localStorage.setItem('cr.cwd', r.cwd); } location.hash = '#/'; }
+    } catch (e) { toast(e.message); }
+  }
+  function showRedoToast() {
+    const n = el('div', 'note redo-toast'); n.appendChild(document.createTextNode('Files restored. '));
+    const b = el('button', 'link-btn inline', 'Redo rewind'); b.type = 'button';
+    b.addEventListener('click', async () => {
+      try {
+        const r = await api(`/sessions/${state.current}/rewind/redo`, { method: 'POST' });
+        if (r.ok) { toast('Rewind undone.'); refreshGit(); if (changesOpen) loadChanges(); n.remove(); }
+        else toast("Couldn't undo this rewind. Try again.");
+      } catch (e) { toast(e.message); }
+    });
+    n.appendChild(b);
+    thread.appendChild(n); autoscroll();
+    setTimeout(() => n.remove(), 15 * 60 * 1000); // matches lib/rewind.mjs's own redo window
+  }
+  registerCommand('rewind', { description: 'Steps back to before your last message', run: () => { const l = lastRewindableUuid(); if (l) openRewindDialog(l.uuid, l.text); else toast('Nothing to rewind to yet'); } });
+  // Esc Esc opens rewind for the last message - but a lone Escape already means something else in
+  // most places (Stop, close a menu, clear a field), so this only arms once none of those apply.
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    if (!rewindModal.classList.contains('hidden')) { closeRewindDialog(); lastEscAt = 0; return; }
+    if (state.answering || !state.current || (document.activeElement === input && input.value)) { lastEscAt = 0; return; }
+    const now = Date.now();
+    if (now - lastEscAt < 600) { lastEscAt = 0; const l = lastRewindableUuid(); if (l) openRewindDialog(l.uuid, l.text); }
+    else lastEscAt = now;
+  });
+
   // ---------- the sidebar and the right-hand panels drag wider or narrower ----------
   // The width goes into a CSS variable on <html>, so the stylesheet's phone rules keep
   // winning below 860 px; it is remembered per device. Double-click puts the default back.
@@ -3952,7 +6047,7 @@
     h.addEventListener('dblclick', () => { apply(0); try { localStorage.removeItem(store); } catch {} });
   }
   resizable($('#sidebar'), '--sidebar-w', { min: 220, max: () => Math.min(600, window.innerWidth / 2), side: 'start' });
-  for (const [node, key] of [[tasksPanel, '--tasks-w'], [changesPanel, '--changes-w'], [pvPanel, '--preview-w'], [fxPanel, '--files-w']]) resizable(node, key, { min: 300, max: () => window.innerWidth - 560, side: 'end' });
+  for (const [node, key] of [[tasksPanel, '--tasks-w'], [changesPanel, '--changes-w'], [pvPanel, '--preview-w'], [fxPanel, '--files-w'], [termPanel, '--terminal-w']]) resizable(node, key, { min: 300, max: () => window.innerWidth - 560, side: 'end' });
 
   // ---------- everything this app can do, by name ----------
   // Ctrl/Cmd+K. Commands first, then the sessions themselves, so the same box both
@@ -3977,6 +6072,7 @@
       { name: 'Changes', group: 'Session', run: () => (changesOpen ? closeChanges() : openChanges()) },
       { name: 'Files', group: 'Session', run: () => (filesOpen ? closeFiles() : openFiles()) },
       { name: 'Browser', group: 'Session', hint: 'Ctrl+Shift+B', run: () => (previewOpen ? closePreview() : openPreview()) },
+      { name: 'Terminal', group: 'Session', hint: 'Ctrl+`', run: () => toggleTerminal() },
       { name: 'Tasks', group: 'Session', run: () => (tasksOpen ? closeTasks() : openTasks()) },
       { name: 'Worktrees', group: 'Session', run: () => showWorktrees(state.cwd) },
       { name: 'New worktree…', group: 'Session', run: () => makeWorktree(state.cwd) },
@@ -4054,10 +6150,16 @@
     if (!(e.ctrlKey || e.metaKey) || e.altKey || $('#app').classList.contains('hidden')) return;
     const k = e.key.toLowerCase();
     if (k === 'k') { e.preventDefault(); pal.classList.contains('hidden') ? openPalette() : closePalette(); }
+    // With a session open, Ctrl/Cmd+F finds in it instead; the sidebar's own search moves to
+    // Shift+F there (still on its button too). With none open, F keeps finding a session.
+    else if (k === 'f' && state.current && !e.shiftKey) { e.preventDefault(); openFind(); }
     else if (k === 'f') { e.preventDefault(); const sb = $('#sidebar'); if (!sb.classList.contains('searching')) $('#search-btn').click(); else $('#search-input').focus(); app.classList.add('sidebar-open'); }
     else if (k === 'b' && e.shiftKey) { e.preventDefault(); previewOpen ? closePreview() : openPreview(); } // Desktop's own shortcut for its Browser
     else if (k === 'b') { e.preventDefault(); app.classList.toggle('sidebar-open'); }
     else if (k === 'n') { e.preventDefault(); location.hash = '#/'; }
+    else if (k === 'u') { e.preventDefault(); $('#file-input').click(); } // Desktop's shortcut for "Attach files"
+
+    else if (e.code === 'Backquote') { e.preventDefault(); toggleTerminal(); } // Ctrl+` : VS Code's and Desktop's own terminal shortcut
   });
 
   // ---------- routing ----------
@@ -4066,9 +6168,11 @@
   // every await once a newer open (or the new-chat screen) has started. Without this the
   // slow one finished last and painted its messages under the other session's name.
   let openSeq = 0;
-  async function openSession(id) {
+  async function openSession(id, { jumpTo } = {}) {
     const seq = ++openSeq;
-    state.current = id; state.live = null; state.tasks = []; hiddenTasks.clear(); paintTasks(); if (changesOpen) closeChanges(); if (previewOpen) closePreview(); if (filesOpen) closeFiles();
+    state.current = id; state.live = null; state.tasks = []; hiddenTasks.clear(); paintTasks(); if (changesOpen) closeChanges(); if (previewOpen) closePreview(); if (filesOpen) closeFiles(); if (terminalOpen) closeTerminal();
+    planTodos = null; planTasks.clear(); planBoxClosedByUser = false; paintPlanBox();
+    findQuery = ''; findHits = []; findIndex = -1; findSeq++; findBar.classList.add('hidden');
     if (state.es) { state.es.close(); state.es = null; }
     app.classList.remove('sidebar-open'); app.classList.remove('new');
     empty.classList.remove('show'); thread.innerHTML = '<div class="muted small pad">Loading…</div>';
@@ -4076,6 +6180,7 @@
     try {
       const info = await api('/sessions/' + id);
       if (seq !== openSeq) return;
+      const chaptersReady = loadChapters(id); // raced with the history fetch below, awaited before it draws
       // A turn started here and still running is replayed by the live stream from
       // its prompt onwards, so the history stops just before it.
       // From a server that tells turns apart (`busy` comes with it), the run gives the turn under way and
@@ -4084,8 +6189,10 @@
       const until = !info.live ? 0 : byTurn ? info.turnStartedAt || 0 : info.runStartedAt || 0;
       // The newest page only; older ones come as the reader scrolls up. A server from before
       // paging has no /history and answers with the whole list.
+      // Picking a view from the session menu overrides the default for this one reopen only.
+      state.transcriptView = explicitTranscriptView || convSettings.transcriptView || 'normal'; explicitTranscriptView = null;
       let page;
-      try { page = await api(`/sessions/${id}/history` + (until ? '?until=' + until : '')); }
+      try { page = await api(`/sessions/${id}/history` + (until ? '?until=' + until : '') + (state.transcriptView !== 'normal' ? (until ? '&' : '?') + 'view=' + state.transcriptView : '')); }
       catch (e) { if (e.status !== 404) throw e; page = { messages: await api(`/sessions/${id}/messages` + (until ? '?before=' + until : '')), more: false }; }
       if (seq !== openSeq) return;
       const messages = page.messages;
@@ -4097,22 +6204,35 @@
       // A chat's own folder is where it works (the Files panel, the Browser, relative paths), but
       // it is not a folder to start the next session in: New goes back to what was picked.
       state.cwd = info.cwd || state.cwd; state.cwdIsChat = !!info.chat; renderProjectChip(); pvFollow(); $('#project-btn').classList.add('locked');
+      await chaptersReady; if (seq !== openSeq) return;
       renderHistory(messages);
       paintHistoryTop();
-      // The last turn never finished (the app or the PC restarted mid-work): say so, offer to go on.
+      // The last turn never finished (the app or the PC restarted mid-work). Desktop resumes by
+      // itself when that is safe and shows the manual banner only when it is not
+      // (info.interrupted.safe, computed server-side - server.mjs's safeToAutoResume).
       if (info.interrupted) {
-        const n = el('div', 'interrupted');
-        n.appendChild(el('span', null, info.interrupted.kind === 'tool_call' ? 'This turn stopped in the middle of a tool call' + (info.interrupted.at ? ' (' + relTime(Date.parse(info.interrupted.at)) + ' ago)' : '') + '. The app or the computer was restarted before Claude finished.' : 'This turn stopped before Claude answered' + (info.interrupted.at ? ' (' + relTime(Date.parse(info.interrupted.at)) + ' ago)' : '') + '.'));
-        const b = el('button', 'btn btn-ghost', 'Continue where it left off'); b.type = 'button';
-        b.addEventListener('click', () => { n.remove(); input.value = 'Continue where you left off. Check what was already done before redoing anything, then finish the task.'; input.dispatchEvent(new Event('input')); submit(); });
-        n.appendChild(b); thread.appendChild(n);
+        const key = id + ':' + info.interrupted.at;
+        if (info.interrupted.safe && !autoResumed.has(key)) {
+          autoResumed.add(key);
+          const n = el('div', 'note', 'Your computer went to sleep and paused this session. Resuming…');
+          thread.appendChild(n); setTimeout(() => n.remove(), 6000);
+          input.value = CONTINUE_TEXT; input.dispatchEvent(new Event('input')); submit();
+        } else {
+          const n = el('div', 'interrupted');
+          n.appendChild(el('span', null, info.interrupted.kind === 'tool_call' ? 'This turn stopped in the middle of a tool call' + (info.interrupted.at ? ' (' + relTime(Date.parse(info.interrupted.at)) + ' ago)' : '') + '. The app or the computer was restarted before Claude finished.' : 'This turn stopped before Claude answered' + (info.interrupted.at ? ' (' + relTime(Date.parse(info.interrupted.at)) + ' ago)' : '') + '.'));
+          const b = el('button', 'btn btn-ghost', 'Continue where it left off'); b.type = 'button';
+          b.addEventListener('click', () => { n.remove(); input.value = CONTINUE_TEXT; input.dispatchEvent(new Event('input')); submit(); });
+          n.appendChild(b); thread.appendChild(n);
+        }
       }
-      stickToBottom = true; pinToBottom();
+      // A deep link to one message is not asking to land at the end - don't pin there first.
+      if (jumpTo) jumpToMessage(jumpTo); else { stickToBottom = true; pinToBottom(); }
       requestAnimationFrame(fillTop); // a first page shorter than the window brings the next one
       setRunning(false); setElsewhere(false);
       markRead(id);
       subscribe(id, { fromTurn: byTurn }); // streams our own turn, or follows the file if another window is working
       restoreDraft(id);
+      refreshHeldQueue(); // messages still waiting above the composer for a usage limit to reset
       usage.context = info.context || null; paintUsage(); refreshGit(); watchPr(); $('#session-menu-btn').classList.remove('hidden'); $('#new-bar').classList.add('hidden');
       input.placeholder = 'Type / for commands';
       api(`/sessions/${id}/usage`).then((u) => { usage.context = u.context || usage.context; usage.limits = u.limits || usage.limits; paintUsage(); }).catch(() => {});
@@ -4123,7 +6243,10 @@
     openSeq++; // a session still loading must not paint over the new-chat screen
     if (state.cwdIsChat) { state.cwdIsChat = false; state.cwd = localStorage.getItem('cr.cwd') || ''; renderProjectChip(); }
     hist.id = null; hist.more = false;
-    state.current = null; state.live = null; state.tasks = []; hiddenTasks.clear(); paintTasks(); if (changesOpen) closeChanges(); if (filesOpen) closeFiles(); stopPrWatch(); $("#sb-pr-state").classList.add("hidden");
+    chapters = []; registeredChapters.clear();
+    planTodos = null; planTasks.clear(); planBoxClosedByUser = false; paintPlanBox();
+    findQuery = ''; findHits = []; findIndex = -1; findSeq++; findBar.classList.add('hidden');
+    state.current = null; state.live = null; state.tasks = []; hiddenTasks.clear(); paintTasks(); if (changesOpen) closeChanges(); if (filesOpen) closeFiles(); if (terminalOpen) closeTerminal(); stopPrWatch(); $("#sb-pr-state").classList.add("hidden");
     if (state.es) { state.es.close(); state.es = null; }
     app.classList.remove('sidebar-open');
     thread.innerHTML = ''; empty.classList.add('show'); app.classList.add('new');
@@ -4132,6 +6255,7 @@
     $('#project-btn').classList.remove('locked'); renderProjectChip();
     setRunning(false); setElsewhere(false); renderSessions(); updatePinButton(); restoreDraft(null);
     $('#session-bar').classList.add('hidden'); $('#new-bar').classList.remove('hidden'); $('#session-menu-btn').classList.add('hidden'); usage.context = null; paintUsage();
+    heldQueue.classList.add('hidden'); heldList.innerHTML = '';
     input.placeholder = 'Describe a task or ask a question';
     const h = new Date().getHours();
     $('#greeting-text').textContent = (h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening') + (state.userName ? ', ' + state.userName : '');
@@ -4141,8 +6265,9 @@
   let cameBack = false, hadSession = false;
   window.addEventListener('popstate', () => { cameBack = true; });
   function route() {
-    const m = location.hash.match(/^#\/s\/([0-9a-f-]{36})$/i);
-    if (m) { openSession(m[1]); hadSession = true; }
+    // #/s/<id>/m/<uuid>: a deep link (Copy link, a chapter jump elsewhere, a pin) to one message.
+    const m = location.hash.match(/^#\/s\/([0-9a-f-]{36})(?:\/m\/([0-9a-f-]{36}))?$/i);
+    if (m) { openSession(m[1], { jumpTo: m[2] || null }); hadSession = true; }
     else {
       openNew();
       // Back from a session on the phone lands on the session list, like the mobile app.
@@ -4199,7 +6324,7 @@
     // Opening the app is exactly when "is there a new one?" should be answered afresh:
     // a merge publishes in about eight minutes, and a stale answer reads as "nothing new".
     api('/version').then((v) => { if (!v.update?.checkedAt || Date.now() - v.update.checkedAt > 120000) return api('/update/check', { method: 'POST', body: JSON.stringify({}) }); }).then(() => checkForUpdate()).catch(() => {});
-    await Promise.all([loadSessions(), loadProjects(), loadAwake(), loadModels()]);
+    await Promise.all([loadSessions(), loadProjects(), loadAwake(), loadModels(), loadConvSettings()]);
     route();
     // First time on this device: ask which account to use (local or token).
     let chosen = false; try { chosen = !!localStorage.getItem('cr.accountChosen'); } catch {}

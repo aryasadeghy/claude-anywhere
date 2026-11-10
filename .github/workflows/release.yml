@@ -136,6 +136,18 @@ jobs:
       # so a production install must be present before the bundler runs.
       - run: npm ci --omit=dev
 
+      # The terminal's native half comes as one package per chip, and npm installs only the
+      # runner's (arm64). The universal app runs on Intel Macs too, so the x64 one goes in beside
+      # it; without it an Intel Mac falls back to a plain pipe with no colours or resize.
+      - name: The terminal for both Mac chips
+        if: startsWith(matrix.os, 'macos')
+        run: |
+          v=$(node -p "require('./package-lock.json').packages['node_modules/@lydell/node-pty'].version")
+          npm pack "@lydell/node-pty-darwin-x64@$v" --silent
+          mkdir -p node_modules/@lydell/node-pty-darwin-x64
+          tar -xzf lydell-node-pty-darwin-x64-*.tgz -C node_modules/@lydell/node-pty-darwin-x64 --strip-components=1
+          rm lydell-node-pty-darwin-x64-*.tgz
+
       # And its own Node (runtime/), so nobody has to install one before the app starts.
       # On the Mac that is both chips in one binary, like the app itself.
       - name: Node for the installer

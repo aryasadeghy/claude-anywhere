@@ -30,15 +30,19 @@
     "fetch-node": "node scripts/fetch-node.mjs",
     "release": "node scripts/release.mjs",
     "check": "node --check server.mjs && node --check lib/runs.mjs && node --check lib/tail.mjs && node --check lib/auth.mjs && node --check public/app.js",
-    "test": "node --test test/browser.test.mjs test/history.test.mjs test/claude-code.test.mjs",
-    "test:ui": "node test/ui/browser.cjs && node test/ui/queue.cjs && node test/ui/history.cjs && node test/ui/realtime.cjs && node test/ui/claude-code.cjs && node test/ui/files.cjs && node test/ui/controls.cjs",
+    "test": "node --test test/browser.test.mjs test/history.test.mjs test/claude-code.test.mjs test/limit-queue.test.mjs test/client.test.mjs test/worktrees.test.mjs test/files-outside.test.mjs",
+    "test:ui": "node test/ui/browser.cjs && node test/ui/queue.cjs && node test/ui/history.cjs && node test/ui/realtime.cjs && node test/ui/claude-code.cjs && node test/ui/files.cjs && node test/ui/controls.cjs && node test/ui/composer.cjs && node test/ui/queue-controls.cjs && node test/ui/files-pane.cjs && node test/ui/terminal.cjs && node test/ui/conversation.cjs && node test/ui/git.cjs",
     "mobile": "node scripts/mobile.mjs",
     "tauri": "npx -y @tauri-apps/cli@^2"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.319",
+    "@lydell/node-pty": "^1.2.0-beta.18",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "dompurify": "^3.4.15",
     "express": "^5.2.1",
+    "katex": "^0.19.1",
     "marked": "^18.0.13",
     "zod": "^4.6.5"
   }

@@ -19,6 +19,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/style.css" />
   <link rel="stylesheet" href="/theme-desktop.css" />
+  <link rel="stylesheet" href="/vendor/katex/katex.min.css" />
 </head>
 <body>
   <!-- Login -->
@@ -125,6 +126,16 @@
         </div>
       </header>
 
+      <!-- Ctrl/Cmd+F with a session open: find in the whole transcript, not just what is loaded. -->
+      <div id="find-bar" class="find-bar hidden">
+        <svg viewBox="0 0 20 20" width="15" height="15"><circle cx="9" cy="9" r="5.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M13.5 13.5L17 17" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        <input id="find-input" type="search" placeholder="Find in this session" autocomplete="off" />
+        <span id="find-count" class="find-count"></span>
+        <button id="find-prev" class="icon-btn small" type="button" title="Previous (Shift+Enter)"><svg viewBox="0 0 20 20" width="14" height="14"><path d="M6 12l4-4 4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <button id="find-next" class="icon-btn small" type="button" title="Next (Enter)"><svg viewBox="0 0 20 20" width="14" height="14"><path d="M6 8l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <button id="find-close" class="icon-btn small" type="button" title="Close (Esc)"><svg viewBox="0 0 20 20" width="14" height="14"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+      </div>
+
       <div id="scroll" class="scroll">
         <div id="empty" class="empty">
           <div class="greeting">
@@ -135,6 +146,9 @@
         <div id="thread" class="thread"></div>
         <div id="bottom-pad"></div>
       </div>
+      <!-- Selecting text in the thread offers to attach it as context, like right-click in Desktop
+           (the right-click menu itself belongs to another package). -->
+      <button id="ctx-float-btn" class="sel-attach-btn hidden" type="button">Attach as context</button>
 
       <div class="composer-wrap">
         <!-- New session: where it will run (Desktop's Local / folder / branch chips) -->
@@ -169,6 +183,11 @@
           <span class="sb-spacer"></span>
           <span class="tb-open">Show</span>
         </button>
+        <!-- Claude's plan while it works (TodoWrite, or TaskCreate/TaskUpdate), above the composer. -->
+        <details id="plan-box" class="plan-box hidden">
+          <summary><span class="spark">✱</span><span id="plan-box-title">Claude's plan</span><span id="plan-box-count" class="muted"></span></summary>
+          <ul id="plan-box-list" class="todo-checklist"></ul>
+        </details>
         <div id="update-banner" class="limit-banner update-banner hidden">
           <svg viewBox="0 0 20 20" width="15" height="15"><path d="M10 3v9M6 8l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 15h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
           <span id="ub-text">A new version is ready</span>
@@ -184,7 +203,14 @@
           <span class="sb-spacer"></span>
           <button id="lb-close" class="icon-btn small" type="button" title="Dismiss"><svg viewBox="0 0 20 20" width="14" height="14"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
         </div>
+        <!-- Messages typed after the plan's usage limit was reached: they wait here instead of failing -->
+        <div id="held-queue" class="held-queue hidden">
+          <div class="held-head"><span id="held-text">You hit your usage limit. Held messages will send when it resets.</span><span id="held-resets" class="muted"></span></div>
+          <div id="held-list" class="held-list"></div>
+        </div>
         <div class="composer" id="composer">
+          <div id="context-chips" class="context-chips hidden"></div>
+          <div id="composer-pop" class="menu composer-pop hidden"></div>
           <div id="attachments" class="attach-strip hidden"></div>
           <textarea id="input" rows="1" placeholder="How can I help you today?" dir="auto"></textarea>
           <div class="composer-row">
@@ -246,6 +272,9 @@
                   <div class="ul-list"></div>
                 </div>
               </div>
+              <button id="dictate-btn" class="chip icon-only hidden" type="button" title="Dictation" aria-label="Dictation">
+                <svg viewBox="0 0 20 20" width="16" height="16"><rect x="7.5" y="2.5" width="5" height="9" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M4.5 10a5.5 5.5 0 0 0 11 0M10 15.5v2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+              </button>
               <button id="send" class="send" aria-label="Send">
                 <svg class="ic-send" viewBox="0 0 20 20" width="18" height="18"><path d="M10 16V4M5 9l5-5 5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
                 <svg class="ic-stop" viewBox="0 0 20 20" width="14" height="14"><rect x="4" y="4" width="12" height="12" rx="2" fill="currentColor"/></svg>
@@ -297,15 +326,36 @@
 
     <aside id="files-panel" class="tasks-panel files-panel hidden" aria-label="Files">
       <div class="tp-head">
-        <button id="fx-up" class="icon-btn small" type="button" title="Up one folder"><svg viewBox="0 0 20 20" width="15" height="15"><path d="M10 15V5M5 10l5-5 5 5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <!-- A phone shows the tree or the open file, never both; this goes back to the tree. -->
+        <button id="fx-back" class="icon-btn small fx-back" type="button" title="Back to the file tree"><svg viewBox="0 0 20 20" width="15" height="15"><path d="M12 4l-6 6 6 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
         <span class="tp-title">Files</span>
         <span class="sb-spacer"></span>
-        <button id="fx-home" class="icon-btn small" type="button" title="Back to this session's folder"><svg viewBox="0 0 20 20" width="15" height="15"><path d="M3.5 9.5L10 4l6.5 5.5V16a.5.5 0 0 1-.5.5h-4V12h-4v4.5H4a.5.5 0 0 1-.5-.5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button>
+        <button id="fx-menu-btn" class="icon-btn small" type="button" title="Files menu" aria-label="Files menu"><svg viewBox="0 0 20 20" width="15" height="15"><circle cx="4" cy="10" r="1.4" fill="currentColor"/><circle cx="10" cy="10" r="1.4" fill="currentColor"/><circle cx="16" cy="10" r="1.4" fill="currentColor"/></svg></button>
+        <div id="fx-menu-pop" class="menu menu-top menu-end hidden"></div>
         <button id="fx-close" class="icon-btn small" type="button" title="Close"><svg viewBox="0 0 20 20" width="15" height="15"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
       </div>
-      <div id="fx-path" class="fx-path"></div>
-      <div id="fx-list" class="tp-list"></div>
-      <pre id="fx-view" class="fx-view hidden"></pre>
+      <div id="fx-split" class="fx-split">
+        <div id="fx-side" class="fx-side">
+          <div class="fx-search-wrap">
+            <input id="fx-search" class="fx-search" type="search" placeholder="Find by name, or ? to search contents" spellcheck="false" autocapitalize="off" autocorrect="off" autocomplete="off" aria-label="Find files">
+          </div>
+          <div id="fx-tree" class="fx-tree tp-list"></div>
+          <div id="fx-results" class="fx-tree tp-list hidden"></div>
+        </div>
+        <div id="fx-side-resizer" class="fx-side-resizer" title="Drag to resize"></div>
+        <div id="fx-main" class="fx-main">
+          <div id="fx-tabs" class="fx-tabs hidden"></div>
+          <div id="fx-empty" class="muted small pad">Pick a file on the left to open it here.</div>
+          <div id="fx-findbar" class="fx-findbar hidden">
+            <input id="fx-find-input" type="text" placeholder="Find in file" spellcheck="false" autocomplete="off" aria-label="Find in file">
+            <span id="fx-find-count" class="muted small"></span>
+            <button id="fx-find-prev" class="icon-btn small" type="button" title="Previous match">&uarr;</button>
+            <button id="fx-find-next" class="icon-btn small" type="button" title="Next match">&darr;</button>
+            <button id="fx-find-close" class="icon-btn small" type="button" title="Close">&times;</button>
+          </div>
+          <pre id="fx-view" class="fx-view hidden"></pre>
+        </div>
+      </div>
     </aside>
 
     <aside id="changes-panel" class="tasks-panel changes-panel hidden" aria-label="Changes">
@@ -318,9 +368,16 @@
         <button id="ch-refresh" class="icon-btn small" type="button" title="Refresh"><svg viewBox="0 0 20 20" width="15" height="15"><path d="M16 10a6 6 0 1 1-1.8-4.3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M16 4v4h-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
         <button id="ch-close" class="icon-btn small" type="button" title="Close"><svg viewBox="0 0 20 20" width="15" height="15"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
       </div>
-      <div id="ch-file" class="ch-file"></div>
+      <div id="ch-file" class="ch-file hidden"><span id="ch-file-name"></span><button id="ch-open-editor" class="link-btn small hidden" type="button">Open in editor</button></div>
       <div id="ch-list" class="tp-list ch-list"></div>
       <div id="ch-diff" class="ch-diffwrap hidden"></div>
+      <!-- Git actions: Desktop's own wording. Hidden until the folder's git state says which apply. -->
+      <div id="ch-actions" class="ch-actions hidden">
+        <button id="ch-commit-wip" class="link-btn small" type="button">Commit as WIP</button>
+        <span class="sb-spacer"></span>
+        <button id="ch-create-pr" class="link-btn small hidden" type="button">Create draft PR</button>
+        <button id="ch-commit-push" class="btn btn-primary small" type="button">Commit and push</button>
+      </div>
     </aside>
 
     <aside id="tasks-panel" class="tasks-panel hidden" aria-label="Tasks">
@@ -333,12 +390,29 @@
       </div>
       <div id="tp-list" class="tp-list"></div>
     </aside>
+
+    <aside id="terminal-panel" class="tasks-panel terminal-panel hidden" aria-label="Terminal">
+      <!-- Desktop's terminal pane: tabs along the top, one shell each -->
+      <div class="tp-head term-head">
+        <div id="term-tabs" class="pv-tabs" role="tablist" aria-label="Terminal tabs"></div>
+        <button id="term-new" class="icon-btn small" type="button" title="New terminal" aria-label="New terminal"><svg viewBox="0 0 20 20" width="15" height="15"><path d="M10 4.5v11M4.5 10h11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+        <span class="sb-spacer"></span>
+        <button id="term-min" class="icon-btn small" type="button" title="Minimize" aria-label="Minimize"><svg viewBox="0 0 20 20" width="15" height="15"><path d="M4 14h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+        <button id="term-close" class="icon-btn small" type="button" title="Close"><svg viewBox="0 0 20 20" width="15" height="15"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+      </div>
+      <div id="term-stage" class="term-stage"></div>
+      <!-- Minimized: a thin strip, the running dot still visible, click to restore -->
+      <button id="term-pill" class="term-pill hidden" type="button" title="Terminal"><span class="term-pill-dot"></span>Terminal</button>
+    </aside>
   </div>
 
   <!-- Connectors (MCP servers) and plugins -->
 
   <!-- Right-click menu on a session row -->
   <div id="ctx-menu" class="menu ctx hidden"></div>
+
+  <!-- Right-click (long-press on the phone) menu on a message -->
+  <div id="msg-ctx-menu" class="menu ctx hidden"></div>
 
   <!-- Everything this app can do, by name (Ctrl/Cmd+K) -->
   <div id="palette" class="palette hidden" role="dialog" aria-label="Commands">
@@ -359,6 +433,32 @@
     </div>
     <img id="lb-img" alt="">
     <div id="lb-play" class="lb-play hidden"></div>
+  </div>
+
+  <!-- Clicking a staged image opens this: pen, rectangle, arrow, text, colour, undo. Done
+       replaces the staged image; Cancel leaves it as it was. -->
+  <div id="annotate-modal" class="modal hidden">
+    <div class="modal-card annotate-card">
+      <div class="modal-head"><span>Annotate image</span><button id="an-close" class="icon-btn" aria-label="Close"><svg viewBox="0 0 20 20" width="16" height="16"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div>
+      <div class="an-toolbar">
+        <div class="an-tools">
+          <button class="an-tool on" type="button" data-tool="pen" title="Pen" aria-label="Pen"><svg viewBox="0 0 20 20" width="16" height="16"><path d="M4 16l.8-3.4L12.6 4.8a1.5 1.5 0 0 1 2.1 0l.5.5a1.5 1.5 0 0 1 0 2.1L7.4 15.2z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M4 16l3.4-.8" stroke="currentColor" stroke-width="1.4"/></svg></button>
+          <button class="an-tool" type="button" data-tool="rect" title="Rectangle" aria-label="Rectangle"><svg viewBox="0 0 20 20" width="16" height="16"><rect x="3.5" y="5" width="13" height="10" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></button>
+          <button class="an-tool" type="button" data-tool="arrow" title="Arrow" aria-label="Arrow"><svg viewBox="0 0 20 20" width="16" height="16"><path d="M4 16L16 4M16 4H9M16 4v7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          <button class="an-tool" type="button" data-tool="text" title="Text" aria-label="Text"><svg viewBox="0 0 20 20" width="16" height="16"><path d="M4 5.5h12M10 5.5V15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+        </div>
+        <div id="an-colors" class="an-colors"></div>
+        <span class="sb-spacer"></span>
+        <button id="an-undo" class="icon-btn" type="button" title="Undo" aria-label="Undo"><svg viewBox="0 0 20 20" width="16" height="16"><path d="M5 9H13a3.5 3.5 0 1 1 0 7H9" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M8 5.5 4.5 9 8 12.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      </div>
+      <div class="an-canvas-wrap" id="an-canvas-wrap">
+        <canvas id="an-canvas"></canvas>
+      </div>
+      <div class="an-actions">
+        <button id="an-cancel" class="btn btn-ghost" type="button">Cancel</button>
+        <button id="an-done" class="btn btn-primary" type="button">Done</button>
+      </div>
+    </div>
   </div>
 
   <!-- Folder browser for "Open folder…" -->
@@ -412,6 +512,14 @@
               <div id="set-cc-more" class="set-desc"></div>
             </div>
             <button id="set-cc-btn" class="btn btn-ghost" type="button">Check now</button>
+          </div>
+          <div class="set-row">
+            <div class="set-info"><div class="set-name">Transcript view</div><div class="set-desc">What a session opens to: the answer, or Claude's thinking and tool detail too.</div></div>
+            <div id="set-transcript-view" class="set-seg"></div>
+          </div>
+          <div class="set-row">
+            <div class="set-info"><div class="set-name">Classify sessions automatically</div><div class="set-desc">Allow Claude to automatically classify sessions as blocked, ready for review, or done.</div></div>
+            <div id="set-auto-classify"></div>
           </div>
         </section>
 
@@ -598,6 +706,7 @@
 
   <script src="/vendor/marked.js"></script>
   <script src="/vendor/purify.js"></script>
+  <script src="/vendor/katex/katex.min.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

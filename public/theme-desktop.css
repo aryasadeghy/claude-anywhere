@@ -1015,3 +1015,284 @@ audio.lb-media { width: min(520px, 90vw); height: auto; }
 .note.warning { color: #b4691f; }
 :root[data-theme="dark"] .note.warning { color: #e3a15a; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .note.warning { color: #e3a15a; } }
+
+/* ---------- v54: the message box - "/" commands, "@" files, "!" shell, context chips, dictation, annotate ---------- */
+#composer { position: relative; } /* the popover and the context chips both float from this box */
+.context-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 2px 8px; }
+.ctx-chip { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; padding: 4px 4px 4px 10px; border-radius: 999px; background: var(--chip-bg); color: var(--ink-2); font-size: 12.5px; }
+.ctx-chip-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; }
+.ctx-chip-x { width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; color: var(--ink-3); flex: none; font-size: 13px; }
+.ctx-chip-x:hover { background: var(--bg-3); color: var(--ink); }
+.sel-attach-btn { position: fixed; transform: translate(-50%, -100%); z-index: 60; padding: 6px 12px; border-radius: 999px; border: 0; background: var(--ink); color: var(--bg); font-size: 12.5px; box-shadow: var(--shadow); }
+.sel-attach-btn:hover { opacity: .88; }
+/* The "/" and "@" popover: a .menu floating from #composer itself rather than a button beside it. */
+.composer-pop { left: 14px; right: 14px; bottom: calc(100% + 8px); width: auto; max-width: none; max-height: 40vh; }
+.cpop-item { display: flex; align-items: baseline; gap: 8px; width: 100%; text-align: start; padding: 7px 10px; border-radius: 8px; font-size: 13.5px; color: var(--ink); }
+.cpop-item .cpop-name { flex: none; font-family: var(--mono); }
+.cpop-item .cpop-desc { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-3); font-size: 12px; }
+.cpop-item .cpop-hint { flex: none; color: var(--ink-3); font-size: 11.5px; }
+.cpop-item.on, .cpop-item:hover { background: var(--bg-3); }
+.cpop-empty { padding: 10px; text-align: center; color: var(--ink-3); font-size: 13px; }
+@media (max-width: 860px) { .sel-attach-btn { font-size: 13px; } }
+/* "!"'s "You ran …" block: the output grows live, so it scrolls in place instead of the page. */
+.step-shell-out { margin: 0; padding: 10px 12px; max-height: 40vh; overflow: auto; font-family: var(--mono); font-size: 12.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; color: var(--ink-2); }
+.step-shell-out:empty::before { content: "Running…"; color: var(--ink-3); font-style: italic; font-family: var(--sans); }
+.step-shell-kill { margin-inline-start: 6px; flex: none; }
+/* Dictation: the mic itself turns the same red as a recording light while it listens. */
+#dictate-btn.recording { color: var(--danger); background: var(--bg-3); }
+@keyframes dictate-pulse { 50% { opacity: .4; } }
+#dictate-btn.recording svg { animation: dictate-pulse 1.1s ease-in-out infinite; }
+/* Annotate: clicking a staged image opens this; pen/rectangle/arrow/text over a canvas sized to
+   the picture's own pixels, scaled to fit, touch-action none so a finger draws instead of scrolls. */
+.att-img img { cursor: pointer; }
+.annotate-card { width: min(720px, 96vw); max-width: none; padding: 14px 16px 16px; display: flex; flex-direction: column; gap: 10px; }
+.an-toolbar { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.an-tools { display: flex; gap: 2px; background: var(--bg-2); border-radius: 10px; padding: 3px; }
+.an-tool { width: 30px; height: 30px; border-radius: 7px; display: grid; place-items: center; color: var(--ink-2); }
+.an-tool:hover { color: var(--ink); }
+.an-tool.on { background: var(--bg-000); color: var(--ink); box-shadow: 0 1px 2px rgba(0, 0, 0, .15); }
+.an-colors { display: flex; gap: 6px; margin-inline-start: 8px; }
+.an-color { width: 22px; height: 22px; border-radius: 50%; border: 2px solid transparent; padding: 0; }
+.an-color.on { border-color: var(--ink); }
+.an-canvas-wrap { flex: 1; min-height: 0; display: grid; place-items: center; background: var(--bg-2); border-radius: 12px; padding: 8px; overflow: hidden; }
+#an-canvas { max-width: 100%; max-height: min(60vh, 520px); touch-action: none; border-radius: 4px; cursor: crosshair; }
+.an-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.an-text-input { position: absolute; font: inherit; font-size: 15px; padding: 2px 4px; border: 1px dashed var(--ink-3); background: rgba(255, 255, 255, .85); color: #000; min-width: 60px; }
+@media (max-width: 860px) { .annotate-card { width: 100%; max-height: 92vh; } #an-canvas { max-height: 46vh; } }
+
+/* ---------- v56: queued message controls, the usage-limit queue, rewind that restores files, automatic resume ---------- */
+/* A queued message reads as a question until it is taken up: dashed, not solid. */
+.msg.user.queued .msg-body { background: transparent; border: 1px dashed var(--line-2); }
+.msg.user.queued .queued-label { font-size: 12px; color: var(--ink-3); margin-top: 4px; text-align: end; }
+.msg.user.queued { cursor: grab; }
+.msg.user.queued.dragging { opacity: .4; }
+.queue-row-actions { justify-content: flex-end; }
+/* Several queued messages collapse into one row; expanding shows each with its own controls. */
+.queue-stack { margin: 8px 0; }
+.queue-stack-head { display: block; width: 100%; text-align: end; padding: 6px 2px; font-size: 12.5px; color: var(--ink-3); text-decoration: underline; text-underline-offset: 3px; }
+.queue-stack-head:hover { color: var(--ink); }
+.queue-stack.collapsed .queue-stack-body { display: none; }
+.queue-stack-body { display: flex; flex-direction: column; gap: 10px; }
+
+/* The usage-limit queue: held above the composer until the plan's limit resets. */
+.held-queue { border: 1px solid var(--line-2); border-radius: 12px; padding: 10px 12px; margin: 0 0 10px; background: var(--bg-2); }
+.held-head { display: flex; align-items: baseline; gap: 10px; font-size: 13px; color: var(--ink-2); margin-bottom: 6px; }
+.held-list { display: flex; flex-direction: column; gap: 8px; }
+.held-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 10px; background: var(--bg-000); border: 1px solid var(--line-2); }
+.held-text { flex: 1; min-width: 0; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.held-actions { display: flex; gap: 6px; flex: none; }
+.held-actions .btn.small { padding: 5px 10px; font-size: 12.5px; }
+@media (max-width: 860px) { .held-text { white-space: normal; } .held-row { flex-wrap: wrap; } }
+
+/* Rewind: the dialog's file preview and its scope choice, and the toast that offers to undo it. */
+#rewind-modal .modal-card { max-width: 420px; }
+.rewind-choices { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+.rewind-choices .btn { width: 100%; }
+.redo-toast { display: flex; align-items: center; gap: 4px; }
+
+/* ---------- v57: the Files pane — a tree beside tabs, edit in place, comments, Office previews ---------- */
+#fx-back { display: none; } /* only the phone's single-pane view needs a way back to the tree */
+.fx-split { flex: 1; min-height: 0; display: flex; }
+.fx-side { width: var(--fx-side-w, 230px); flex: none; display: flex; flex-direction: column; min-height: 0; border-inline-end: 1px solid var(--line); }
+.fx-search-wrap { padding: 8px 10px 4px; }
+.fx-search { width: 100%; box-sizing: border-box; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line-2); background: var(--bg-2); color: var(--ink); font-size: 13px; }
+.fx-main { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; position: relative; }
+.fx-side-resizer { flex: none; width: 6px; cursor: col-resize; touch-action: none; }
+.fx-side-resizer:hover, .fx-side-resizer:active { background: var(--line-2); }
+.fx-row .fx-chev { flex: none; width: 12px; color: var(--ink-3); font-size: 10px; text-align: center; }
+.fx-row.sel { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.fx-row.active .nm { font-weight: 600; }
+.fx-snippet { display: block; width: 100%; margin-inline-start: 23px; color: var(--ink-3); font-family: var(--mono); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#fx-results .fx-row { flex-wrap: wrap; }
+.fx-tabs { display: flex; gap: 2px; overflow-x: auto; padding: 6px 8px 0; flex: none; border-bottom: 1px solid var(--line); }
+.fx-tab { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-radius: 8px 8px 0 0; font-size: 12.5px; color: var(--ink-2); background: var(--bg-2); white-space: nowrap; flex: none; max-width: 180px; }
+.fx-tab.active { background: var(--bg-000); color: var(--ink); border: 1px solid var(--line); border-bottom-color: var(--bg-000); margin-bottom: -1px; }
+.fx-tab.preview .fx-tab-name { font-style: italic; }
+.fx-tab-name { overflow: hidden; text-overflow: ellipsis; }
+.fx-tab-dot { color: var(--accent); font-size: 8px; }
+.fx-tab-x { color: var(--ink-3); padding: 0 2px; border-radius: 4px; line-height: 1; }
+.fx-tab-x:hover { background: var(--bg-3); color: var(--ink); }
+.fx-findbar { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-bottom: 1px solid var(--line); flex: none; }
+.fx-findbar input { flex: 1; min-width: 0; padding: 5px 8px; border-radius: 7px; border: 1px solid var(--line-2); background: var(--bg-2); color: var(--ink); font-size: 12.5px; }
+.fx-dirty { color: var(--accent); font-size: 9px; }
+.fx-dirty.hidden { display: none; }
+.fx-bar button[disabled] { opacity: .4; pointer-events: none; }
+.fx-conflict { margin: 10px 12px 0; }
+.fx-office { padding: 14px 18px; }
+.fx-office h1, .fx-office h2, .fx-office h3, .fx-office h4 { margin-top: 1.2em; }
+.fx-slide { border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; margin: 10px 0; }
+.fx-slide-n { font-size: 11px; color: var(--ink-3); text-transform: uppercase; letter-spacing: .02em; }
+.fx-slide-text { margin-top: 4px; }
+/* the editor: a gutter of fixed-height rows, mirrored to the textarea's own scroll */
+.fx-editor { flex: 1; min-height: 0; display: flex; }
+.fx-editor-gutter { position: relative; overflow: hidden; width: 46px; flex: none; background: var(--bg-2); border-inline-end: 1px solid var(--line); }
+.fx-gutter-inner { position: absolute; top: 10px; left: 0; right: 0; }
+.fx-gline { position: relative; display: flex; align-items: center; justify-content: flex-end; padding-inline-end: 8px; font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
+.fx-gline:hover .fx-gadd { opacity: 1; }
+.fx-gline.commented .fx-gnum { color: var(--accent); font-weight: 600; }
+.fx-gadd { position: absolute; left: 2px; top: 1px; width: 16px; height: 16px; border-radius: 4px; background: var(--bg-3); color: var(--ink-2); font-size: 12px; line-height: 1; opacity: 0; transition: opacity .1s; }
+.fx-gadd:hover { background: var(--accent); color: var(--accent-ink); }
+.fx-editor-ta { flex: 1; min-width: 0; border: 0; outline: 0; resize: none; background: var(--bg-000); color: var(--ink); font-family: var(--mono); font-size: 11px; line-height: 18px; padding: 10px 12px; white-space: pre; }
+.fx-sel-comment, .fx-comment-pop { position: fixed; z-index: 55; }
+.fx-sel-comment { padding: 5px 10px; border-radius: 7px; background: var(--ink); color: var(--bg-000); font-size: 12px; box-shadow: 0 4px 16px rgba(0, 0, 0, .3); }
+.fx-comment-pop { width: 280px; padding: 10px; border-radius: 10px; background: var(--bg-000); border: 1px solid var(--line-2); box-shadow: 0 8px 30px rgba(0, 0, 0, .35); }
+.fx-comment-ta { width: 100%; box-sizing: border-box; border: 1px solid var(--line-2); border-radius: 7px; background: var(--bg-2); color: var(--ink); font: inherit; font-size: 13px; padding: 7px 9px; resize: vertical; }
+.fx-comment-row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+/* review comments in the Changes diff */
+.dl { position: relative; }
+.dl:not(.hunk):hover .dl-add { opacity: 1; }
+.dl-add { position: absolute; inset-inline-start: -2px; top: 1px; width: 16px; height: 16px; border-radius: 4px; background: var(--bg-3); color: var(--ink-2); font-size: 12px; line-height: 1; opacity: 0; transition: opacity .1s; z-index: 1; }
+.dl-add:hover { background: var(--accent); color: var(--accent-ink); }
+.dl-comment { padding: 8px 14px 8px 54px; font-size: 12.5px; background: var(--bg-2); border-bottom: 1px solid var(--line); }
+.dl-comment-head { color: var(--ink-3); font-size: 11px; margin-bottom: 2px; }
+.dl-comment-text { white-space: pre-wrap; }
+.dl-comment .link-btn { margin-top: 4px; }
+.dl-comment.resolved { padding-block: 4px; }
+.dl-comment.resolved .dl-comment-head, .dl-comment.resolved .dl-comment-text { display: none; }
+.dl-comment.resolved::before { content: "Comment resolved"; color: var(--ink-3); font-size: 11.5px; }
+.ch-file { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+@media (max-width: 860px) {
+  /* A phone shows the tree or the open file, one at a time, like every other full-screen pane here. */
+  .fx-split { display: block; }
+  .fx-side { width: auto; border-inline-end: 0; }
+  .fx-main { display: none; }
+  #fx-back { display: none; }
+  .files-panel.fx-file-open .fx-side { display: none; }
+  .files-panel.fx-file-open .fx-main { display: flex; }
+  .files-panel.fx-file-open #fx-back { display: inline-flex; }
+  .fx-tab { max-width: 120px; }
+}
+
+/* ---------- v58: the terminal pane - tabs, a shell per tab, Claude's own commands too ---------- */
+.terminal-panel { width: 520px; } /* .tasks-panel already gives it flex column and the phone full-screen rule */
+@media (min-width: 861px) { .terminal-panel { width: var(--terminal-w, 520px); } }
+.term-head { gap: 6px; }
+.term-stage { position: relative; flex: 1; min-height: 0; background: var(--bg-000); }
+.term-stage > .term-view { position: absolute; inset: 0; display: flex; flex-direction: column; }
+.term-xterm { flex: 1; min-height: 0; padding: 6px 4px 6px 10px; }
+.term-xterm .xterm { height: 100%; }
+.term-xterm .xterm-viewport { overflow-y: auto; } /* xterm.css leaves this to the host */
+.term-banner { flex: none; display: flex; align-items: center; gap: 10px; padding: 8px 14px; background: var(--bg-2); border-bottom: 1px solid var(--line); font-size: 13px; color: var(--ink-2); }
+.term-banner .btn.small { font-size: 12.5px; padding: 4px 10px; border-radius: 8px; }
+/* Tabs reuse the Browser's own .pv-tab - a running dot and a dimmed, exited tab are this
+   feature's only additions. */
+.term-tab.term-dead { color: var(--ink-3); }
+.term-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--success); animation: tb-pulse 1.4s ease-in-out infinite; }
+/* Minimized: the tabs and buttons go, a small pill at the corner stands in for the pane -
+   still on the page, just out of the way, the same running dot it would show on a tab. */
+/* On the phone, .tasks-panel's own full-screen rule (position: fixed; inset: 0) does not
+   care what width says - without pointer-events: none here, an "invisible" minimized pane
+   would still sit over the whole screen and swallow every tap. */
+.terminal-panel.minimized { width: auto !important; border: 0; background: none; overflow: visible; pointer-events: none; }
+.terminal-panel.minimized .term-head, .terminal-panel.minimized .term-stage { display: none; }
+.term-pill { position: absolute; inset-inline-end: 16px; bottom: 16px; z-index: 10; display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-radius: 999px; border: 1px solid var(--line-2); background: var(--bg-2); color: var(--ink); font: inherit; font-size: 13px; box-shadow: 0 4px 16px rgba(0, 0, 0, .18); pointer-events: auto; }
+.term-pill:hover { background: var(--bg-3); }
+.term-pill-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-3); flex: none; }
+.term-pill-dot.running { background: var(--success); animation: tb-pulse 1.4s ease-in-out infinite; }
+.menu-item.disabled { opacity: .45; pointer-events: none; }
+@media (max-width: 860px) {
+  .terminal-panel { width: auto; }
+  .term-pill { inset-inline-end: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); }
+}
+
+/* ---------- v55: plan approval, live plan box, Claude's tools, transcript view, math, masking, context menu, find ---------- */
+.menu-empty { padding: 8px 12px; font-size: 12.5px; color: var(--ink-3); max-width: 240px; white-space: normal; }
+
+/* A chapter marker in the thread: its own line, not folded into a tool group. */
+.chapter-divider { display: flex; align-items: center; gap: 10px; margin: 14px 0; font-size: 12.5px; font-weight: 600; color: var(--ink-3); }
+.chapter-divider::before, .chapter-divider::after { content: ''; flex: 1; height: 1px; background: var(--line-2); }
+
+/* SuggestNextSteps: a short recap and buttons for what to send next. */
+.suggest-card { margin-top: 8px; }
+.suggest-card .suggest-recap { color: var(--ink-2); }
+.suggest-steps { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.suggest-step { font-size: 13px; }
+
+/* SuggestTask: its own card, so it reads as an offer rather than part of the answer. */
+.suggested-task-card { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--line-2); border-radius: 10px; background: var(--bg-2); }
+.suggest-task-label { font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; color: var(--ink-3); }
+.suggest-task-title { margin-top: 2px; font-size: 13.5px; }
+
+/* The badge SetSessionStatus leaves on a sidebar row. */
+.status-badge { flex: none; margin-inline-start: 6px; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+.status-badge.status-blocked { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger); }
+.status-badge.status-ready_for_review { background: color-mix(in srgb, #3b82f6 16%, transparent); color: #3b82f6; }
+.status-badge.status-done { background: color-mix(in srgb, var(--success) 18%, transparent); color: var(--success); }
+
+/* A deep link, a chapter, or an older find hit lands here: a brief highlight, not a permanent mark. */
+.jump-flash { animation: jump-flash-kf 2.2s ease-out; }
+@keyframes jump-flash-kf { 0% { background: color-mix(in srgb, var(--accent) 22%, transparent); } 100% { background: transparent; } }
+
+/* ExitPlanMode's own card: the plan as Markdown, a feedback box, and Desktop's three choices. */
+.plan-card { max-width: 640px; }
+.plan-card .plan-text { max-height: 360px; overflow: auto; padding: 10px 12px; margin-top: 8px; border: 1px solid var(--line-2); border-radius: 10px; background: var(--bg-3); }
+.plan-card .plan-feedback { width: 100%; box-sizing: border-box; margin-top: 10px; padding: 9px 12px; border-radius: 10px; border: 1px dashed var(--line-2); background: var(--bg-2); color: var(--ink); font: inherit; font-size: 13px; resize: vertical; outline: none; }
+.plan-card .plan-feedback:focus { border-style: solid; border-color: var(--accent); }
+.plan-card.answered .plan-text { max-height: 160px; }
+.plan-comment-btn { position: fixed; z-index: 60; transform: translate(-50%, -100%); padding: 5px 10px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--bg-000); color: var(--ink); font-size: 12.5px; box-shadow: var(--shadow); cursor: pointer; }
+.plan-comment-btn.hidden { display: none; }
+
+/* The live plan box above the composer: TodoWrite's whole list, or TaskCreate/TaskUpdate's. */
+.plan-box { max-width: 48rem; width: 100%; margin: 0 auto 6px; padding: 7px 12px; border-radius: 12px; background: var(--bg-2); border: 1px solid var(--line); font-size: 13px; color: var(--ink); }
+.plan-box > summary { list-style: none; display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
+.plan-box > summary::-webkit-details-marker { display: none; }
+.plan-box-count, #plan-box-count { margin-inline-start: auto; color: var(--ink-3); font-size: 12.5px; }
+.todo-checklist { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.step-body .todo-checklist { margin-top: 0; }
+.todo-item { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; line-height: 1.4; }
+.todo-check { flex: none; width: 15px; height: 15px; margin-top: 1px; border-radius: 4px; border: 1.4px solid var(--line-2); background: var(--bg-3); }
+.todo-item.status-in_progress .todo-check { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 30%, transparent); }
+.todo-item.status-completed .todo-check { border-color: var(--success); background: var(--success); }
+.todo-item.status-completed .todo-label { color: var(--ink-3); text-decoration: line-through; }
+.todo-item.status-in_progress .todo-label { color: var(--ink); font-weight: 500; }
+
+/* Transcript view: Thinking/Verbose draw a thinking block as its own row. */
+.step.thought > summary .name { color: var(--ink-3); font-style: italic; }
+.thought-text { white-space: pre-wrap; color: var(--ink-2); font-size: 13px; line-height: 1.5; }
+
+/* API keys and tokens, masked by default; the eye reveals just that one. */
+.secret-mask { display: inline-flex; align-items: center; gap: 4px; padding: 0 3px; border-radius: 5px; background: color-mix(in srgb, var(--danger) 10%, transparent); }
+.secret-mask-text { font-family: var(--mono); font-size: .92em; letter-spacing: 1px; }
+.secret-mask.revealed .secret-mask-text { letter-spacing: normal; word-break: break-all; }
+.secret-eye { flex: none; display: inline-flex; padding: 1px; border: 0; background: none; color: var(--ink-3); cursor: pointer; border-radius: 4px; }
+.secret-eye:hover { color: var(--ink); background: var(--bg-3); }
+
+/* The message context menu disables what a message with no uuid (a queued bubble) cannot do. */
+.menu-item:disabled { opacity: .4; cursor: default; pointer-events: none; }
+
+/* A code block's own head bar (language + copy); .prose pre keeps its border and background,
+   just with the top corners squared off to meet the bar instead of rounded under it. */
+.code-block { margin: 10px 0; }
+.code-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 6px 4px 10px; font-size: 11px; color: var(--ink-3); background: var(--bg-2); border: 1px solid var(--line); border-bottom: 0; border-radius: 10px 10px 0 0; }
+.code-lang { text-transform: uppercase; letter-spacing: .04em; }
+.code-copy { display: inline-flex; padding: 4px; border: 0; background: none; color: var(--ink-3); cursor: pointer; border-radius: 6px; }
+.code-copy:hover { color: var(--ink); background: var(--bg-3); }
+.code-block pre { margin: 0; border-radius: 0 0 10px 10px; }
+
+/* Find in the session: a bar over the thread, like a browser's own. */
+.find-bar { display: flex; align-items: center; gap: 8px; max-width: 48rem; width: 100%; margin: 8px auto 0; padding: 7px 12px; border-radius: 12px; background: var(--bg-2); border: 1px solid var(--line); color: var(--ink-3); }
+.find-bar input { flex: 1; min-width: 0; font: inherit; font-size: 13.5px; border: 0; background: none; color: var(--ink); outline: none; }
+.find-count { font-size: 12px; white-space: nowrap; }
+mark.find-hit { background: color-mix(in srgb, var(--accent) 35%, transparent); color: inherit; border-radius: 3px; }
+mark.find-hit.current { background: var(--accent); color: var(--accent-ink); }
+
+/* ---------- v62: git actions, PR auto-fix/auto-archive, related & stacked PRs, worktree sessions ---------- */
+.ch-actions { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-top: 1px solid var(--line); flex: none; }
+#commit-modal .modal-card { max-width: 440px; }
+.commit-msg { width: 100%; box-sizing: border-box; margin-top: 10px; padding: 8px 10px; border-radius: 9px; border: 1px solid var(--line-2); background: var(--bg-2); color: var(--ink); font: inherit; font-size: 13.5px; resize: vertical; }
+.commit-row { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 12px; }
+.commit-row .note.error { margin: 0; flex: 1; font-size: 12.5px; }
+.pr-pop .menu-item .tag { margin-inline-start: 6px; }
+/* a Worktree choice at the bottom of the folder menu, and the progress dialog while one is made */
+#wt-setup-modal .modal-card { max-width: 380px; }
+.wt-steps { margin: 12px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.wt-steps li { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-3); }
+.wt-steps li.done { color: var(--ink-2); }
+.wt-steps li.active { color: var(--ink); font-weight: 500; }
+.wt-steps li .dot { width: 7px; height: 7px; border-radius: 50%; border: 1.4px solid var(--ink-3); flex: none; }
+.wt-steps li.done .dot { background: var(--success); border-color: var(--success); }
+.wt-steps li.active .dot { background: #d9a757; border-color: #d9a757; animation: pulse 1.4s infinite; }
+.wt-setup-row { display: flex; justify-content: flex-end; margin-top: 14px; }
+@media (max-width: 860px) {
+  .ch-actions { flex-wrap: wrap; }
+}
