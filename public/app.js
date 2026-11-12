@@ -631,6 +631,7 @@
   async function loadSessions() {
     state.sessions = await api('/sessions?limit=200' + (state.view.archived ? '&archived=1' : ''));
     renderSessions();
+    paintSessionCards(); // a nested session's status dot (running/done/needs-you) tracks the fresh list
   }
   let collapsed = new Set();
   try { collapsed = new Set(JSON.parse(localStorage.getItem('cr.collapsed') || '[]')); } catch {}
@@ -722,8 +723,8 @@
   function sessionRow(s, kind = 'session', group = null) {
     const onBranch = s.branch && !/^(main|master)$/i.test(s.branch);
     const attn = s.needsInput ? 'needs-input' : s.failed ? 'failed' : s.unread ? 'unread' : '';
-    const a = el('a', 'session-item' + (s.id === state.current ? ' active' : '') + (s.pinned ? ' pinned' : '') + (onBranch ? ' on-branch' : '') + (working(s) ? ' working' : '') + (attn ? ' ' + attn : ''));
-    a.href = '#/s/' + s.id; a.title = s.title + (s.branch ? '\nBranch: ' + s.branch : '') + (s.archived ? '\nArchived' : ''); a.dataset.id = s.id;
+    const a = el('a', 'session-item' + (s.id === state.current ? ' active' : '') + (s.pinned ? ' pinned' : '') + (onBranch ? ' on-branch' : '') + (working(s) ? ' working' : '') + (attn ? ' ' + attn : '') + (s.parentId ? ' session-child' : ''));
+    a.href = '#/s/' + s.id; a.title = s.title + (s.branch ? '\nBranch: ' + s.branch : '') + (s.archived ? '\nArchived' : '') + (s.parentId ? '\nStarted by Claude, nested under its parent session' : ''); a.dataset.id = s.id;
     if (selected.has(s.id)) a.classList.add('selected');
     if (s.archived) a.classList.add('is-archived');
     a.addEventListener('contextmenu', (e) => { e.preventDefault(); showCtxMenu(s, e.clientX, e.clientY, kind, group); });
@@ -912,6 +913,107 @@
     list.splice(i, 1); list.splice(j, 0, id); saveOrder(); renderSessions();
   }
 
+  // ---------- sessions: nested sessions, side chat, sidebar sections ----------
+  // A session Claude starts with start_session (lib/tools-sessions.mjs) is recorded server-side
+  // as a child of the one that started it (lib/sessions-net.mjs). The sidebar nests it under its
+  // parent wherever that parent lands in the current grouping; the parent's chat shows the call as
+  // a card, and the child's own chat opens with a "Started by Claude from …" header and task card,
+  // matching Desktop (cd-shots/web/eat-08b, eat-17b).
+  // Puts a child directly after its parent, in place, when both are in the same group. A parent
+  // in another folder (a worktree, say) still shows its child - just without a parent beside it.
+  function nestChildren(items) {
+    const byParent = new Map();
+    for (const s of items) if (s.parentId) { if (!byParent.has(s.parentId)) byParent.set(s.parentId, []); byParent.get(s.parentId).push(s); }
+    if (!byParent.size) return items;
+    const seen = new Set(), out = [];
+    for (const s of items) {
+      if (seen.has(s.id)) continue;
+      out.push(s); seen.add(s.id);
+      for (const kid of byParent.get(s.id) || []) if (!seen.has(kid.id)) { out.push(kid); seen.add(kid.id); }
+    }
+    return out;
+  }
+
+  // The parent-folder cache a session card's click target and status come from: title -> child id,
+  // refreshed each time a session is opened (a card only needs to resolve once per view).
+  let childMeta = { forSession: null, byTitle: new Map() };
+  async function loadChildMeta(sessionId) {
+    try {
+      const r = await api('/sessions/' + sessionId + '/children');
+      childMeta = { forSession: sessionId, byTitle: new Map((r.children || []).map((c) => [c.title, c.id])), parent: r.parent };
+      paintSessionCards();
+    } catch { childMeta = { forSession: sessionId, byTitle: new Map(), parent: null }; }
+  }
+  // Repaints every session card already drawn for this chat once childMeta (or the session list,
+  // for status dots) is fresh - a card is drawn before its child id or status is known.
+  function paintSessionCards() {
+    for (const node of thread.querySelectorAll('.session-card-btn')) {
+      const title = node.dataset.title; const id = childMeta.byTitle.get(title);
+      const row = id && state.sessions.find((x) => x.id === id);
+      node.dataset.childId = id || '';
+      const dot = node.querySelector('.dot');
+      dot.className = 'dot ' + (!row ? 'running' : row.needsInput ? 'needs-you' : working(row) ? 'running' : 'done');
+      dot.title = !row ? 'Starting…' : row.needsInput ? 'Needs your input' : working(row) ? 'Running' : 'Done';
+    }
+  }
+  function renderSessionTool(msg, index, block) {
+    if (toolNamed(block.name, 'start_session')) {
+      let node = msg.blocks.get(index);
+      if (!node) {
+        node = el('div', 'session-card'); node._toolId = block.id; msg.body.appendChild(node); msg.blocks.set(index, node); msg.group = null;
+        const b = el('button', 'session-card-btn'); b.type = 'button';
+        b.appendChild(el('span', 't', 'Session'));
+        b.appendChild(el('span', 'dot running'));
+        b.appendChild(el('span', 'chev', '›'));
+        b.addEventListener('click', () => { if (b.dataset.childId) location.hash = '#/s/' + b.dataset.childId; });
+        node.appendChild(b);
+      }
+      // The title streams in as its own input_json_delta (block_start fires with input: {}, same
+      // as any tool call) - keep the button's title and lookup key current on every call, not
+      // only when the card is first drawn, or a live start_session never learns its own title.
+      const title = block.input?.title; const b = node.querySelector('.session-card-btn');
+      if (title) { b.dataset.title = title; b.querySelector('.t').textContent = title; }
+      if (childMeta.forSession === state.current) paintSessionCards();
+      return true;
+    }
+    return false;
+  }
+  // The child's own chat opens with Desktop's "Started by Claude from <parent>" line, the Task
+  // card (title + the prompt it was given) and a collapsed Context row - net.linkFor's record,
+  // read back through GET /api/sessions/:id/children (the "parent" half of that response).
+  function paintParentHeader(info) {
+    const parent = info?.parent;
+    if (!parent) return;
+    // The task prompt is already in the Task card below; the plain first user bubble for it
+    // (the real turn the child's CLI was given) would just repeat that, where Desktop shows
+    // nothing until Claude's own first answer.
+    thread.querySelector('.msg.user')?.remove();
+    const header = el('div', 'parent-header');
+    const from = el('span', null, 'Started by Claude from ');
+    const link = el('a', 'link', parent.parentTitle || 'the parent session'); link.href = '#/s/' + parent.parentId;
+    header.appendChild(from); header.appendChild(link); header.appendChild(document.createTextNode(' ' + relTime(parent.startedAt) + ' ago'));
+    const card = el('div', 'task-card');
+    const head = el('div', 'task-card-head'); head.appendChild(el('span', 'label', 'Task')); head.appendChild(el('span', 't', parent.title || '')); card.appendChild(head);
+    card.appendChild(el('div', 'task-card-prompt', parent.prompt || ''));
+    const ctx = el('details', 'task-card-context'); ctx.appendChild(el('summary', null, 'Context'));
+    const lines = [];
+    if (parent.worktree) lines.push('Worktree: ' + parent.worktree.branch + ' (' + parent.worktree.path + ')');
+    ctx.appendChild(el('div', 'muted small', lines.join('\n') || 'No extra context was attached.'));
+    card.appendChild(ctx);
+    thread.insertBefore(header, thread.firstChild);
+    thread.insertBefore(card, header.nextSibling);
+  }
+  // A relayed answer from a child session folds behind a count, cleared once looked at - the
+  // counter itself lives server-side (lib/sessions-net.mjs's noteReceived) so it survives a reload.
+  function paintReceivedFold(count) {
+    thread.querySelectorAll('.received-fold').forEach((n) => n.remove());
+    if (!count) return;
+    const n = el('details', 'received-fold');
+    const s = el('summary', null, `Received ${count} message${count === 1 ? '' : 's'}`); n.appendChild(s);
+    n.addEventListener('toggle', () => { if (n.open && state.current) { api(`/sessions/${state.current}/received/clear`, { method: 'POST' }).catch(() => {}); } });
+    thread.appendChild(n); autoscroll();
+  }
+
   function renderSessions() {
     applyOrder();
     const list = $('#session-list'); const scrolled = list.scrollTop; list.innerHTML = '';
@@ -937,9 +1039,10 @@
       : state.view.group === 'state' ? STATES.filter((x) => groups.has(x))
       : [...groups.keys()].sort((a, b) => newest(b) - newest(a));
     for (const k of keys) {
-      const items = state.view.sort === 'name' ? groups.get(k).slice().sort((a, b) => a.title.localeCompare(b.title))
+      let items = state.view.sort === 'name' ? groups.get(k).slice().sort((a, b) => a.title.localeCompare(b.title))
         : manual ? byOrder(groups.get(k), state.order.sessions[k] || [], (s) => s.id)
         : groups.get(k).slice().sort((a, b) => b.lastModified - a.lastModified);
+      items = nestChildren(items); // a session start_session made slots in right under its parent, indented
       const name = byProject ? (items[0].project || 'Other') : k;
       const memo = byProject ? name : state.view.group + ':' + name; // a date bucket and a project can share a name
       const g = el('details', 'project-group'); g.open = q ? true : !collapsed.has(memo);
@@ -2088,6 +2191,7 @@
       b.appendChild(text ? el('div', 'prose thought-text', text) : el('div', 'muted', 'This part of the thinking is encrypted and not shown.'));
     } else if (block.type === 'tool_use') {
       if (renderConvTool(msg, index, block)) return;
+      if (renderSessionTool(msg, index, block)) return;
       if (!node) {
         node = stepEl('tool', block.name, ''); node._toolId = block.id; node._toolName = block.name;
         if (block.name === 'SendUserFile') msg.group = null; // Desktop's own: "Sent ›" is a line of its own
@@ -4931,6 +5035,10 @@
         case 'terminal_tab': onTerminalTabEvent(ev.tab); break;
         case 'terminal_focus': showTerminalTab(ev.tabId); break;
         case 'session_status': { const srow = state.sessions.find((x) => x.id === sessionId); if (srow) srow.status = { status: ev.status, note: ev.note }; renderSessions(); break; }
+        // start_session's own card (renderSessionTool) is drawn from the transcript's tool_use
+        // block already; this just refreshes the child id/status lookup once it exists.
+        case 'session_started': loadSessions().catch(() => {}); if (state.current === sessionId) loadChildMeta(sessionId); break;
+        case 'session_received': if (state.current === sessionId) paintReceivedFold(ev.count); break;
         case 'note': thread.appendChild(el('div', 'note' + (ev.level === 'warning' ? ' warning' : ''), ev.text)); statusPaint(); autoscroll(); break;
         // Stop took back messages typed mid-turn (or Remove took one out): its dashed bubble goes, on every device.
         case 'unqueued': for (const id of ev.ids || []) thread.querySelector('.msg.user.queued[data-prompt-id="' + CSS.escape(id) + '"]')?.remove(); restackQueue(); break;
@@ -6207,6 +6315,8 @@
       await chaptersReady; if (seq !== openSeq) return;
       renderHistory(messages);
       paintHistoryTop();
+      loadChildMeta(id).then(() => paintParentHeader(childMeta));
+      api(`/sessions/${id}/received`).then((r) => paintReceivedFold(r.count)).catch(() => {});
       // The last turn never finished (the app or the PC restarted mid-work). Desktop resumes by
       // itself when that is safe and shows the manual banner only when it is not
       // (info.interrupted.safe, computed server-side - server.mjs's safeToAutoResume).

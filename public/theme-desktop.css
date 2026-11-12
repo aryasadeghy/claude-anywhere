@@ -1296,3 +1296,36 @@ mark.find-hit.current { background: var(--accent); color: var(--accent-ink); }
 @media (max-width: 860px) {
   .ch-actions { flex-wrap: wrap; }
 }
+
+/* ---------- v73: nested sessions, sidebar sections ---------- */
+/* A sidebar row for a session start_session made: indented under its parent, same list. */
+.session-item.session-child { padding-inline-start: 30px; position: relative; }
+.session-item.session-child::before { content: ''; position: absolute; left: 18px; top: 0; bottom: 0; width: 1px; background: var(--line); }
+
+/* The "List 5 coast towns ›" card a start_session call renders as, in the parent's chat. */
+.session-card { margin: 6px 0; }
+.session-card-btn { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; padding: 7px 12px; border: 1px solid var(--line-2); border-radius: 10px; background: var(--bg-2); color: var(--ink); font: inherit; font-size: 13.5px; cursor: pointer; }
+.session-card-btn:hover { background: var(--bg-3); }
+.session-card-btn .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-card-btn .chev { color: var(--ink-3); }
+.session-card-btn .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.session-card-btn .dot.running { background: #d9a757; animation: pulse 1.4s infinite; }
+.session-card-btn .dot.done { background: var(--success); }
+.session-card-btn .dot.needs-you { background: var(--danger, #c75146); }
+
+/* "Started by Claude from <parent>" + the Task card a child session opens with (eat-17b). */
+.parent-header { margin: 0 0 10px; font-size: 12.5px; color: var(--ink-3); }
+.parent-header .link { color: var(--accent); text-decoration: none; }
+.parent-header .link:hover { text-decoration: underline; }
+.task-card { margin: 0 0 16px; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.task-card-head { display: flex; gap: 8px; align-items: baseline; padding: 10px 14px; border-bottom: 1px solid var(--line); font-size: 13.5px; }
+.task-card-head .label { color: var(--ink-3); }
+.task-card-head .t { font-weight: 600; }
+.task-card-prompt { padding: 10px 14px; font-size: 13.5px; color: var(--ink-2); white-space: pre-wrap; }
+.task-card-context { border-top: 1px solid var(--line); }
+.task-card-context summary { padding: 8px 14px; font-size: 12.5px; color: var(--ink-3); cursor: pointer; }
+.task-card-context .muted { padding: 0 14px 10px; white-space: pre-wrap; }
+
+/* The "Received N messages" fold a parent shows once a nested session answers. */
+.received-fold { margin: 10px 0; }
+.received-fold summary { font-size: 12.5px; color: var(--ink-3); cursor: pointer; }
