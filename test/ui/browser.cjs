@@ -25,7 +25,7 @@ async function main() {
   const project = fx.makeProject(path.join(tmp, 'project'));
   const sid = fx.makeSession(path.join(tmp, 'claude'), project.dir);
   const dev = await fx.startDevServer();
-  const app = await fx.startApp({ port: await fx.freePort(), dataDir: path.join(tmp, 'data'), configDir: path.join(tmp, 'claude') });
+  const app = await fx.startApp({ port: await fx.freePort(), dataDir: path.join(tmp, 'data'), configDir: path.join(tmp, 'claude'), env: { CLAUDE_ANYWHERE_BROWSER: 'off' } }); // the iframe pane; test/ui/browser-real.cjs has the real one
   fs.mkdirSync(SHOTS, { recursive: true });
   const page_ = path.join(project.site, 'index.html'), page2 = path.join(project.site, 'page2.html'), pdf = path.join(project.site, 'report.pdf');
 

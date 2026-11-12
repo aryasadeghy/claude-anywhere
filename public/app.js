@@ -3225,9 +3225,9 @@
   const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
   // An iPhone draws the first page of a PDF inside a page and nothing after it; its own viewer shows them all.
   const pdfOutside = (t) => isIOS && t.kind === 'file' && /\.pdf$/i.test(t.file || '');
-  const tabAddr = (t) => t.kind === 'server' ? 'localhost:' + t.port + (t.path || '/') : t.kind === 'file' ? t.file : '';
-  const tabTitle = (t) => t.title || (t.kind === 'server' ? 'localhost:' + t.port : t.kind === 'file' ? baseName(t.file) : 'New tab');
-  const specOf = (t) => ({ kind: t.kind, port: t.port, path: t.path, file: t.file });
+  const tabAddr = (t) => t.kind === 'server' ? 'localhost:' + t.port + (t.path || '/') : t.kind === 'file' ? t.file : t.kind === 'web' ? t.url || '' : '';
+  const tabTitle = (t) => t.title || (t.kind === 'server' ? 'localhost:' + t.port : t.kind === 'file' ? baseName(t.file) : t.kind === 'web' ? rvHost(t.url) : 'New tab');
+  const specOf = (t) => ({ kind: t.kind, port: t.port, path: t.path, file: t.file, url: t.url });
 
   async function grant() {
     try {
@@ -3253,7 +3253,7 @@
   const pvKey = () => 'cr.browser.' + pvProject();
   function pvSave() {
     const kept = pv.tabs.filter((t) => t.kind !== 'blank');
-    try { localStorage.setItem(pvKey(), JSON.stringify({ active: kept.indexOf(pv.active), tabs: kept.map((t) => ({ ...specOf(t), title: t.title })) })); } catch {}
+    try { localStorage.setItem(pvKey(), JSON.stringify({ active: kept.indexOf(pv.active), tabs: kept.map((t) => ({ ...specOf(t), title: t.title, target: t.rt?.id })) })); } catch {}
   }
   function pvRestore() {
     try {
@@ -3276,6 +3276,7 @@
     previewOpen = true; pvPanel.classList.remove('hidden'); app.classList.add('panel-open');
     // The frames cannot send our token, so the server hands out a cookie of their own first.
     try { await grant(); } catch (e) { note(e.message); }
+    await rvCheck();
     if (pv.cwd === (state.cwd || '') && pv.tabs.length) return activate(pv.active || pv.tabs[0]);
     await showProject(auto);
   }
@@ -3288,7 +3289,7 @@
     paintTabs(); paintBar(); // the last project's tabs go now, not after the servers are counted
     const saved = pvRestore();
     if (saved) {
-      for (const s of saved.tabs) { const t = addTab(); go(t, s, { show: false }); if (s.title) t.title = s.title; }
+      for (const s of saved.tabs) { const t = addTab(); go(t, s, { show: false }); if (s.title) t.title = s.title; if (s.target && pv.real) { t.rt = { id: s.target }; t.rtWant = false; } }
       return activate(pv.tabs[Math.min(Math.max(saved.active, 0), pv.tabs.length - 1)]);
     }
     if (!auto) return;
@@ -3322,11 +3323,12 @@
     for (const x of pv.tabs) x.frame?.classList.toggle('hidden', x !== t);
     const start = pvStage.querySelector('.pv-start');
     if (t.kind === 'blank') showStart(); else { start?.classList.add('hidden'); if (!t.frame && !t.loading) t.loading = load(t).finally(() => { t.loading = null; }); }
+    t.frame?._rv?.front();
     paintTabs(); paintBar(); pvSave();
   }
   function closeTab(t) {
     const i = pv.tabs.indexOf(t); if (i < 0) return;
-    pv.tabs.splice(i, 1); t.frame?.remove(); t.frame = null;
+    pv.tabs.splice(i, 1); t.frame?.remove(); t.frame = null; rvClose(t);
     if (pv.active === t) { pv.active = null; activate(pv.tabs[i] || pv.tabs[i - 1] || addTab()); }
     else paintTabs();
     pvSave();
@@ -3336,9 +3338,9 @@
   // gesture would walk through the page instead of leaving it.
   function go(t, spec, { push = true, show = true } = {}) {
     if (t.kind !== spec.kind || t.port !== spec.port) { t.root = undefined; t.origin = 0; }
-    t.kind = spec.kind; t.port = spec.port; t.path = spec.kind === 'server' ? spec.path || '/' : undefined; t.file = spec.file; t.title = ''; t.bridged = false;
+    t.kind = spec.kind; t.port = spec.port; t.path = spec.kind === 'server' ? spec.path || '/' : undefined; t.file = spec.file; t.url = spec.kind === 'web' ? spec.url : undefined; t.title = ''; t.bridged = false;
     if (push) { t.hist = t.hist.slice(0, t.at + 1); t.hist.push({ addr: tabAddr(t), spec: specOf(t), frame: 0, seen: false }); t.at = t.hist.length - 1; }
-    t.frame?.remove(); t.frame = null;
+    if (pv.real && t.frame?._rv) t.frame._rv.goto(); else { t.frame?.remove(); t.frame = null; if (pv.real) t.rtWant = true; }
     if (show && t === pv.active && previewOpen) activate(t);
     else if (show) paintTabs();
     pvSave();
@@ -3349,6 +3351,7 @@
     return pv.roots ? originUrl(pv.files) + u : '/files/' + pv.key + u;
   }
   async function load(t) {
+    if (pv.real || t.kind === 'web') return rvLoad(t);
     // A loop, not an if: the bar can point the tab at another server while this asks.
     while (t.kind === 'server' && t.root === undefined) {
       t.root = false;
@@ -3433,6 +3436,7 @@
     $('#pv-home').disabled = !(t && t.kind === 'server');
     $('#pv-reload').disabled = !(t && t.kind !== 'blank');
     $('#pv-open').disabled = !(t && t.kind !== 'blank' && outsideUrl(t));
+    rvPaint(t);
   }
   // A new tab starts here: what this computer is serving, one click away.
   function showStart() {
@@ -3489,7 +3493,7 @@
     const a = parseAddr(pvAddr.value);
     if (!a) { note('Type a port like 5173, a localhost address, a file path, or a web address.'); return; }
     pvAddr.blur();
-    if (a.kind === 'web') { openExternal(a.url); note('Opened ' + a.url.replace(/^https?:\/\//, '') + ' in your browser.'); paintBar(); return; }
+    if (a.kind === 'web' && !pv.real) { openExternal(a.url); note('Opened ' + a.url.replace(/^https?:\/\//, '') + ' in your browser.'); paintBar(); return; }
     let t = pv.active;
     if (!t) { t = addTab(); activate(t); }
     go(t, a);
@@ -3502,6 +3506,7 @@
   // a step that belongs to an earlier frame is loaded again instead.
   function step(dir) {
     const t = pv.active; if (!t) return;
+    if (pv.real && t.frame?._rv) return t.frame._rv.step(dir);
     const to = t.hist[t.at + dir]; if (!to) return;
     if (t.bridged && t.frame && to.frame === t.frame._id) return tell(t, dir < 0 ? 'back' : 'forward');
     t.at += dir; go(t, to.spec, { push: false });
@@ -3511,6 +3516,7 @@
   $('#pv-home').addEventListener('click', () => { const t = pv.active; if (t?.kind === 'server') go(t, { kind: 'server', port: t.port, path: '/' }); });
   $('#pv-reload').addEventListener('click', async () => {
     const t = pv.active; if (!t || t.kind === 'blank') return;
+    if (pv.real && t.frame?._rv) return t.frame._rv.reload();
     loadPorts();
     // A restarted server has forgotten the key the frames ride on: ask for one first, or the
     // page reloads into "Open this from the app first".
@@ -3522,6 +3528,7 @@
   $('#pv-new').addEventListener('click', () => { activate(addTab()); if (!isPhone()) pvAddr.focus(); });
   // Outside the app: a browser that was never handed the cookie gets it on the way in.
   function outsideUrl(t) {
+    if (t.kind === 'web') return t.url || '';
     const enter = (port, to) => originUrl(port) + '/__claude-anywhere/enter?key=' + encodeURIComponent(pv.key) + '&to=' + encodeURIComponent(to);
     if (t.kind === 'server') return t.root ? enter(t.origin, t.path || '/') : location.origin + '/preview/' + t.port + (t.path || '/');
     if (t.kind === 'file' && !pv.key) return ''; // no key, no file: see keylessCard
@@ -3597,6 +3604,239 @@
     const t = pv.active?.kind === 'blank' ? pv.active : addTab();
     go(t, { kind: 'file', file }, { show: false });
     activate(t);
+  }
+
+  // ---------- browser: a real Chrome on the computer, streamed into the pane ----------
+  // Where the computer that runs the server has Chrome or Edge, a tab of the pane is a tab of
+  // that browser (lib/browser.mjs): its pictures come down a websocket and the pointer, wheel
+  // and keys go back up, so any site opens here - from a phone too, where an iframe of
+  // localhost would mean the phone's own localhost - and Claude's preview_* tools act on the
+  // very tab the person is looking at. Without one, the pane stays the iframe above.
+  pv.real = false;
+  let rvChecked = null;
+  const rvCoarse = window.matchMedia('(pointer: coarse)').matches;
+  function rvCheck() {
+    if (!rvChecked) rvChecked = api('/browser/status').then((r) => { pv.real = !!r.available; }).catch(() => { rvChecked = null; });
+    return rvChecked.then(() => { pvPanel.classList.toggle('rv-on', pv.real); if (pv.real) pvAddr.placeholder = 'localhost:5173, a file, or a web address'; return pv.real; });
+  }
+  const rvHost = (u) => { try { return new URL(u).host; } catch { return u || ''; } };
+  // What the browser says the tab is now, in the pane's own terms; a blank page says nothing.
+  function rvApply(t, spec, title) {
+    if (!spec || spec.kind === 'blank') return;
+    if (t.kind !== spec.kind || t.port !== spec.port) { t.root = undefined; t.origin = 0; }
+    t.kind = spec.kind; t.port = spec.port; t.path = spec.kind === 'server' ? spec.path || '/' : undefined; t.file = spec.file; t.url = spec.kind === 'web' ? spec.url : undefined;
+    if (title !== undefined) t.title = /^(https?|about|data):/.test(title) ? '' : String(title || '').slice(0, 200);
+  }
+  function rvLoad(t) {
+    if (!previewOpen || !pv.tabs.includes(t) || t.frame || t.kind === 'blank') return;
+    let f;
+    if (!pv.real) {
+      // A web tab kept from when this computer had a browser to show it in.
+      f = el('div', 'pv-card');
+      f.appendChild(el('div', null, 'Web pages open in the Browser only when the computer running claude-anywhere has Chrome or Edge.'));
+      const b = el('button', 'btn btn-ghost', 'Open in your browser'); b.type = 'button';
+      b.addEventListener('click', () => openExternal(t.url)); f.appendChild(b);
+    } else { f = el('div', 'pv-frame rv'); f._rv = rvView(t, f); }
+    f._id = ++pvFrameSeq; t.frame = f;
+    f.classList.toggle('hidden', t !== pv.active);
+    pvStage.appendChild(f);
+  }
+  const BTN = ['left', 'middle', 'right', 'back', 'forward'];
+  const rvMods = (e) => (e.altKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.metaKey ? 4 : 0) | (e.shiftKey ? 8 : 0);
+  function rvView(t, f) {
+    const img = el('img', 'rv-img'); img.alt = ''; img.draggable = false;
+    const wait = el('div', 'rv-wait', 'Opening…');
+    const kbd = el('textarea', 'rv-kbd');
+    for (const [k, v] of [['autocapitalize', 'off'], ['autocomplete', 'off'], ['autocorrect', 'off'], ['spellcheck', 'false'], ['aria-label', 'Type into the page'], ['enterkeyhint', 'go']]) kbd.setAttribute(k, v);
+    f.append(img, wait, kbd);
+    let vp = { width: 0, height: 0 }, closed = false, shown = false, composing = false, url = '';
+    const q = new URLSearchParams({ token: state.token || '', session: state.current || '', tab: t.rt?.id || '' });
+    const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/api/browser/ws?' + q);
+    ws.binaryType = 'blob';
+    const send = (m) => { if (ws.readyState === 1) ws.send(JSON.stringify(m)); };
+    const sendSize = () => {
+      const w = f.clientWidth, h = f.clientHeight;
+      if (!w || !h) { if (shown) { shown = false; send({ t: 'hide' }); } return; }
+      shown = true;
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      send({ t: 'size', w, h, dpr, mobile: rvCoarse, pw: Math.round(w * dpr), ph: Math.round(h * dpr) });
+    };
+    const ro = new ResizeObserver(() => sendSize()); ro.observe(f);
+    ws.onmessage = (e) => {
+      if (typeof e.data !== 'string') {
+        // The previous picture's URL goes once the next one is on screen, not before: freed
+        // early, the pane flashes empty between frames.
+        const next = URL.createObjectURL(e.data), prev = img.src;
+        img.onload = () => { if (prev.startsWith('blob:')) URL.revokeObjectURL(prev); };
+        img.src = next; f.classList.add('live');
+        return;
+      }
+      let m; try { m = JSON.parse(e.data); } catch { return; }
+      if (m.t === 'tab') {
+        t.rt = { id: m.id };
+        if ((m.fresh || t.rtWant) && t.kind !== 'blank') send({ t: 'goto', spec: specOf(t) });
+        t.rtWant = false;
+        if (t === pv.active) send({ t: 'front' });
+        sendSize(); pvSave();
+      } else if (m.t === 'state') {
+        url = m.url;
+        rvApply(t, m.spec, m.title);
+        const keep = (m.entries || []).map((x, i) => ({ ...x, i })).filter((x) => x.spec.kind !== 'blank');
+        if (keep.length) {
+          t.hist = keep.map((x) => ({ addr: x.spec.kind === 'web' ? x.url : x.spec.kind === 'server' ? 'localhost:' + x.spec.port + (x.spec.path || '/') : x.spec.file || '', spec: x.spec }));
+          const at = keep.findIndex((x) => x.i === m.index); t.at = at < 0 ? keep.length - 1 : at;
+        }
+        t.pageLoading = !!m.loading;
+        paintTabs(); if (t === pv.active) paintBar(); pvSave();
+      } else if (m.t === 'viewport') {
+        vp = m; f.classList.toggle('emu', !!m.emu); t.emu = m.emu; if (t === pv.active) rvPaint(t);
+      } else if (m.t === 'newtab') {
+        // A page that opens a window (target=_blank, window.open) gets a tab of the pane.
+        if (pv.tabs.some((x) => x.rt?.id === m.id)) return;
+        const nt = addTab(); nt.rt = { id: m.id }; nt.rtWant = false; rvApply(nt, { kind: 'web', url: m.url || 'about:blank' }, '');
+        activate(nt);
+      } else if (m.t === 'gone') { closed = true; if (pv.tabs.includes(t)) { t.rt = null; closeTab(t); } }
+      else if (m.t === 'closed') { t.rt = null; t.rtWant = true; }
+      else if (m.t === 'note') note(m.text);
+      else if (m.t === 'error') { wait.textContent = m.text; }
+      else if (m.t === 'editable') { if (m.on && rvCoarse && document.activeElement !== kbd) kbd.focus({ preventScroll: true }); }
+      else if (m.t === 'copied') { if (m.text) navigator.clipboard?.writeText(m.text).catch(() => {}); }
+    };
+    // The server restarted, or the browser closed under the tab: a new view of it, or of a
+    // fresh tab at the same address when the old one is gone.
+    ws.onclose = () => { if (closed) return; closed = true; ro.disconnect(); setTimeout(() => { if (t.frame !== f) return; f.remove(); if (t.frame === f) t.frame = null; if (t === pv.active && previewOpen) activate(t); }, 800); };
+
+    // Where on the page a point of the pane is: the picture is the page's viewport scaled to
+    // fit (letterboxed when Claude or the phone toggle sets a size of its own).
+    const pt = (e) => {
+      const r = f.getBoundingClientRect(), W = vp.width || r.width, H = vp.height || r.height;
+      const s = Math.min(r.width / W, r.height / H) || 1;
+      return { x: Math.round((e.clientX - r.left - (r.width - W * s) / 2) / s), y: Math.round((e.clientY - r.top - (r.height - H * s) / 2) / s), s };
+    };
+    let clicks = 0, lastDown = 0, moveRaf = 0, moveEv = null, touch = null, wheelAcc = null;
+    f.addEventListener('pointerdown', (e) => {
+      if (e.target === kbd) return;
+      e.preventDefault();
+      if (e.pointerType === 'touch') { touch = { x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, at: Date.now(), moved: false }; try { f.setPointerCapture(e.pointerId); } catch {} return; }
+      kbd.focus({ preventScroll: true });
+      try { f.setPointerCapture(e.pointerId); } catch {}
+      clicks = Date.now() - lastDown < 450 ? Math.min(clicks + 1, 3) : 1; lastDown = Date.now();
+      send({ t: 'mouse', type: 'mousePressed', ...pt(e), button: BTN[e.button] || 'left', buttons: e.buttons, clickCount: clicks, modifiers: rvMods(e) });
+    });
+    f.addEventListener('pointermove', (e) => {
+      if (e.pointerType === 'touch') {
+        if (!touch) return;
+        if (!touch.moved && Math.hypot(e.clientX - touch.x0, e.clientY - touch.y0) > 8) touch.moved = true;
+        if (!touch.moved) return;
+        // A finger dragging the page is the page scrolling the other way.
+        const p = pt(e);
+        wheelAcc = { x: p.x, y: p.y, dx: (wheelAcc?.dx || 0) - (e.clientX - touch.x) / p.s, dy: (wheelAcc?.dy || 0) - (e.clientY - touch.y) / p.s };
+        touch.x = e.clientX; touch.y = e.clientY;
+        if (!moveRaf) moveRaf = requestAnimationFrame(() => { moveRaf = 0; if (wheelAcc) send({ t: 'wheel', ...wheelAcc }); wheelAcc = null; });
+        return;
+      }
+      moveEv = e;
+      if (!moveRaf) moveRaf = requestAnimationFrame(() => { moveRaf = 0; const x = moveEv; if (x) send({ t: 'mouse', type: 'mouseMoved', ...pt(x), button: 'none', buttons: x.buttons, modifiers: rvMods(x) }); });
+    });
+    const up = (e) => {
+      if (e.pointerType === 'touch') {
+        const tp = touch; touch = null;
+        if (e.type === 'pointerup' && tp && !tp.moved && Date.now() - tp.at < 700) {
+          const p = pt(e);
+          send({ t: 'mouse', type: 'mouseMoved', ...p, button: 'none' });
+          send({ t: 'mouse', type: 'mousePressed', ...p, button: 'left', buttons: 1, clickCount: 1 });
+          send({ t: 'mouse', type: 'mouseReleased', ...p, button: 'left', buttons: 0, clickCount: 1 });
+        }
+        return;
+      }
+      send({ t: 'mouse', type: 'mouseReleased', ...pt(e), button: BTN[e.button] || 'left', buttons: e.buttons, clickCount: clicks, modifiers: rvMods(e) });
+    };
+    f.addEventListener('pointerup', up); f.addEventListener('pointercancel', up);
+    f.addEventListener('contextmenu', (e) => e.preventDefault()); // the page's own right-click, not ours
+    f.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const k = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? f.clientHeight : 1, p = pt(e);
+      send({ t: 'wheel', x: p.x, y: p.y, dx: e.deltaX * k / p.s, dy: e.deltaY * k / p.s, modifiers: rvMods(e) });
+    }, { passive: false });
+
+    const key = (k, code, keyCode, text = '') => { send({ t: 'key', type: 'down', key: k, code, keyCode, text }); send({ t: 'key', type: 'up', key: k, code, keyCode }); };
+    kbd.addEventListener('keydown', (e) => {
+      // A soft keyboard or an input method says what it typed through beforeinput instead.
+      if (e.isComposing || composing || e.key === 'Process' || e.key === 'Unidentified' || e.keyCode === 229) return;
+      const cmd = e.ctrlKey || e.metaKey;
+      if (cmd && e.shiftKey) return; // the app's own shortcuts (Ctrl+Shift+B closes the pane)
+      e.stopPropagation();
+      if (cmd && /^v$/i.test(e.key)) return; // the paste event brings the text
+      if (cmd && /^[cx]$/i.test(e.key)) send({ t: 'copy' });
+      if (cmd && /^c$/i.test(e.key)) { e.preventDefault(); return; }
+      e.preventDefault();
+      const text = e.key === 'Enter' ? '\r' : e.key.length === 1 && !cmd && !e.altKey ? e.key : '';
+      send({ t: 'key', type: 'down', key: e.key, code: e.code, keyCode: e.keyCode, text, modifiers: rvMods(e), location: e.location, repeat: e.repeat });
+    });
+    kbd.addEventListener('keyup', (e) => {
+      if (e.key === 'Process' || e.key === 'Unidentified' || e.keyCode === 229) return;
+      e.preventDefault(); e.stopPropagation();
+      send({ t: 'key', type: 'up', key: e.key, code: e.code, keyCode: e.keyCode, modifiers: rvMods(e), location: e.location });
+    });
+    kbd.addEventListener('beforeinput', (e) => {
+      if (e.isComposing || e.inputType === 'insertCompositionText') return;
+      if (e.inputType === 'insertText' || e.inputType === 'insertReplacementText') { e.preventDefault(); const s = e.data ?? e.dataTransfer?.getData('text/plain') ?? ''; if (s) send({ t: 'text', text: s }); }
+      else if (e.inputType === 'insertLineBreak' || e.inputType === 'insertParagraph') { e.preventDefault(); key('Enter', 'Enter', 13, '\r'); }
+      else if (e.inputType === 'deleteContentBackward') { e.preventDefault(); key('Backspace', 'Backspace', 8); }
+      else if (e.inputType === 'deleteContentForward') { e.preventDefault(); key('Delete', 'Delete', 46); }
+    });
+    kbd.addEventListener('compositionstart', () => { composing = true; });
+    kbd.addEventListener('compositionend', (e) => { composing = false; if (e.data) send({ t: 'text', text: e.data }); kbd.value = ''; });
+    kbd.addEventListener('input', () => { if (!composing) kbd.value = ''; });
+    kbd.addEventListener('paste', (e) => { e.preventDefault(); const s = e.clipboardData?.getData('text/plain'); if (s) send({ t: 'text', text: s }); });
+
+    return {
+      goto: () => { send({ t: 'goto', spec: specOf(t) }); },
+      step: (dir) => send({ t: dir < 0 ? 'back' : 'forward' }),
+      reload: () => send({ t: t.pageLoading ? 'stop' : 'reload' }),
+      front: () => send({ t: 'front' }),
+      emu: (preset) => send({ t: 'emu', preset }),
+      keyboard: () => kbd.focus({ preventScroll: true }),
+      get url() { return url; },
+      close: () => { closed = true; ro.disconnect(); try { ws.close(); } catch {} },
+    };
+  }
+  // A view goes with its frame: the pane removes frames freely (another project, closing),
+  // and the tab itself lives on in the browser until the pane's tab is closed.
+  new MutationObserver((list) => { for (const r of list) for (const n of r.removedNodes) if (n._rv && !n.isConnected) n._rv.close(); }).observe(pvStage, { childList: true });
+  function rvClose(t) { const id = t.rt?.id; t.rt = null; if (id) api('/browser/tabs/' + encodeURIComponent(id), { method: 'DELETE' }).catch(() => {}); }
+  const RELOAD_ICON = $('#pv-reload').innerHTML;
+  function rvPaint(t) {
+    const r = $('#pv-reload'), stop = !!(pv.real && t?.pageLoading);
+    if (r.classList.contains('stop') !== stop) { r.classList.toggle('stop', stop); r.title = stop ? 'Stop' : 'Reload'; r.innerHTML = stop ? '<svg viewBox="0 0 20 20" width="15" height="15"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>' : RELOAD_ICON; }
+    const live = !!(pv.real && t && t.kind !== 'blank');
+    $('#pv-device').disabled = !live; $('#pv-capture').disabled = !live; $('#pv-kbd').disabled = !live;
+    $('#pv-device').classList.toggle('on', !!t?.emu);
+    $('#pv-device').setAttribute('aria-pressed', String(!!t?.emu));
+  }
+  // Phone size: the tab laid out as a 390 x 844 phone, shown whole inside the pane.
+  $('#pv-device').addEventListener('click', () => { const t = pv.active; t?.frame?._rv?.emu(t.emu ? null : 'phone'); });
+  $('#pv-kbd').addEventListener('click', () => pv.active?.frame?._rv?.keyboard());
+  // Capture screenshot: the page as the browser drew it, into the message, ready to mark up.
+  $('#pv-capture').addEventListener('click', async () => {
+    const t = pv.active; if (!t?.rt?.id) return;
+    try {
+      const r = await api('/browser/tabs/' + encodeURIComponent(t.rt.id) + '/screenshot');
+      pending.push({ kind: 'image', name: (tabTitle(t) || 'page').replace(/[\\/:*?"<>|]+/g, ' ').slice(0, 60) + '.jpg', media_type: 'image/jpeg', data: r.dataUrl.split(',')[1], dataUrl: r.dataUrl });
+      renderPending(); openAnnotate(pending.length - 1);
+    } catch (e) { note(e.message); }
+  });
+  // Claude used a Browser tool: the pane comes forward on the tab it used.
+  async function rvShow(info) {
+    if (!info?.id || !(await rvCheck())) return;
+    if (!previewOpen) await openPreview({ auto: false });
+    let t = pv.tabs.find((x) => x.rt?.id === info.id);
+    if (!t) {
+      t = pv.active?.kind === 'blank' && !pv.active.rt ? pv.active : addTab();
+      t.frame?.remove(); t.frame = null;
+      t.rt = { id: info.id }; t.rtWant = false; rvApply(t, info.spec, info.title);
+    }
+    if (pv.active !== t || !t.frame) activate(t);
   }
 
   // ---------- Files: a tree beside tabs, fuzzy find, edit in place, comments, Office previews ----------
@@ -4930,6 +5170,7 @@
         // Claude opened or used a terminal tab: the person sees it, same as if they had.
         case 'terminal_tab': onTerminalTabEvent(ev.tab); break;
         case 'terminal_focus': showTerminalTab(ev.tabId); break;
+        case 'browser_show': rvShow(ev.tab); break;
         case 'session_status': { const srow = state.sessions.find((x) => x.id === sessionId); if (srow) srow.status = { status: ev.status, note: ev.note }; renderSessions(); break; }
         case 'note': thread.appendChild(el('div', 'note' + (ev.level === 'warning' ? ' warning' : ''), ev.text)); statusPaint(); autoscroll(); break;
         // Stop took back messages typed mid-turn (or Remove took one out): its dashed bubble goes, on every device.
