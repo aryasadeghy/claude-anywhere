@@ -38,6 +38,8 @@ async function main() {
 
   async function send(text) { await page.fill('#input', text); await page.press('#input', 'Enter'); }
   const idle = () => until(async () => (await page.$eval('#send', (b) => b.title)) === 'Send', 30000);
+  const threadText = () => page.$eval('#thread', (t) => t.innerText);
+  const authedFetch = (p) => page.evaluate((p) => fetch(p, { headers: { Authorization: 'Bearer ' + localStorage.getItem('cr.token') } }).then((r) => r.json()), p);
 
   // Claude starts a nested session: the parent's chat gets a session card, the child shows up
   // nested in the sidebar, and the server records the link (lib/sessions-net.mjs).
@@ -98,8 +100,33 @@ async function main() {
   await page.screenshot({ path: path.join(SHOTS, 'sessions-sections-and-grouping.png') });
 
   // The prefs just set are shared with the server (lib/sessions-net.mjs), not only localStorage.
-  const serverPrefs = await page.evaluate(() => fetch('/api/sidebar/prefs', { headers: { Authorization: 'Bearer ' + localStorage.getItem('cr.token') } }).then((r) => r.json()));
+  const serverPrefs = await authedFetch('/api/sidebar/prefs');
   check('"Group and sort" choices are saved server-side too', serverPrefs.groupBy === 'state' && serverPrefs.showEmptyGroups === true, JSON.stringify(serverPrefs));
+
+  // ---------- /btw side chat ----------
+  await page.evaluate(() => document.querySelector('.project-group .proj-act[title="Group and sort"]').click());
+  await until(() => page.isVisible('#filter-menu'));
+  await page.evaluate(() => [...document.querySelectorAll('#filter-menu .menu-item')].find((b) => b.textContent.includes('Project')).click());
+  const threadBefore = await threadText();
+  await send('/btw Q1 what is the capital');
+  await wait(600);
+  check('the side chat does not add anything to the main thread', (await threadText()) === threadBefore);
+  check('a side-chat tab opens in its own pane', await until(() => page.isVisible('#btw-panel:not(.hidden)')));
+  check('...with the question as the tab label', await page.$eval('#btw-tabs .pv-tab', (t) => t.title.includes('Q1')));
+  check('the side chat answers (the tab shows Claude\'s reply)', await until(() => page.$eval('#btw-stage', (s) => s.textContent.includes('Answer to: Q1')).catch(() => false), 15000));
+  await page.screenshot({ path: path.join(SHOTS, 'sessions-btw-pane.png') });
+
+  // The forked session is real but unlisted - never in the sidebar or the main-chat session tools.
+  const sideIds = await authedFetch(`/api/sessions/${sid}/side-chats`);
+  check('the server tracks the side chat against this session', sideIds.tabs?.length === 1);
+  const listed = await authedFetch('/api/sessions?limit=200');
+  check('the side chat never appears in the sidebar\'s own session list', !listed.some((s) => s.id === sideIds.tabs[0].id));
+
+  // Closing the tab discards it: the server stops tracking it and the panel closes.
+  await page.click('#btw-tabs .pv-tab-x');
+  check('closing the tab closes the panel (nothing left to show)', await until(() => page.$eval('#btw-panel', (el) => el.classList.contains('hidden')).catch(() => false)));
+  const sideIdsAfter = await authedFetch(`/api/sessions/${sid}/side-chats`);
+  check('...and discards the forked session server-side', sideIdsAfter.tabs?.length === 0);
 
   check('no errors in the app', !errors.length, errors.join(' | '));
   await browser.close();

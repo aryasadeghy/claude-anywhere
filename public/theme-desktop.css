@@ -1334,3 +1334,19 @@ mark.find-hit.current { background: var(--accent); color: var(--accent-ink); }
 .section-group > summary { font-weight: 600; }
 .load-more { display: block; width: calc(100% - 20px); margin: 6px 10px; padding: 7px 0; text-align: center; border-radius: 8px; background: none; border: 1px dashed var(--line-2); color: var(--ink-3); }
 .load-more:hover { background: var(--bg-2); color: var(--ink); }
+
+/* /btw's side chat pane: tabs along the top (reuses .pv-tab), a question, messages, a composer. */
+.btw-panel { width: 360px; }
+.btw-stage { flex: 1; min-height: 0; position: relative; }
+.btw-tab-view { position: absolute; inset: 0; display: flex; flex-direction: column; }
+.btw-tab-view.hidden { display: none; }
+.btw-tab-head { padding: 10px 14px; border-bottom: 1px solid var(--line); }
+.btw-question { font-size: 13px; font-weight: 600; color: var(--ink-2); }
+.btw-messages { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 14px; display: flex; flex-direction: column; gap: 10px; }
+.btw-msg { font-size: 13px; }
+.btw-msg p { margin: 0 0 8px; }
+.btw-msg p:last-child { margin-bottom: 0; }
+.btw-msg.user { color: var(--ink-3); }
+.btw-msg.assistant { color: var(--ink); }
+.btw-compose { display: flex; gap: 8px; align-items: flex-end; padding: 10px 14px; border-top: 1px solid var(--line); flex: none; }
+.btw-input { flex: 1; resize: none; min-height: 32px; max-height: 120px; padding: 7px 10px; border-radius: 9px; border: 1px solid var(--line-2); background: var(--bg-2); color: var(--ink); font: inherit; font-size: 13px; }

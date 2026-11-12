@@ -527,6 +527,20 @@ app.post('/api/sidebar/move-out', (req, res) => res.json({ ok: net.moveToSection
 app.get('/api/sidebar/prefs', (req, res) => res.json(net.getSidebarPrefs()));
 app.post('/api/sidebar/prefs', (req, res) => res.json(net.setSidebarPrefs(req.body || {})));
 
+// /btw: a side chat forked from this session (hidden - never in /api/sessions), one per question,
+// answering with this session's context without the main thread ever seeing it.
+app.get('/api/sessions/:id/side-chats', (req, res) => res.json({ tabs: net.sideChatsOf(req.params.id) }));
+app.post('/api/sessions/:id/side-chats', async (req, res, next) => {
+  try {
+    const text = String(req.body?.text || '').trim();
+    if (!text) return res.status(400).json({ error: 'Empty question' });
+    res.json(await net.openSideChat(req.params.id, text));
+  } catch (e) { next(e); }
+});
+app.delete('/api/sessions/:id/side-chats/:sideId', async (req, res, next) => {
+  try { res.json({ ok: await net.closeSideChat(req.params.sideId) }); } catch (e) { next(e); }
+});
+
 // ---------- deleting a session puts it aside, it does not destroy it ----------
 // Sessions are the only thing here that cannot be made again, and deleting several
 // at once is one confirm away. So the transcript is moved to a trash folder and can
@@ -1367,7 +1381,7 @@ app.get('/api/sessions', async (req, res, next) => {
     const offset = Number(req.query.offset) || 0;
     const pinned = new Set(readPrefs().pinned);
     const showArchived = req.query.archived === '1';
-    res.json((await listSessions({ limit, offset })).filter((s) => showArchived || s.tag !== 'archived').map((s) => shape(s, pinned)));
+    res.json((await listSessions({ limit, offset })).filter((s) => (showArchived || s.tag !== 'archived') && !net.isSideChat(s.sessionId)).map((s) => shape(s, pinned)));
   } catch (e) { next(e); }
 });
 

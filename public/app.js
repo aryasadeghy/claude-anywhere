@@ -1094,6 +1094,107 @@
     }
   }
 
+  // ---------- /btw: a side chat beside the session, one tab per question ----------
+  // Each tab is a real session underneath (lib/sessions-net.mjs's openSideChat, a forked,
+  // hidden session) - sent to and read back with the same /send and /messages routes any
+  // session uses, just never added to the main thread and never listed in the sidebar. No
+  // live SSE stream of its own: a short poll while it is busy is simpler and plenty for an
+  // aside, and nothing here competes with the main session's own stream for events.
+  const btwPanel = $('#btw-panel'), btwTabsEl = $('#btw-tabs'), btwStage = $('#btw-stage');
+  let btwOpen = false;
+  state.btw = { forSession: null, tabs: [], active: null }; // tabs: [{id, question, el, pollTimer}]
+  function openBtwPanel() {
+    if (changesOpen) closeChanges(); if (previewOpen) closePreview(); if (filesOpen) closeFiles(); if (terminalOpen) closeTerminal(); if (tasksOpen) closeTasks();
+    btwOpen = true; btwPanel.classList.remove('hidden'); app.classList.add('panel-open');
+  }
+  function closeBtwPanel() { btwOpen = false; btwPanel.classList.add('hidden'); app.classList.remove('panel-open'); }
+  function btwTabView(tab) {
+    const root = el('div', 'btw-tab-view hidden');
+    const head = el('div', 'btw-tab-head');
+    head.appendChild(el('div', 'btw-question', tab.question));
+    root.appendChild(head);
+    const msgs = el('div', 'btw-messages'); root.appendChild(msgs);
+    const box = el('div', 'btw-compose');
+    const ta = el('textarea', 'btw-input'); ta.placeholder = 'Ask a follow-up…'; ta.rows = 1;
+    const send = el('button', 'btn btn-ghost small', 'Send'); send.type = 'button';
+    const go = async () => { const v = ta.value.trim(); if (!v) return; ta.value = ''; send.disabled = true; try { await api(`/sessions/${tab.id}/send`, { method: 'POST', body: JSON.stringify({ text: v }) }); pollBtwTab(tab); } catch (e) { toast(e.message); } finally { send.disabled = false; } };
+    send.addEventListener('click', go);
+    ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); go(); } });
+    box.appendChild(ta); box.appendChild(send); root.appendChild(box);
+    tab.el = root; tab.msgsEl = msgs;
+    return root;
+  }
+  function paintBtwTabs() {
+    btwTabsEl.innerHTML = '';
+    for (const tab of state.btw.tabs) {
+      const b = el('div', 'pv-tab' + (tab.id === state.btw.active ? ' on' : ''));
+      b.setAttribute('role', 'tab'); b.setAttribute('aria-selected', String(tab.id === state.btw.active)); b.title = tab.question;
+      b.appendChild(el('span', 'pv-tab-name', tab.question));
+      const x = el('button', 'pv-tab-x'); x.type = 'button'; x.title = 'Close tab (discards it)'; x.setAttribute('aria-label', 'Close tab');
+      x.innerHTML = '<svg viewBox="0 0 20 20" width="11" height="11"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
+      x.addEventListener('click', (e) => { e.stopPropagation(); closeBtwTab(tab.id); });
+      b.appendChild(x);
+      b.addEventListener('click', () => showBtwTab(tab.id));
+      btwTabsEl.appendChild(b);
+    }
+  }
+  function showBtwTab(id) {
+    state.btw.active = id;
+    for (const t of state.btw.tabs) t.el.classList.toggle('hidden', t.id !== id);
+    paintBtwTabs();
+  }
+  async function paintBtwMessages(tab) {
+    let rows = [];
+    try { rows = await api(`/sessions/${tab.id}/messages`); } catch { return; }
+    tab.msgsEl.innerHTML = '';
+    // A fork's history is a full copy of the parent's, not a clean slate - only turns from the
+    // moment this side chat was opened (tab.startedAt, lib/sessions-net.mjs's own clock) are the
+    // side chat's own; everything older is the parent's conversation showing up again.
+    for (const m of rows) {
+      if (m.timestamp && Date.parse(m.timestamp) < tab.startedAt) continue;
+      const text = (m.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('\n');
+      if (!text) continue;
+      const row = el('div', 'btw-msg ' + (m.role === 'user' ? 'user' : 'assistant')); row.innerHTML = md(text);
+      tab.msgsEl.appendChild(row);
+    }
+    tab.msgsEl.scrollTop = tab.msgsEl.scrollHeight;
+  }
+  async function pollBtwTab(tab) {
+    clearTimeout(tab.pollTimer);
+    await paintBtwMessages(tab);
+    try {
+      const info = await api(`/sessions/${tab.id}`);
+      if (info.busy) { tab.pollTimer = setTimeout(() => pollBtwTab(tab), 700); return; }
+    } catch {}
+    await paintBtwMessages(tab); // the last word, once it has stopped being busy
+  }
+  async function askBtw(parentId, question) {
+    let id, startedAt; try { ({ id, startedAt } = await api(`/sessions/${parentId}/side-chats`, { method: 'POST', body: JSON.stringify({ text: question }) })); }
+    catch (e) { toast(e.message); return; }
+    if (state.btw.forSession !== parentId) { state.btw.tabs = []; state.btw.forSession = parentId; }
+    const tab = { id, question, startedAt: startedAt || 0, pollTimer: null };
+    state.btw.tabs.push(tab);
+    btwStage.appendChild(btwTabView(tab));
+    openBtwPanel();
+    showBtwTab(id);
+    pollBtwTab(tab);
+  }
+  async function closeBtwTab(id) {
+    const tab = state.btw.tabs.find((t) => t.id === id); if (!tab) return;
+    clearTimeout(tab.pollTimer);
+    try { await api(`/sessions/${state.btw.forSession}/side-chats/${id}`, { method: 'DELETE' }); } catch {}
+    tab.el.remove();
+    state.btw.tabs = state.btw.tabs.filter((t) => t.id !== id);
+    if (!state.btw.tabs.length) closeBtwPanel();
+    else showBtwTab(state.btw.tabs[state.btw.tabs.length - 1].id);
+  }
+  function resetBtwForSession(sessionId) {
+    for (const t of state.btw.tabs) clearTimeout(t.pollTimer);
+    state.btw = { forSession: sessionId, tabs: [], active: null };
+    btwStage.innerHTML = ''; closeBtwPanel();
+  }
+  $('#btw-close').addEventListener('click', closeBtwPanel);
+
   function renderSessions() {
     applyOrder();
     const list = $('#session-list'); const scrolled = list.scrollTop; list.innerHTML = '';
@@ -3211,7 +3312,7 @@
     clearInterval(tasksTimer); tasksTimer = null;
     if (running.length && tasksOpen) tasksTimer = setInterval(() => { for (const t of running) { const n = tpList.querySelector(`[data-task="${t.id}"] .tp-elapsed`); if (n) n.textContent = fmtDur(Date.now() - t.startedAt); } }, 1000);
   }
-  function openTasks() { if (changesOpen) closeChanges(); if (previewOpen) closePreview(); if (filesOpen) closeFiles(); if (terminalOpen) closeTerminal(); tasksOpen = true; tasksPanel.classList.remove('hidden'); app.classList.add('tasks-open'); paintTasks(); }
+  function openTasks() { if (changesOpen) closeChanges(); if (previewOpen) closePreview(); if (filesOpen) closeFiles(); if (terminalOpen) closeTerminal(); if (btwOpen) closeBtwPanel(); tasksOpen = true; tasksPanel.classList.remove('hidden'); app.classList.add('tasks-open'); paintTasks(); }
   function closeTasks() { tasksOpen = false; tasksPanel.classList.add('hidden'); app.classList.remove('tasks-open'); for (const [, o] of outputOpen) clearInterval(o.timer); outputOpen.clear(); paintTasks(); }
   $('#tasks-bar').addEventListener('click', () => tasksOpen ? closeTasks() : openTasks());
   $('#tp-close').addEventListener('click', closeTasks);
@@ -3466,6 +3567,7 @@
     if (tasksOpen) closeTasks();
     if (changesOpen) closeChanges();
     if (filesOpen) closeFiles();
+    if (btwOpen) closeBtwPanel();
     if (terminalOpen) closeTerminal();
     previewOpen = true; pvPanel.classList.remove('hidden'); app.classList.add('panel-open');
     // The frames cannot send our token, so the server hands out a cookie of their own first.
@@ -3828,7 +3930,7 @@
   const defaultModeFor = (p) => RICH_KINDS.test(p) ? 'preview' : 'edit';
 
   function openFiles() {
-    if (tasksOpen) closeTasks(); if (previewOpen) closePreview(); if (changesOpen) closeChanges(); if (terminalOpen) closeTerminal();
+    if (tasksOpen) closeTasks(); if (previewOpen) closePreview(); if (changesOpen) closeChanges(); if (terminalOpen) closeTerminal(); if (btwOpen) closeBtwPanel();
     filesOpen = true; fxPanel.classList.remove('hidden'); app.classList.add('panel-open');
     // A new session's folder starts the tree over; the same session keeps its open tabs,
     // so switching to the Browser and back does not lose where you were.
@@ -4519,7 +4621,7 @@
   }
   async function openTerminal() {
     if (!state.current) { toast('Start a conversation first.'); return; }
-    if (tasksOpen) closeTasks(); if (previewOpen) closePreview(); if (filesOpen) closeFiles(); if (changesOpen) closeChanges();
+    if (tasksOpen) closeTasks(); if (previewOpen) closePreview(); if (filesOpen) closeFiles(); if (changesOpen) closeChanges(); if (btwOpen) closeBtwPanel();
     terminalOpen = true; terminalMinimized = false;
     termPanel.classList.remove('hidden', 'minimized'); termPill.classList.add('hidden');
     app.classList.add('panel-open');
@@ -4841,7 +4943,7 @@
   // ---------- Changes: the files this folder has changed, and their diffs (Desktop's Changes pane) ----------
   const changesPanel = $('#changes-panel'), chList = $('#ch-list'), chDiff = $('#ch-diff');
   let changesOpen = false, changesData = null, changesFile = null;
-  function openChanges() { if (tasksOpen) closeTasks(); if (previewOpen) closePreview(); if (filesOpen) closeFiles(); if (terminalOpen) closeTerminal(); changesOpen = true; changesPanel.classList.remove('hidden'); app.classList.add('panel-open'); showChangesList(); loadChanges(); }
+  function openChanges() { if (tasksOpen) closeTasks(); if (previewOpen) closePreview(); if (filesOpen) closeFiles(); if (terminalOpen) closeTerminal(); if (btwOpen) closeBtwPanel(); changesOpen = true; changesPanel.classList.remove('hidden'); app.classList.add('panel-open'); showChangesList(); loadChanges(); }
   function closeChanges() { changesOpen = false; changesFile = null; changesPanel.classList.add('hidden'); app.classList.remove('panel-open'); }
   $('#ch-close').addEventListener('click', closeChanges);
   $('#ch-refresh').addEventListener('click', () => loadChanges());
@@ -5614,6 +5716,17 @@
     },
   });
   registerCommand('mcp', { description: 'Open Connectors in Settings', argumentHint: '', run: () => openConnectors() });
+  // A side chat answers with this session's context (a fork of it) without adding the question
+  // or its answer to the main thread - for "by the way" tangents that do not belong in the record.
+  registerCommand('btw', {
+    description: 'Ask something off to the side, with this session\'s context, without adding it to the main thread', argumentHint: '<question>',
+    async run(args) {
+      const q = (args || '').trim();
+      if (!state.current) return toast('Start a conversation first.');
+      if (!q) return toast('Type a question after /btw.');
+      await askBtw(state.current, q);
+    },
+  });
   registerCommand('resume', { description: 'Find and resume a session', argumentHint: '', run: () => { const sb = $('#sidebar'); if (!sb.classList.contains('searching')) $('#search-btn').click(); else $('#search-input').focus(); app.classList.add('sidebar-open'); } });
 
   // ---------- "!" shell command: runs on this computer, in the session's folder ----------
@@ -6369,6 +6482,7 @@
   async function openSession(id, { jumpTo } = {}) {
     const seq = ++openSeq;
     state.current = id; state.live = null; state.tasks = []; hiddenTasks.clear(); paintTasks(); if (changesOpen) closeChanges(); if (previewOpen) closePreview(); if (filesOpen) closeFiles(); if (terminalOpen) closeTerminal();
+    if (state.btw.forSession !== id) resetBtwForSession(id); // side chats are per-session, not carried to the next one opened
     planTodos = null; planTasks.clear(); planBoxClosedByUser = false; paintPlanBox();
     findQuery = ''; findHits = []; findIndex = -1; findSeq++; findBar.classList.add('hidden');
     if (state.es) { state.es.close(); state.es = null; }
@@ -6447,6 +6561,7 @@
     planTodos = null; planTasks.clear(); planBoxClosedByUser = false; paintPlanBox();
     findQuery = ''; findHits = []; findIndex = -1; findSeq++; findBar.classList.add('hidden');
     state.current = null; state.live = null; state.tasks = []; hiddenTasks.clear(); paintTasks(); if (changesOpen) closeChanges(); if (filesOpen) closeFiles(); if (terminalOpen) closeTerminal(); stopPrWatch(); $("#sb-pr-state").classList.add("hidden");
+    resetBtwForSession(null);
     if (state.es) { state.es.close(); state.es = null; }
     app.classList.remove('sidebar-open');
     thread.innerHTML = ''; empty.classList.add('show'); app.classList.add('new');

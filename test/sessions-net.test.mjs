@@ -71,3 +71,14 @@ test('set_session_model/effort/permission_mode persist to prefs.json even with n
   assert.equal(saved2.sessionPrefs['session-b'].model, 'claude-haiku-4-5');
   assert.equal(saved2.sessionPrefs['session-b'].effort, 'high');
 });
+
+test('a /btw fork is tracked as a side chat, and is never mistaken for a nested child', () => {
+  const s = net.read();
+  s.sideChats['side-1'] = { parentId: 'parent-2', question: 'what time zone?', startedAt: Date.now() };
+  net.write(s);
+  assert.equal(net.isSideChat('side-1'), true);
+  assert.equal(net.isSideChat('parent-2'), false);
+  assert.equal(net.sideChatsOf('parent-2').length, 1);
+  assert.equal(net.sideChatsOf('parent-2')[0].question, 'what time zone?');
+  assert.equal(net.childrenOf('parent-2').length, 0); // sections, children and side chats are separate stores
+});
