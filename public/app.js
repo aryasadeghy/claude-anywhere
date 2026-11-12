@@ -570,7 +570,7 @@
   // By project, in the order you dragged things into, is the default and the only
   // view drag-and-drop applies to; the others are read-only ways of looking at the
   // same sessions. Kept per device, like the collapsed groups.
-  state.view = { group: 'project', sort: 'manual', archived: false };
+  state.view = { group: 'project', sort: 'manual', archived: false, showEmpty: false };
   try { Object.assign(state.view, JSON.parse(localStorage.getItem('cr.view') || '{}')); } catch {}
   const manualOrder = () => state.view.group === 'project' && state.view.sort === 'manual';
   const DAY = 86400000;
@@ -588,14 +588,31 @@
   // `busy`, not `live`: Claude Code can rest between turns, ready for the next message, and that is not working.
   const working = (s) => (s.busy ?? s.live) || s.working;
   const stateBucket = (s) => s.needsInput ? STATES[0] : working(s) ? STATES[1] : s.failed ? STATES[2] : s.unread ? STATES[3] : s.archived ? STATES[4] : STATES[5];
-  const GROUPS = [['project', 'Project', 'Your own order, drag to arrange'], ['date', 'Date', 'Today, yesterday, this month'], ['state', 'Activity', 'Needs input, working, unread']];
-  const SORTS = [['manual', 'Manual', 'The order you dragged them into'], ['recent', 'Recently active', ''], ['name', 'Name', '']];
+  // Desktop's own three: Project, Status, None (none groups by nothing - just Pinned and Recents).
+  // "Date" stays too (useful, nobody asked for it to go) but is not one of the three the menu's
+  // own "Group by" section highlights first.
+  const GROUPS = [['project', 'Project', 'Your own order, drag to arrange'], ['state', 'Status', 'Needs input, working, unread'], ['none', 'None', 'Pinned and Recents only'], ['date', 'Date', 'Today, yesterday, this month']];
+  const SORTS = [['manual', 'Manual', 'The order you dragged them into'], ['recent', 'Recent', 'Recently active first'], ['created', 'Created', 'Newest first'], ['name', 'A→Z', '']];
   function setView(patch) {
     const reload = 'archived' in patch && patch.archived !== state.view.archived;
     Object.assign(state.view, patch);
     try { localStorage.setItem('cr.view', JSON.stringify(state.view)); } catch {}
+    // Shared across devices (lib/sessions-net.mjs's sidebar prefs) so the phone and desktop agree
+    // on how the list is grouped - localStorage alone left the phone looking like a different app.
+    api('/sidebar/prefs', { method: 'POST', body: JSON.stringify({ groupBy: state.view.group, sortBy: state.view.sort, showEmptyGroups: state.view.showEmpty }) }).catch(() => {});
     $('#filter-btn').classList.toggle('on', state.view.group !== 'project' || state.view.sort !== 'manual' || state.view.archived);
     if (reload) loadSessions().catch(() => {}); else renderSessions();
+  }
+  // The server's copy of the same prefs wins at boot (a phone picking up what the desktop set
+  // last), but only once - after that this device's own clicks are the ones that count.
+  async function loadSidebarPrefsFromServer() {
+    try {
+      const p = await api('/sidebar/prefs');
+      if (!localStorage.getItem('cr.view') && (p.groupBy || p.sortBy)) {
+        Object.assign(state.view, { group: p.groupBy || state.view.group, sort: p.sortBy || state.view.sort, showEmpty: !!p.showEmptyGroups });
+        try { localStorage.setItem('cr.view', JSON.stringify(state.view)); } catch {}
+      }
+    } catch {}
   }
   // The menu belongs to whichever button opened it: the one in the top bar on a phone,
   // or the row's own on a desktop, where the top bar does not carry it any more.
@@ -621,18 +638,25 @@
     // Manual only means anything inside a project group; the other groupings fall back to recent.
     for (const [id, name, desc] of SORTS) m.appendChild(item(name, id === 'manual' && state.view.group !== 'project' ? 'Only when grouped by project' : desc, state.view.sort === id, () => { m.classList.add('hidden'); setView({ sort: id }); }));
     m.appendChild(el('div', 'menu-sep'));
-    m.appendChild(item('Show archived', '', state.view.archived, () => { m.classList.add('hidden'); setView({ archived: !state.view.archived }); }));
+    m.appendChild(item('Show empty groups', '', state.view.showEmpty, () => { m.classList.add('hidden'); setView({ showEmpty: !state.view.showEmpty }); }));
+    m.appendChild(item('View all archived sessions', '', state.view.archived, () => { m.classList.add('hidden'); setView({ archived: !state.view.archived }); }));
+    m.appendChild(el('div', 'menu-sep'));
+    m.appendChild(item('New section', '', false, () => { m.classList.add('hidden'); newSectionPrompt(); }));
     m.appendChild(el('div', 'menu-sep'));
     m.appendChild(item('Deleted sessions…', 'Put one back', false, () => { m.classList.add('hidden'); openTrash(); }));
   });
 
   $('#filter-btn').classList.toggle('on', state.view.group !== 'project' || state.view.sort !== 'manual' || state.view.archived);
 
+  state.sessionsLimit = 200;
   async function loadSessions() {
-    state.sessions = await api('/sessions?limit=200' + (state.view.archived ? '&archived=1' : ''));
+    state.sessions = await api(`/sessions?limit=${state.sessionsLimit}` + (state.view.archived ? '&archived=1' : ''));
     renderSessions();
     paintSessionCards(); // a nested session's status dot (running/done/needs-you) tracks the fresh list
   }
+  // A long list (every archived session, say) comes a page at a time; the bottom row asks for more
+  // rather than the first load fetching everything the server has.
+  async function loadMoreSessions() { state.sessionsLimit += 200; await loadSessions(); }
   let collapsed = new Set();
   try { collapsed = new Set(JSON.parse(localStorage.getItem('cr.collapsed') || '[]')); } catch {}
   const PIN_SVG = '<svg viewBox="0 0 20 20" width="14" height="14"><path d="M12.5 2.5l5 5-2.2.7-3.1 3.1.4 3.6-1.4 1.4L8 13.1l-4.6 4.6-.7-.7L7.3 12.4 4.1 9.2l1.4-1.4 3.6.4 3.1-3.1z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>';
@@ -675,6 +699,10 @@
     add(s.pinned ? 'Unpin' : 'Pin', 'P', () => togglePin(s.id, !s.pinned));
     add('Rename', 'R', async () => { const t = prompt('Session name', s.title || ''); if (t && t.trim()) { try { await api(`/sessions/${s.id}/rename`, { method: 'POST', body: JSON.stringify({ title: t.trim() }) }); if (state.current === s.id) $('#chat-title').textContent = t.trim(); loadSessions(); } catch (e) { alert(e.message); } } });
     add('Fork', 'F', async () => { try { const r = await api(`/sessions/${s.id}/fork`, { method: 'POST', body: JSON.stringify({}) }); await loadSessions(); location.hash = '#/s/' + r.sessionId; } catch (e) { alert(e.message); } });
+    ctx.appendChild(el('div', 'menu-sep'));
+    if (state.sections.length) for (const sec of state.sections) add('Move to “' + sec.name + '”', '', () => moveToSection(s.id, sec.id));
+    if (state.sections.some((sec) => sec.sessionIds.includes(s.id))) add('Remove from section', '', () => moveToSection(s.id, null));
+    add('New section…', '', async () => { await newSectionPrompt(); const sec = state.sections[state.sections.length - 1]; if (sec) moveToSection(s.id, sec.id); });
     ctx.appendChild(el('div', 'menu-sep'));
     add(s.archived ? 'Unarchive' : 'Archive', 'A', async () => { try { await api(`/sessions/${s.id}/archive`, { method: 'POST', body: JSON.stringify({ archived: !s.archived }) }); await loadSessions(); if (state.current === s.id && !s.archived) location.hash = '#/'; } catch (e) { alert(e.message); } });
     add('Delete', 'D', async () => { if (!confirm(`Delete "${s.title}"? It moves to the trash and can be put back from Deleted sessions.`)) return; try { await api(`/sessions/${s.id}`, { method: 'DELETE' }); await loadSessions(); if (state.current === s.id) location.hash = '#/'; } catch (e) { alert(e.message); } }, 'danger');
@@ -1014,9 +1042,62 @@
     thread.appendChild(n); autoscroll();
   }
 
+  // ---------- sidebar sections (server-side store: lib/sessions-net.mjs) ----------
+  // Additive, like Pinned already is here: a session in a section still shows in its normal
+  // Project/Status/Date group too, rather than being pulled out of it - one list, several lenses.
+  state.sections = [];
+  async function loadSections() { try { state.sections = (await api('/sidebar/sections')).sections || []; renderSessions(); } catch {} }
+  async function newSectionPrompt() {
+    const name = prompt('Name this section'); if (!name || !name.trim()) return;
+    try { await api('/sidebar/sections', { method: 'POST', body: JSON.stringify({ name: name.trim() }) }); await loadSections(); } catch (e) { alert(e.message); }
+  }
+  async function renameSectionPrompt(sec) {
+    const name = prompt('Rename section', sec.name); if (!name || !name.trim()) return;
+    try { await api(`/sidebar/sections/${sec.id}/rename`, { method: 'POST', body: JSON.stringify({ name: name.trim() }) }); await loadSections(); } catch (e) { alert(e.message); }
+  }
+  async function deleteSectionPrompt(sec) {
+    if (!confirm(`Delete the "${sec.name}" section? The sessions in it are not deleted - only the section.`)) return;
+    try { await api(`/sidebar/sections/${sec.id}`, { method: 'DELETE' }); await loadSections(); } catch (e) { alert(e.message); }
+  }
+  async function moveToSection(sessionId, sectionId) {
+    try {
+      if (sectionId) await api(`/sidebar/sections/${sectionId}/move`, { method: 'POST', body: JSON.stringify({ sessionId }) });
+      else await api('/sidebar/move-out', { method: 'POST', body: JSON.stringify({ sessionId }) });
+      await loadSections();
+    } catch (e) { alert(e.message); }
+  }
+  function showSectionMenu(sec, x, y) {
+    ctx.innerHTML = '';
+    const add = (label, hint, fn) => { const b = item(label, '', false, () => { ctx.classList.add('hidden'); fn(); }, { hint }); ctx.appendChild(b); };
+    ctx.appendChild(el('div', 'menu-title', sec.name));
+    add('Rename', '', () => renameSectionPrompt(sec));
+    add('Delete section', '', () => deleteSectionPrompt(sec), 'danger');
+    ctx.classList.remove('hidden');
+    if (isPhone()) { ctx.style.left = ctx.style.top = ''; return; }
+    const r = ctx.getBoundingClientRect();
+    ctx.style.left = Math.min(x, window.innerWidth - r.width - 8) + 'px'; ctx.style.top = Math.min(y, window.innerHeight - r.height - 8) + 'px';
+  }
+  function renderSectionGroups(list) {
+    for (const sec of state.sections) {
+      const rows = sec.sessionIds.map((id) => state.sessions.find((s) => s.id === id)).filter(Boolean);
+      // A section is deliberate, not a computed bucket - it stays even at zero so there is
+      // somewhere to move a session into; "show empty groups" is about Project/Status/Date only.
+      const g = el('details', 'project-group section-group'); g.open = !collapsed.has('sec:' + sec.id);
+      const sm = el('summary'); sm.innerHTML = CHEV_SVG; sm.appendChild(el('span', null, sec.name)); sm.appendChild(el('span', 'cnt', String(rows.length)));
+      const more = el('button', 'proj-act'); more.type = 'button'; more.title = 'Section options'; more.innerHTML = KEBAB_SVG;
+      more.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); const r = more.getBoundingClientRect(); showSectionMenu(sec, r.right, r.bottom + 4); });
+      sm.appendChild(more);
+      g.appendChild(sm);
+      for (const s of rows) g.appendChild(sessionRow(s, 'section', sec.id));
+      g.addEventListener('toggle', () => rememberCollapsed('sec:' + sec.id, !g.open));
+      list.appendChild(g);
+    }
+  }
+
   function renderSessions() {
     applyOrder();
     const list = $('#session-list'); const scrolled = list.scrollTop; list.innerHTML = '';
+    renderSectionGroups(list); // user sections (lib/sessions-net.mjs) sit above Pinned, like Desktop's own
     const pinned = byOrder(state.sessions.filter((s) => s.pinned), state.order.pinned, (s) => s.id);
     if (pinned.length) {
       const g = el('details', 'project-group'); g.open = !collapsed.has('__pinned');
@@ -1027,18 +1108,22 @@
     }
     const q = (state.search || '').trim().toLowerCase();
     const byProject = state.view.group === 'project';
+    const byNone = state.view.group === 'none';
     const manual = manualOrder();
     const groups = new Map();
     for (const s of state.sessions) {
       if (q && !(s.title + ' ' + s.project + ' ' + s.branch).toLowerCase().includes(q) && !hits.has(s.id)) continue;
-      const k = byProject ? groupKey(s) : state.view.group === 'date' ? dateBucket(s.lastModified) : stateBucket(s);
+      // "None" groups by nothing at all: one heading, Desktop's own "Recents" (Pinned is above).
+      const k = byNone ? 'Recents' : byProject ? groupKey(s) : state.view.group === 'date' ? dateBucket(s.lastModified) : stateBucket(s);
       if (!groups.has(k)) groups.set(k, []); groups.get(k).push(s);
     }
-    const newest = (k) => Math.max(...groups.get(k).map((s) => s.lastModified));
-    const keys = byProject ? byOrder([...groups.keys()], state.order.projects, (k) => k)
-      : state.view.group === 'state' ? STATES.filter((x) => groups.has(x))
+    const newest = (k) => Math.max(...(groups.get(k) || [{ lastModified: 0 }]).map((s) => s.lastModified));
+    const keys = byNone ? (groups.has('Recents') || state.view.showEmpty ? ['Recents'] : [])
+      : byProject ? byOrder([...groups.keys()], state.order.projects, (k) => k)
+      : state.view.group === 'state' ? (state.view.showEmpty ? STATES : STATES.filter((x) => groups.has(x)))
       : [...groups.keys()].sort((a, b) => newest(b) - newest(a));
     for (const k of keys) {
+      if (!groups.has(k)) groups.set(k, []); // "Show empty groups": an empty Status bucket still gets its heading
       let items = state.view.sort === 'name' ? groups.get(k).slice().sort((a, b) => a.title.localeCompare(b.title))
         : manual ? byOrder(groups.get(k), state.order.sessions[k] || [], (s) => s.id)
         : groups.get(k).slice().sort((a, b) => b.lastModified - a.lastModified);
@@ -1067,7 +1152,7 @@
           return b;
         };
         sm.appendChild(act('Search sessions', "<svg viewBox=\"0 0 20 20\" width=\"13\" height=\"13\"><circle cx=\"9\" cy=\"9\" r=\"5.5\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\"/><path d=\"M13.5 13.5L17 17\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\"/></svg>", () => $('#search-btn').click()));
-        sm.appendChild(act('Group, sort, filter', "<svg viewBox=\"0 0 20 20\" width=\"13\" height=\"13\"><path d=\"M3 5.5h14M6 10h8M8.5 14.5h3\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" fill=\"none\"/></svg>", (b) => { filterAnchor = b; $('#filter-btn').click(); }));
+        sm.appendChild(act('Group and sort', "<svg viewBox=\"0 0 20 20\" width=\"13\" height=\"13\"><path d=\"M3 5.5h14M6 10h8M8.5 14.5h3\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" fill=\"none\"/></svg>", (b) => { filterAnchor = b; $('#filter-btn').click(); }));
       }
       g.appendChild(sm);
       if (manual) {
@@ -1082,6 +1167,11 @@
     }
     if (!state.sessions.length) list.appendChild(el('div', 'muted small pad', 'No sessions yet.'));
     if (q && !groups.size) list.appendChild(el('div', 'muted small pad', searchingInside ? 'Nothing found in any transcript.' : 'No sessions match.'));
+    if (!q && state.sessions.length >= state.sessionsLimit) {
+      const more = el('button', 'link-btn small load-more', 'Load more'); more.type = 'button';
+      more.addEventListener('click', () => loadMoreSessions().catch(() => {}));
+      list.appendChild(more);
+    }
     list.scrollTop = scrolled; // rebuilt in place on every refresh and every pick: it must not jump to the top
     updatePinButton(); paintSelectBar();
   }
@@ -6434,7 +6524,8 @@
     // Opening the app is exactly when "is there a new one?" should be answered afresh:
     // a merge publishes in about eight minutes, and a stale answer reads as "nothing new".
     api('/version').then((v) => { if (!v.update?.checkedAt || Date.now() - v.update.checkedAt > 120000) return api('/update/check', { method: 'POST', body: JSON.stringify({}) }); }).then(() => checkForUpdate()).catch(() => {});
-    await Promise.all([loadSessions(), loadProjects(), loadAwake(), loadModels(), loadConvSettings()]);
+    await loadSidebarPrefsFromServer();
+    await Promise.all([loadSessions(), loadProjects(), loadAwake(), loadModels(), loadConvSettings(), loadSections()]);
     route();
     // First time on this device: ask which account to use (local or token).
     let chosen = false; try { chosen = !!localStorage.getItem('cr.accountChosen'); } catch {}

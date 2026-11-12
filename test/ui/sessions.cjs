@@ -63,6 +63,44 @@ async function main() {
   check('the child opens with a "Started by Claude from" header', await until(() => page.$eval('#thread', (t) => t.textContent.includes('Started by Claude from')).catch(() => false)));
   check('...and a Task card with the prompt it was given', await until(() => page.$eval('#thread', (t) => t.textContent.includes('Task') && t.textContent.includes('Coast towns')).catch(() => false)));
   await page.screenshot({ path: path.join(SHOTS, 'sessions-child-header.png') });
+
+  // ---------- sidebar sections and the "Group and sort" menu ----------
+  // Real clicks throughout, not internal hooks: the heading's own act button only shows on
+  // hover (CSS opacity), so it is clicked directly rather than via a (possibly 0-opacity) point.
+  await page.evaluate((id) => { location.hash = '#/s/' + id; }, sid);
+  await page.waitForSelector('#thread .msg');
+  page.once('dialog', (d) => d.accept('Billing work'));
+  await page.evaluate(() => document.querySelector('.project-group .proj-act[title="Group and sort"]').click());
+  await until(() => page.isVisible('#filter-menu'));
+  await page.evaluate(() => [...document.querySelectorAll('#filter-menu .menu-item')].find((b) => b.textContent.includes('New section')).click());
+  check('a new section appears in the sidebar, even while empty', await until(() => page.$eval('#session-list', (l) => !!l.querySelector('.section-group')).catch(() => false)));
+
+  // Move the open session into it from its own right-click menu.
+  await page.evaluate((id) => { const row = document.querySelector(`.session-item[data-id="${CSS.escape(id)}"]`); row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 200, clientY: 200 })); }, sid);
+  await until(() => page.isVisible('#ctx-menu'));
+  await page.evaluate(() => [...document.querySelectorAll('#ctx-menu .menu-item')].find((b) => b.textContent.includes('Billing work')).click());
+  check('moving a session into the section lists it there', await until(() => page.$eval('#session-list', (l) => { const g = l.querySelector('.section-group'); return !!g && /^1$/.test(g.querySelector('.cnt')?.textContent || ''); }).catch(() => false)));
+
+  // Group by None: a Recents heading, no Project/Status buckets.
+  await page.evaluate(() => document.querySelector('.project-group .proj-act[title="Group and sort"]').click());
+  await until(() => page.isVisible('#filter-menu'));
+  await page.evaluate(() => [...document.querySelectorAll('#filter-menu .menu-item')].find((b) => b.textContent.includes('None')).click());
+  check('grouping by None shows a Recents heading', await until(() => page.$eval('#session-list', (l) => [...l.querySelectorAll('.project-group > summary > span')].some((n) => n.textContent === 'Recents')).catch(() => false)));
+
+  // Group by Status with "show empty groups" on: every bucket's heading shows, even at 0.
+  await page.evaluate(() => document.querySelector('.project-group .proj-act[title="Group and sort"]').click());
+  await until(() => page.isVisible('#filter-menu'));
+  await page.evaluate(() => [...document.querySelectorAll('#filter-menu .menu-item')].find((b) => b.textContent.includes('Status')).click());
+  await page.evaluate(() => document.querySelector('.project-group .proj-act[title="Group and sort"]').click());
+  await until(() => page.isVisible('#filter-menu'));
+  await page.evaluate(() => [...document.querySelectorAll('#filter-menu .menu-item')].find((b) => b.textContent.includes('Show empty groups')).click());
+  check('"show empty groups" lists every Status bucket, even an empty one', await until(() => page.$eval('#session-list', (l) => l.querySelectorAll('.project-group').length >= 5).catch(() => false)));
+  await page.screenshot({ path: path.join(SHOTS, 'sessions-sections-and-grouping.png') });
+
+  // The prefs just set are shared with the server (lib/sessions-net.mjs), not only localStorage.
+  const serverPrefs = await page.evaluate(() => fetch('/api/sidebar/prefs', { headers: { Authorization: 'Bearer ' + localStorage.getItem('cr.token') } }).then((r) => r.json()));
+  check('"Group and sort" choices are saved server-side too', serverPrefs.groupBy === 'state' && serverPrefs.showEmptyGroups === true, JSON.stringify(serverPrefs));
+
   check('no errors in the app', !errors.length, errors.join(' | '));
   await browser.close();
 

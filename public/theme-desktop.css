@@ -1329,3 +1329,8 @@ mark.find-hit.current { background: var(--accent); color: var(--accent-ink); }
 /* The "Received N messages" fold a parent shows once a nested session answers. */
 .received-fold { margin: 10px 0; }
 .received-fold summary { font-size: 12.5px; color: var(--ink-3); cursor: pointer; }
+
+/* Sidebar sections (New section / rename / delete / Move to section) and "Load more". */
+.section-group > summary { font-weight: 600; }
+.load-more { display: block; width: calc(100% - 20px); margin: 6px 10px; padding: 7px 0; text-align: center; border-radius: 8px; background: none; border: 1px dashed var(--line-2); color: var(--ink-3); }
+.load-more:hover { background: var(--bg-2); color: var(--ink); }
