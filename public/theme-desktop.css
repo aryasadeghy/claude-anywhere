@@ -217,7 +217,7 @@ button.nb-chip:hover { color: var(--ink); background: var(--bg-3); }
 
 /* ---------- v11: phone ---------- */
 @media (max-width: 860px) {
-  .usage-pop, #mode-menu, #model-menu, #session-menu, #nb-folder-menu, #project-menu { position: fixed; left: 12px; right: 12px; inset-inline: 12px; bottom: 88px; top: auto; min-width: 0; max-width: none; width: auto; max-height: 60vh; overflow: auto; }
+  .usage-pop, #mode-menu, #modeleffort-menu, #session-menu, #nb-folder-menu, #project-menu { position: fixed; left: 12px; right: 12px; inset-inline: 12px; bottom: 88px; top: auto; min-width: 0; max-width: none; width: auto; max-height: 60vh; overflow: auto; }
   #session-menu { bottom: auto; top: 56px; }
   .new-bar { padding: 0 2px; }
   .nb-chip { font-size: 13px; padding: 5px 9px; }
@@ -227,7 +227,7 @@ button.nb-chip:hover { color: var(--ink); background: var(--bg-3); }
   .modal-card { max-height: 88vh; overflow: auto; }
 }
 @media (max-width: 860px) {
-  #usage-pop.menu, #mode-menu.menu, #model-menu.menu, #session-menu.menu, #nb-folder-menu.menu, #project-menu.menu { left: 12px !important; right: 12px !important; inset-inline: 12px !important; }
+  #usage-pop.menu, #mode-menu.menu, #modeleffort-menu.menu, #session-menu.menu, #nb-folder-menu.menu, #project-menu.menu { left: 12px !important; right: 12px !important; inset-inline: 12px !important; }
 }
 
 /* ---------- v12: phone top bar in one row; long-press menu as a sheet ---------- */
@@ -1374,3 +1374,70 @@ mark.find-hit.current { background: var(--accent); color: var(--accent-ink); }
 @media (pointer: coarse) { .preview-panel.rv-on .pv-bar .rv-touch { display: grid; } }
 #pv-device.on { color: var(--accent); background: var(--bg-3); }
 @media (max-width: 860px) { .preview-panel.rv-on .pv-bar { gap: 0; } .preview-panel.rv-on .pv-bar .icon-btn.small { width: 28px; } }
+
+/* ---------- v72: session rail, panes, split view ---------- */
+/* The row under the composer: permission mode, one menu for model + effort, the context
+   ring. Same chip look as the box above, just moved below it. */
+.composer-footrow { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.composer-footrow .composer-left:last-child { margin-inline-start: auto; }
+#modeleffort-menu { display: flex; flex-direction: column; }
+.effort-pop.hidden { display: none; }
+.effort-pop:not(.hidden) { width: auto; }
+
+/* The title-bar pane buttons: rail, terminal, changes, browser, files. Desktop widths only -
+   a phone reaches the same panes through the session ⋮ menu (no room for six icons there). */
+.pane-btns { display: flex; align-items: center; gap: 2px; }
+.pane-btns .icon-btn.on { color: var(--accent); background: var(--bg-2); }
+@media (max-width: 860px) { .pane-btns { display: none !important; } }
+
+/* The session rail: a column like any other side panel, just with cards instead of a tree. */
+.rail-panel { width: 300px; }
+@media (min-width: 861px) { .rail-panel { width: var(--rail-w, 300px); } }
+.rail-cards { display: flex; flex-direction: column; gap: 1px; overflow: auto; }
+.rail-card { padding: 10px 14px; border-bottom: 1px solid var(--line); }
+.rail-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; cursor: default; user-select: none; }
+.rail-card-title { font-size: 12.5px; font-weight: 600; color: var(--ink-2); }
+.rail-card-extra { font-size: 12px; }
+.rail-card-body { margin-top: 6px; display: flex; flex-direction: column; gap: 4px; }
+.rail-line { font-size: 13px; line-height: 1.4; }
+.rail-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 3px 0; font-size: 13px; }
+.rail-link { background: none; border: 0; width: 100%; text-align: start; cursor: pointer; color: inherit; font: inherit; border-radius: 6px; }
+.rail-link:hover { background: var(--bg-2); }
+.rail-bar { height: 5px; border-radius: 3px; background: var(--bg-3); overflow: hidden; margin: 2px 0; }
+.rail-bar i { display: block; height: 100%; background: var(--accent); border-radius: inherit; }
+.rail-detail { margin-top: 2px; }
+.rail-detail summary { font-size: 12px; color: var(--ink-3); cursor: pointer; list-style: none; }
+.rail-detail summary::-webkit-details-marker { display: none; }
+.rail-pr-btn { width: 100%; justify-content: flex-start; margin-top: 4px; }
+@media (max-width: 860px) { .rail-panel:not(.hidden) { position: fixed; inset: 0; width: auto; z-index: 45; } }
+
+/* Minimize: the real Terminal/Browser pane, shrunk - a live view, not a frozen pill. */
+.mini-host { position: fixed; inset: auto 16px 16px auto; z-index: 40; pointer-events: none; }
+.mini-shell { pointer-events: auto; display: flex; flex-direction: column; background: var(--bg-000); border: 1px solid var(--line-2); border-radius: 12px; box-shadow: 0 8px 28px rgba(0, 0, 0, .22); overflow: hidden; }
+.mini-shell.floating { position: fixed; width: 320px; height: 220px; right: 16px; bottom: 16px; }
+.mini-shell.docked { position: relative; width: 100%; height: 220px; flex: none; border-radius: 10px; margin: 8px 0; }
+.mini-bar { display: flex; align-items: center; gap: 4px; padding: 5px 8px; border-bottom: 1px solid var(--line); flex: none; cursor: move; touch-action: none; }
+.mini-shell.docked .mini-bar { cursor: default; }
+.mini-title { font-size: 12px; font-weight: 500; color: var(--ink-2); }
+.mini-resize { position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize; touch-action: none; }
+.mini-resize::after { content: ""; position: absolute; right: 3px; bottom: 3px; width: 7px; height: 7px; border-right: 1.5px solid var(--line-2); border-bottom: 1.5px solid var(--line-2); }
+/* The pane shrinks inside its shell instead of hiding anything: the head stays, so its own
+   tabs and address bar are still there, just smaller than a full panel. */
+.preview-panel.mini, .terminal-panel.mini { width: 100%; flex: 1; border-inline-start: 0; min-height: 0; }
+.rail-dock { flex: none; padding: 0 10px; }
+.rail-dock.hidden { display: none; }
+
+/* Split view: a second session beside the current one, as an embedded copy of the page. */
+.app.split-open .main { flex: 1 1 50%; min-width: 0; }
+.app.split-open .main, .app.split-open .split-pane { transition: opacity 120ms; }
+.app.split-open.split-focus-left .split-pane { opacity: .55; }
+.app.split-open:not(.split-focus-left) .main { opacity: .55; }
+.split-pane { display: flex; flex-direction: column; flex: 1 1 50%; min-width: 0; border-inline-start: 1px solid var(--line); background: var(--bg-000); }
+.split-pane.hidden { display: none; }
+.split-frame { flex: 1; border: 0; width: 100%; height: 100%; background: var(--bg-000); }
+@media (max-width: 860px) { .split-pane { display: none !important; } } /* two sessions do not fit a phone */
+
+/* Embedded (split view's own iframe, ?embed=1): the sidebar and outer chrome are the parent
+   window's job, not this copy's - it is one conversation, not a second whole app. */
+html.embed #sidebar, html.embed #sidebar-open, html.embed #win-controls, html.embed .pane-btns, html.embed #pin-btn { display: none !important; }
+html.embed .main { border-inline-start: 0; }
