@@ -38,6 +38,9 @@ import * as pr from './lib/pr.mjs';
 import * as gitActions from './lib/git-actions.mjs';
 import * as autofix from './lib/autofix.mjs';
 import * as awake from './lib/awake.mjs';
+import * as routines from './lib/routines.mjs';
+import * as outputStyles from './lib/output-styles.mjs';
+import * as environments from './lib/environments.mjs';
 import * as update from './lib/update.mjs';
 import * as models from './lib/models.mjs';
 import * as commandsMod from './lib/commands.mjs';
@@ -422,6 +425,7 @@ const shape = (s, pinned) => ({
   pinned: !!pinned?.has(s.sessionId),
   tag: s.tag || '',
   archived: s.tag === 'archived',
+  routine: routines.nameForSession(s.sessionId) || null, // "started by this scheduled task", for the sidebar
   context: contextBySession.get(s.sessionId) || null,
   // Set by Claude's own SetSessionStatus tool (lib/tools-conversation.mjs), shown as a sidebar badge.
   status: readConvSettings().status[s.sessionId] || null,
@@ -1199,6 +1203,25 @@ function listConnectors(cwd) {
   out.push({ name: 'claude-anywhere', scope: 'built-in', type: 'in-process', target: 'SendUserFile — shows files in this chat', enabled: true, builtin: true });
   return out;
 }
+// Skills (Customize page): no on/off switch per skill exists in Claude Code's settings - they
+// are turned on by being present, project or user-wide (options.skills, not a settings key) -
+// so this list is read-only, same reasoning as the Session Info panel's skill count.
+function listSkills(cwd) {
+  const out = [];
+  const scan = (dir, source) => {
+    let names; try { names = fs.readdirSync(dir); } catch { return; }
+    for (const name of names) {
+      const md = path.join(dir, name, 'SKILL.md');
+      let text; try { text = fs.readFileSync(md, 'utf8'); } catch { continue; }
+      const fm = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)?.[1] || '';
+      const field = (k) => new RegExp(`^${k}:\\s*(.+)$`, 'm').exec(fm)?.[1]?.trim().replace(/^["']|["']$/g, '') || '';
+      out.push({ name: field('name') || name, source, description: field('description') || '' });
+    }
+  };
+  if (cwd) scan(path.join(cwd, '.claude', 'skills'), 'project');
+  scan(path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'skills'), 'user');
+  return out;
+}
 function listPlugins() {
   const settings = readJson(path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'settings.json')) || {};
   const enabled = settings.enabledPlugins || {};
@@ -1217,6 +1240,17 @@ claudeCode.useDir(path.join(DATA_DIR, 'claude-code')); // first: asking for the 
 models.useCache(DATA_DIR);
 limitQueue.init(DATA_DIR); // messages held while the plan's usage limit is reached; survives a restart
 autofix.init(DATA_DIR); // per-PR auto-fix and auto-archive switches, and the watcher behind them
+// Scheduled tasks: each due run is a new session, started the same way /api/sessions starts one.
+routines.init(DATA_DIR, {
+  onDue: async (routine) => {
+    if (!fs.existsSync(routine.folder)) throw new Error('Folder no longer exists: ' + routine.folder);
+    const newId = randomUUID();
+    const { ready } = startRun({ newId, cwd: routine.folder, prompt: routine.prompt, model: routine.model, permissionMode: routine.permissionMode, disabledMcp: readPrefs().disabledMcp || [] });
+    const sessionId = await ready;
+    return { sessionId };
+  },
+}).catch((e) => console.error('[routines] startup catch-up failed:', e.message || e));
+environments.init(DATA_DIR); // folder + worktree preference + env vars, saved from a session and offered again for a new one
 models.warm().catch(() => {});
 // Refresh waits: a background refresh would answer with the very list it was asked to
 // replace, and the menu would need a second press to show what changed.
@@ -1230,7 +1264,7 @@ app.get('/api/connectors', async (req, res) => {
   const connectors = listConnectors(cwd);
   const run = runs.get(sessionId);
   if (run && !run.done && run.query) { try { for (const s of await run.query.mcpServerStatus()) { const c = connectors.find((x) => x.name === s.name); if (c) { c.status = s.status; c.tools = (s.tools || []).length; c.error = s.error; } } } catch {} }
-  res.json({ connectors, plugins: listPlugins() });
+  res.json({ connectors, plugins: listPlugins(), skills: listSkills(cwd) });
 });
 app.post('/api/connectors/:name', async (req, res) => {
   const name = req.params.name; const enabled = !!req.body?.enabled;
@@ -1248,6 +1282,60 @@ app.post('/api/plugins/:id', (req, res) => {
   settings.enabledPlugins = { ...(settings.enabledPlugins || {}), [req.params.id]: !!req.body?.enabled };
   fs.writeFileSync(file, JSON.stringify(settings, null, 2));
   res.json({ id: req.params.id, enabled: !!req.body?.enabled });
+});
+
+// ---------- routines ----------
+// Scheduled tasks: CRUD plus Run now, each backed by lib/routines.mjs (storage, cron, the
+// scheduler loop) and started the same way a session started by hand is (startRun, above).
+app.get('/api/routines', (_req, res) => res.json({ routines: routines.list() }));
+app.post('/api/routines', (req, res) => {
+  const { name, prompt, folder, model, permissionMode, schedule } = req.body || {};
+  if (!prompt || !String(prompt).trim()) return res.status(400).json({ error: 'A routine needs a prompt.' });
+  const dir = String(folder || '').trim();
+  if (!dir || !fs.existsSync(dir)) return res.status(400).json({ error: 'That folder does not exist on this machine.' });
+  try { res.json(routines.create({ name, prompt, folder: dir, model, permissionMode, schedule })); }
+  catch (e) { res.status(400).json({ error: String(e.message || e) }); }
+});
+app.put('/api/routines/:id', (req, res) => {
+  const row = routines.get(req.params.id);
+  if (!row) return res.status(404).json({ error: 'No such routine.' });
+  const folder = req.body?.folder !== undefined ? String(req.body.folder).trim() : row.folder;
+  if (!fs.existsSync(folder)) return res.status(400).json({ error: 'That folder does not exist on this machine.' });
+  try { res.json(routines.update(req.params.id, { ...req.body, folder })); }
+  catch (e) { res.status(400).json({ error: String(e.message || e) }); }
+});
+app.delete('/api/routines/:id', (req, res) => res.json({ ok: routines.remove(req.params.id) }));
+app.post('/api/routines/:id/run', async (req, res) => {
+  const row = await routines.runNow(req.params.id);
+  if (!row) return res.status(404).json({ error: 'No such routine.' });
+  res.json(row);
+});
+// Output styles: this folder's list (built-in + project + user), the session's current one if
+// live, and the app-wide default new sessions start with.
+app.get('/api/output-styles', (req, res) => {
+  const cwd = String(req.query.cwd || ''); const sessionId = String(req.query.sessionId || '');
+  const run = runs.get(sessionId);
+  res.json({ styles: outputStyles.list(cwd), current: run && !run.done ? run.controls.outputStyle || 'default' : '', default: readPrefs().outputStyle || 'default' });
+});
+app.post('/api/output-style-default', (req, res) => {
+  const p = readPrefs(); p.outputStyle = String(req.body?.style || '') || undefined; writePrefs(p);
+  res.json({ default: p.outputStyle || 'default' });
+});
+
+// Saved environments: "Started on this computer" banner's "Save as environment", the new-session
+// folder menu's recent-environments section, and Settings' own list.
+app.get('/api/environments', (_req, res) => res.json({ environments: environments.list() }));
+app.post('/api/environments', (req, res) => {
+  const { name, folder, worktree, env } = req.body || {};
+  if (!folder || !fs.existsSync(String(folder))) return res.status(400).json({ error: 'That folder does not exist on this machine.' });
+  res.json(environments.create({ name, folder, worktree, env }));
+});
+app.delete('/api/environments/:id', (req, res) => res.json({ ok: environments.remove(req.params.id) }));
+
+app.get('/api/routines/:id/runs', (req, res) => {
+  const row = routines.get(req.params.id);
+  if (!row) return res.status(404).json({ error: 'No such routine.' });
+  res.json({ runs: row.runs });
 });
 
 // Where another device can reach this computer — the answer to "what do I type on the
@@ -1569,8 +1657,8 @@ app.post('/api/sessions/:id/controls', async (req, res, next) => {
   try {
     const run = runs.get(req.params.id);
     if (!run || run.done) return res.json({ applied: {}, live: false });
-    const { permissionMode, model, effort, ultracode, fast } = req.body || {};
-    res.json({ applied: await run.setControls({ permissionMode, model, effort, ultracode, fast }), live: true });
+    const { permissionMode, model, effort, ultracode, fast, outputStyle } = req.body || {};
+    res.json({ applied: await run.setControls({ permissionMode, model, effort, ultracode, fast, outputStyle }), live: true });
   } catch (e) { next(e); }
 });
 
@@ -1587,7 +1675,11 @@ app.post('/api/sessions', async (req, res) => {
   if (!cwd || cwd === '~') { newId = randomUUID(); cwd = path.join(CHATS_DIR, newId); fs.mkdirSync(cwd, { recursive: true }); }
   if (!fs.existsSync(cwd)) return res.status(400).json({ error: 'That folder does not exist on this machine.' });
   const { model, permissionMode, effort, ultracode, fast } = req.body || {};
-  const { run, ready } = startRun({ newId, cwd, prompt, images, model, permissionMode, effort, ultracode, fast, disabledMcp: readPrefs().disabledMcp || [], promptId: clientId(req.body?.cid) });
+  // No style named for this chat: the one picked as the default in Settings, if any.
+  const outputStyle = req.body?.outputStyle || readPrefs().outputStyle || undefined;
+  // A saved environment chosen for this chat: its own variables travel with the run.
+  const env = req.body?.environmentId ? environments.get(req.body.environmentId) : null;
+  const { run, ready } = startRun({ newId, cwd, prompt, images, model, permissionMode, effort, ultracode, fast, outputStyle, extraEnv: env?.env, disabledMcp: readPrefs().disabledMcp || [], promptId: clientId(req.body?.cid) });
   try {
     const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('Claude Code did not start in time')), 60000));
     const sessionId = await Promise.race([ready, timeout]);

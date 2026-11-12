@@ -1441,3 +1441,30 @@ mark.find-hit.current { background: var(--accent); color: var(--accent-ink); }
    window's job, not this copy's - it is one conversation, not a second whole app. */
 html.embed #sidebar, html.embed #sidebar-open, html.embed #win-controls, html.embed .pane-btns, html.embed #pin-btn { display: none !important; }
 html.embed .main { border-inline-start: 0; }
+
+/* ---------- v74: routines (scheduled tasks), customize, output styles, environments ---------- */
+.new-row { display: flex; align-items: center; gap: 6px; padding: 0 12px 8px; }
+.new-row .new-chat { flex: 1; }
+.sch-card { max-width: 620px; width: 100%; max-height: 82vh; display: flex; flex-direction: column; }
+.sch-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 2px 0 10px; flex: none; }
+.sch-runs-title { font-weight: 500; font-size: 13.5px; color: var(--ink-2); }
+.sch-list { overflow-y: auto; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.sch-card-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg-2); }
+.sch-card-row.off { opacity: .55; }
+.sch-card-info { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.sch-card-name { font-weight: 500; font-size: 13.5px; }
+.sch-card-desc { font-size: 12px; color: var(--ink-3); }
+.sch-card-status { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+.sch-card-actions { display: flex; align-items: center; gap: 6px; flex: none; flex-wrap: wrap; justify-content: flex-end; }
+.sch-form { display: flex; flex-direction: column; gap: 10px; overflow-y: auto; min-height: 0; }
+.sch-field { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--ink-3); }
+.sch-field input, .sch-field select, .sch-field textarea { font: inherit; font-size: 13.5px; color: var(--ink); background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 9px; padding: 7px 10px; resize: vertical; }
+.sch-foot { display: flex; justify-content: flex-end; gap: 10px; margin-top: 4px; flex: none; }
+.env-card { max-width: 420px; }
+.sch-start-banner { max-width: 48rem; width: 100%; margin: 0 auto 10px; font-size: 12.5px; color: var(--ink-3); }
+.env-list-row { padding-bottom: 0; }
+@media (max-width: 860px) {
+  .sch-card { max-width: none; max-height: none; height: 100%; border-radius: 0; }
+  .sch-card-row { flex-direction: column; align-items: stretch; }
+  .sch-card-actions { justify-content: flex-start; }
+}
