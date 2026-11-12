@@ -217,7 +217,7 @@ button.nb-chip:hover { color: var(--ink); background: var(--bg-3); }
 
 /* ---------- v11: phone ---------- */
 @media (max-width: 860px) {
-  .usage-pop, #mode-menu, #model-menu, #session-menu, #nb-folder-menu, #project-menu { position: fixed; left: 12px; right: 12px; inset-inline: 12px; bottom: 88px; top: auto; min-width: 0; max-width: none; width: auto; max-height: 60vh; overflow: auto; }
+  .usage-pop, #mode-menu, #modeleffort-menu, #session-menu, #nb-folder-menu, #project-menu { position: fixed; left: 12px; right: 12px; inset-inline: 12px; bottom: 88px; top: auto; min-width: 0; max-width: none; width: auto; max-height: 60vh; overflow: auto; }
   #session-menu { bottom: auto; top: 56px; }
   .new-bar { padding: 0 2px; }
   .nb-chip { font-size: 13px; padding: 5px 9px; }
@@ -227,7 +227,7 @@ button.nb-chip:hover { color: var(--ink); background: var(--bg-3); }
   .modal-card { max-height: 88vh; overflow: auto; }
 }
 @media (max-width: 860px) {
-  #usage-pop.menu, #mode-menu.menu, #model-menu.menu, #session-menu.menu, #nb-folder-menu.menu, #project-menu.menu { left: 12px !important; right: 12px !important; inset-inline: 12px !important; }
+  #usage-pop.menu, #mode-menu.menu, #modeleffort-menu.menu, #session-menu.menu, #nb-folder-menu.menu, #project-menu.menu { left: 12px !important; right: 12px !important; inset-inline: 12px !important; }
 }
 
 /* ---------- v12: phone top bar in one row; long-press menu as a sheet ---------- */

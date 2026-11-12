@@ -48,6 +48,7 @@ import * as access from './lib/access.mjs';
 import * as terminal from './lib/terminal.mjs';
 import { getAuth, activeAccount, setActive, setToken, clearToken, setProvider, clearProvider, classifyToken, envFor, localSource, verifyEnv, candidateEnv, candidateProviderEnv } from './lib/auth.mjs';
 import { findByName, searchContents, officePreview, writeFileChecked } from './lib/files.mjs';
+import { sessionOutputs } from './lib/outputs.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -1003,6 +1004,28 @@ app.post('/api/sessions/:id/pr/auto-merge', async (req, res) => {
     res.json(await pr.cached(cwd));
   } catch (e) { res.status(500).json({ error: worktrees.cliError(e) }); }
 });
+
+// ---------- layout: session rail (context breakdown, outputs, connector reconnect) ----------
+// The rail's Context card wants the per-category breakdown the composer's usage ring does
+// not: that one keeps only the summary refreshUsage() left on contextBySession (lib/runs.mjs).
+// Live, ask the running process directly; resting or gone, fall back to the summary so the
+// card still shows a number, just not the breakdown.
+app.get('/api/sessions/:id/context', async (req, res) => {
+  const run = runs.get(req.params.id);
+  if (run && !run.done && run.query) {
+    try { return res.json(await run.query.getContextUsage({ detail: 'full' })); } catch {}
+  }
+  const c = contextBySession.get(req.params.id);
+  res.json(c ? { categories: [], totalTokens: c.totalTokens, maxTokens: c.maxTokens, rawMaxTokens: c.maxTokens, summaryOnly: true } : { categories: [], totalTokens: 0, maxTokens: 0, rawMaxTokens: 0 });
+});
+// Connectors: reconnect-by-name is the rail's, toggling is already /api/connectors/:name.
+app.post('/api/sessions/:id/mcp/:name/reconnect', async (req, res) => {
+  const run = runs.get(req.params.id);
+  if (!run || run.done || !run.query) return res.status(400).json({ error: "This session has no live Claude Code to reconnect it in." });
+  try { await run.query.reconnectMcpServer(req.params.name); res.json({ ok: true }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.get('/api/sessions/:id/outputs', (req, res) => res.json({ outputs: sessionOutputs(req.params.id) }));
 
 // ---------- Files pane: fuzzy find, content search, write, Office previews, live refresh ----------
 // Every route here takes a path inside a folder some session has worked in (insideProjectRoots),

@@ -1225,7 +1225,8 @@
     // The chip takes the short half of the name, the way Claude's does: the menu says
     // "Opus (1M context)" and "Default (recommended)", the chip says Opus and Default.
     const name = (modelRow(state.model)?.displayName || 'Model').replace(/\s*\([^)]*\)\s*$/, '');
-    // The effort only when the model has levels and this is not its default one.
+    // The effort only when the model has levels and this is not its default one. One
+    // chip for both, since the row under the box gives model and effort one menu, not two.
     const shown = effortsFor(state.model).includes(state.effort) && state.effort !== DEFAULT_EFFORT ? state.effort : '';
     $('#model-label').textContent = name + (shown ? ' · ' + (EFFORT_NAMES[shown] || shown) : '') + (state.fast && fastFor(state.model) ? ' · Fast' : '');
   }
@@ -1265,7 +1266,10 @@
     if (tag) { tag.classList.add('discount'); tag.title = x.discountNote || ''; b.title = x.discountNote || ''; }
     return b;
   }
-  menuFor('#model-btn', '#model-menu', function render(m) {
+  // The button opens #modeleffort-menu (one menu); this draws the model list into the
+  // nested #model-menu, leaving the effort section (a sibling, not cleared here) alone.
+  menuFor('#model-btn', '#modeleffort-menu', function render() {
+    const m = $('#model-menu');
     m.innerHTML = '';
     // A provider's rows come grouped by family (lib/models.mjs); the CLI's have no group.
     MODELS.forEach((x, i) => (x.group && x.group !== MODELS[i - 1]?.group && (i && m.appendChild(el('div', 'menu-sep')), m.appendChild(el('div', 'menu-title', x.group))), m.appendChild(discounted(x, item(x.displayName, x.description || '', x.value === state.model, () => {
@@ -1276,7 +1280,7 @@
       if (state.effort && !effortsFor(x.value).includes(state.effort)) { state.effort = ''; localStorage.removeItem('cr.effort'); patch.effort = ''; }
       if (state.ultracode && !effortStops(x.value).includes('ultracode')) { state.ultracode = false; localStorage.removeItem('cr.ultracode'); patch.ultracode = false; }
       if (state.fast && !fastFor(x.value)) { state.fast = false; localStorage.removeItem('cr.fast'); patch.fast = false; }
-      renderModelChip(); renderEffortChip(); m.classList.add('hidden'); pushControls(patch);
+      renderModelChip(); renderEffortChip(); $('#modeleffort-menu').classList.add('hidden'); pushControls(patch);
     }, { hint: x.value === state.model ? '' : String(i + 1), tag: x.discount ? '−' + x.discount + '%' : '' })))));
     if (fastFor(state.model)) {
       m.appendChild(el('div', 'menu-sep'));
@@ -1294,25 +1298,29 @@
     const foot = el('div', 'menu-foot');
     foot.appendChild(el('span', '', MODELS_AT ? 'From ' + (MODELS_FROM === 'provider' ? accounts?.provider?.name || 'the provider' : 'Claude Code') + ' · ' + ago(MODELS_AT) : 'Asking Claude Code…'));
     const again = el('button', 'link-btn', 'Refresh'); again.type = 'button';
-    again.addEventListener('click', async (e) => { e.stopPropagation(); again.disabled = true; again.textContent = 'Asking…'; await loadModels(true); render(m); });
+    again.addEventListener('click', async (e) => { e.stopPropagation(); again.disabled = true; again.textContent = 'Asking…'; await loadModels(true); render(); });
     foot.appendChild(again);
     m.appendChild(foot);
-    if (!MODELS_AT || Date.now() - MODELS_AT > 60 * 60 * 1000) loadModels().then((changed) => { if (changed && !m.classList.contains('hidden')) render(m); });
+    // Effort lives in the same menu, under a divider, when this model takes levels.
+    const stops = effortStops(state.model), pop = $('#effort-pop');
+    pop.classList.toggle('hidden', stops.length < 2);
+    if (stops.length >= 2) paintEffortPop();
+    if (!MODELS_AT || Date.now() - MODELS_AT > 60 * 60 * 1000) loadModels().then((changed) => { if (changed && !$('#modeleffort-menu').classList.contains('hidden')) render(); });
   });
 
-  // ---------- effort: a chip beside the model, and a slider from Faster to Smarter ----
-  // Claude puts effort next to the model rather than inside its menu, because it is a
-  // thing you change on its own — and shows it as one travel, not five buttons.
+  // ---------- effort: a section inside the model menu, and a slider from Faster to Smarter ----
+  // Claude Desktop puts effort and model in one menu, not two chips: the section below
+  // the model list, shown only when the chosen model takes levels.
   function renderEffortChip() {
-    const btn = $('#effort-btn');
-    if (!btn) return; // an older page being served a newer script
+    const pop = $('#effort-pop');
+    if (!pop) return; // an older page being served a newer script
     const stops = effortStops(state.model);
-    btn.classList.toggle('hidden', stops.length < 2);
-    if (stops.length < 2) { $('#effort-pop').classList.add('hidden'); return; }
+    pop.classList.toggle('hidden', stops.length < 2);
+    if (stops.length < 2) return;
     const at = stopOf(state.model);
     $('#effort-label').textContent = EFFORT_NAMES[at] || at;
-    btn.classList.toggle('ultra', at === 'ultracode');
-    btn.title = 'Effort: ' + (EFFORT_NAMES[at] || at) + (EFFORT_HINT[at] ? ' — ' + EFFORT_HINT[at] : '');
+    pop.classList.toggle('ultra', at === 'ultracode');
+    pop.title = 'Effort: ' + (EFFORT_NAMES[at] || at) + (EFFORT_HINT[at] ? ' — ' + EFFORT_HINT[at] : '');
   }
 
   function paintEffortPop() {
@@ -1398,8 +1406,6 @@
     });
     $('#ef-help')?.addEventListener('click', (e) => { e.stopPropagation(); $('#ef-note')?.classList.toggle('open'); });
   })();
-
-  menuFor('#effort-btn', '#effort-pop', () => paintEffortPop());
 
   menuFor('#mode-btn', '#mode-menu', (m) => {
     m.innerHTML = ''; m.appendChild(el('div', 'menu-title', 'Mode'));
