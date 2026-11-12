@@ -29,6 +29,7 @@ import * as rewindStore from './lib/rewind.mjs';
 const execFileP = promisify(execFile);
 import { tailSession, isWorkingElsewhere, WORKING_WINDOW_MS, sessionFile } from './lib/tail.mjs';
 import { transcriptMentions } from './lib/mentioned.mjs';
+import { cliProcessFor } from './lib/cli-sessions.mjs';
 import { parsePreviewUrl, portFromReferer, proxyRequest, proxyUpgrade, listLocalPorts, proxyAtRoot, upgradeAtRoot, listenOn, injectBridge } from './lib/preview.mjs';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { searchTranscripts } from './lib/search.mjs';
@@ -78,6 +79,18 @@ const bearer = (req) => String(req.get('authorization') || '').replace(/^Bearer 
 // ---------- http ----------
 const app = express();
 app.disable('x-powered-by');
+// The server ran out of memory and died at 4 GB, taking every running turn with it, and its log
+// said nothing about what it had been doing. It keeps its last requests now, and says them - with
+// how much memory it holds - once it holds more than it should.
+const recent = [];
+app.use((req, res, next) => { const t0 = Date.now(); res.on('finish', () => { recent.push(`${new Date(t0).toISOString().slice(11, 19)} ${req.method} ${req.path} ${res.statusCode} ${Date.now() - t0}ms`); if (recent.length > 30) recent.shift(); }); next(); });
+let memSaidAt = 0;
+setInterval(() => {
+  const m = process.memoryUsage();
+  if (m.rss < 1.5 * 1024 ** 3 || Date.now() - memSaidAt < 10 * 60 * 1000) return;
+  memSaidAt = Date.now();
+  console.warn(`[claude-anywhere] holding ${Math.round(m.rss / 1048576)} MB (heap ${Math.round(m.heapUsed / 1048576)} MB, buffers ${Math.round(m.arrayBuffers / 1048576)} MB); the last requests:\n  ${recent.join('\n  ')}`);
+}, 30000).unref();
 // Remote access off (the default, and always without a password): only this computer may use it. Everything else -
 // another device on the network, a tunnel, a proxy - is turned away with the reason,
 // before the page or any API answers. Setting a password opens it again.
@@ -388,7 +401,8 @@ const shape = (s, pinned) => ({
   // A process can rest between turns, ready for the next message: live, but not working.
   busy: isBusy(s.sessionId),
   turnStartedAt: isLive(s.sessionId) && runs.get(s.sessionId).inTurn ? runs.get(s.sessionId).turnStartedAt : null,
-  working: isBusy(s.sessionId) || Date.now() - s.lastModified < WORKING_WINDOW_MS,
+  // A Claude Code at work on it anywhere - Desktop, VS Code, a terminal - says so itself (lib/cli-sessions.mjs).
+  working: isBusy(s.sessionId) || cliProcessFor(s.sessionId)?.status === 'busy' || Date.now() - s.lastModified < WORKING_WINDOW_MS,
   pinned: !!pinned?.has(s.sessionId),
   tag: s.tag || '',
   archived: s.tag === 'archived',
@@ -652,10 +666,16 @@ app.get('/api/sessions/:id/changes/diff', async (req, res) => {
       // untracked: show the whole file as added
       const full = path.join(cwd, rel);
       if (!fs.existsSync(full)) return res.json({ path: rel, diff: '', missing: true });
-      const buf = fs.readFileSync(full);
+      // Only its start: an untracked crawl output or log can be gigabytes, and reading one whole (then
+      // copying it line by line) took the server past 4 GB and down, with every running turn in it.
+      const size = fs.statSync(full).size, CAP = 1024 * 1024;
+      const buf = Buffer.alloc(Math.min(size, CAP)); const fd = fs.openSync(full, 'r');
+      try { fs.readSync(fd, buf, 0, buf.length, 0); } finally { fs.closeSync(fd); }
       if (buf.includes(0)) return res.json({ path: rel, binary: true, diff: '' });
       const lines = buf.toString('utf8').split('\n'); if (lines[lines.length - 1] === '') lines.pop();
+      if (size > CAP) lines.pop(); // the last one is cut mid-line
       diff = ['--- /dev/null', '+++ b/' + rel, `@@ -0,0 +1,${lines.length} @@`, ...lines.map((l) => '+' + l)].join('\n');
+      if (size > CAP) { const shown = diff.split('\n').slice(0, MAX_LINES).join('\n'); return res.json({ path: rel, diff: shown, truncated: true }); }
     }
     const lines = diff.split('\n'); const truncated = lines.length > MAX_LINES;
     res.json({ path: rel, diff: (truncated ? lines.slice(0, MAX_LINES) : lines).join('\n'), truncated });
@@ -1420,7 +1440,9 @@ app.get('/api/sessions/:id', async (req, res, next) => {
     }
     if (!s) return res.status(404).json({ error: 'Not found' });
     const base = shape(s, new Set(readPrefs().pinned));
-    const interruptedRaw = !base.live && !base.working ? interruptedTurn(req.params.id) : null;
+    // Not "stopped" while a Claude Code process still has the session: a long command in another
+    // window writes nothing for minutes, and Continue would have started a second one beside it.
+    const interruptedRaw = !base.live && !base.working && !cliProcessFor(req.params.id) ? interruptedTurn(req.params.id) : null;
     const interrupted = interruptedRaw && { ...interruptedRaw, safe: safeToAutoResume(interruptedRaw) };
     res.json({ ...base, settings: sessionSettings(req.params.id), interrupted });
   } catch (e) { next(e); }
