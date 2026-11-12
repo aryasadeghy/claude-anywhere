@@ -111,6 +111,8 @@
           <button id="topbar-computer" class="chat-meta computer-chip hidden" type="button" title="Switch computer"></button>
           <div id="chat-title" class="chat-title">New session</div>
           <div id="chat-meta" class="chat-meta"></div>
+          <!-- The step a plan is on while Claude works; clicking it jumps to the plan box at the end of the thread. -->
+          <button id="plan-step-chip" class="plan-step-chip hidden" type="button"></button>
         </div>
         <div class="topbar-right">
           <span id="live-pill" class="pill hidden"><span class="dot"></span><span id="live-text">Working</span></span>
@@ -183,11 +185,6 @@
           <span class="sb-spacer"></span>
           <span class="tb-open">Show</span>
         </button>
-        <!-- Claude's plan while it works (TodoWrite, or TaskCreate/TaskUpdate), above the composer. -->
-        <details id="plan-box" class="plan-box hidden">
-          <summary><span class="spark">✱</span><span id="plan-box-title">Claude's plan</span><span id="plan-box-count" class="muted"></span></summary>
-          <ul id="plan-box-list" class="todo-checklist"></ul>
-        </details>
         <div id="update-banner" class="limit-banner update-banner hidden">
           <svg viewBox="0 0 20 20" width="15" height="15"><path d="M10 3v9M6 8l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 15h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
           <span id="ub-text">A new version is ready</span>
@@ -523,6 +520,10 @@
           <div class="set-row">
             <div class="set-info"><div class="set-name">Classify sessions automatically</div><div class="set-desc">Allow Claude to automatically classify sessions as blocked, ready for review, or done.</div></div>
             <div id="set-auto-classify"></div>
+          </div>
+          <div class="set-row">
+            <div class="set-info"><div class="set-name">Summary and next steps</div><div class="set-desc">Show Claude’s short summary and suggested next steps after Claude finishes.</div></div>
+            <div id="set-show-recap"></div>
           </div>
         </section>
 

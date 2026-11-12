@@ -867,13 +867,14 @@ app.delete('/api/sessions/:id/chapters/:uuid', (req, res) => {
 
 // The app-wide switches: the default Transcript view for a newly opened session, and whether
 // Claude's SetSessionStatus tool exists at all (lib/tools-conversation.mjs reads it per turn).
-app.get('/api/conversation/settings', (_req, res) => { const { transcriptView, autoClassify } = readConvSettings(); res.json({ transcriptView, autoClassify }); });
+app.get('/api/conversation/settings', (_req, res) => { const { transcriptView, autoClassify, showRecap } = readConvSettings(); res.json({ transcriptView, autoClassify, showRecap }); });
 app.post('/api/conversation/settings', (req, res) => {
   const s = readConvSettings();
   if (req.body?.transcriptView && ['normal', 'thinking', 'verbose'].includes(req.body.transcriptView)) s.transcriptView = req.body.transcriptView;
   if (req.body?.autoClassify !== undefined) s.autoClassify = !!req.body.autoClassify;
+  if (req.body?.showRecap !== undefined) s.showRecap = !!req.body.showRecap;
   writeConvSettings(s);
-  res.json({ transcriptView: s.transcriptView, autoClassify: s.autoClassify });
+  res.json({ transcriptView: s.transcriptView, autoClassify: s.autoClassify, showRecap: s.showRecap });
 });
 
 // Text anywhere in one session's own transcript (not every session - that is /api/search):
@@ -1519,7 +1520,9 @@ app.post('/api/sessions/:id/send', async (req, res, next) => {
     const cid = clientId(req.body?.cid);
     // Claude Code is running for this session - mid-turn, or resting ready for the next message:
     // hand the message over, it runs right after (Desktop behaviour), without starting it again.
-    if (isLive(id)) { const qid = runs.get(id).enqueue(prompt, images, cid || undefined); if (qid) return res.json({ queued: true, id: qid, sessionId: id }); }
+    // Ctrl/Cmd+Enter in the composer: hold it until the turn running now truly ends, rather
+    // than fold it into that turn at the next tool boundary like plain Enter does.
+    if (isLive(id)) { const qid = runs.get(id).enqueue(prompt, images, cid || undefined, { defer: !!req.body?.defer }); if (qid) return res.json({ queued: true, id: qid, sessionId: id }); }
     const info = await getSessionInfo(id);
     if (!info) return res.status(404).json({ error: 'Session not found' });
     const { model, permissionMode, effort, ultracode, fast } = req.body || {};

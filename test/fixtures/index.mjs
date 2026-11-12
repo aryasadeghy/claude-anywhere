@@ -239,7 +239,7 @@ export async function startFakeApi({ delay = 15 } = {}) {
     const asking = /\[ask\]/.test(said);
     // The conversation package's own tags, each asking for one Claude-facing tool call (or
     // ExitPlanMode) instead of a Bash command - a fixed name and input, not the real model's.
-    const toolTag = (said.match(/\[(suggest|chapter|sugtask|status|plan|todo|tasktool)\]/) || [])[1];
+    const toolTag = (said.match(/\[(suggest|recap|chapter|sugtask|status|plan|todo|tasktool)\]/) || [])[1];
     const writeMatch = said.match(/\[write:([^\]]+)\]\s*([\s\S]*)/);
     const opensTerminal = /\[terminal\]/.test(said);
     // [browse:<url>]: the Browser tools in turn - open the page, look at it, click its #btn - then a word.
@@ -282,6 +282,8 @@ export async function startFakeApi({ delay = 15 } = {}) {
     } else {
       const TOOL_TAGS = {
         suggest: ['mcp__claude-anywhere__SuggestNextSteps', { recap: 'Set up the thing.', steps: [{ label: 'Add tests', prompt: 'Add tests for the thing' }] }],
+        // The new shape: a summary, a question, and a primary first button - Desktop's wrap_up.
+        recap: ['mcp__claude-anywhere__SuggestNextSteps', { summary: 'Set up the database and wrote the tests.', question: 'Want me to ship it too?', steps: [{ label: 'Ship it', prompt: 'Ship it' }, { label: 'Not yet', prompt: 'Hold off for now' }] }],
         chapter: ['mcp__claude-anywhere__MarkChapter', { title: 'Set up the database' }],
         sugtask: ['mcp__claude-anywhere__SuggestTask', { title: 'Write the README', prompt: 'Write a README for this project' }],
         status: ['mcp__claude-anywhere__SetSessionStatus', { status: 'ready_for_review', note: 'Looks good' }],

@@ -2155,7 +2155,7 @@
     }
   }
 
-  function userMsg(text, { queued = false, id = null, images = [], uuid = null } = {}) {
+  function userMsg(text, { queued = false, deferred = false, id = null, images = [], uuid = null } = {}) {
     const m = el('div', 'msg user' + (queued ? ' queued' : ''));
     if (id) m.dataset.promptId = id;
     if (uuid) m.dataset.uuid = uuid;
@@ -2170,7 +2170,7 @@
     m.appendChild(b);
     // A queued (dashed) bubble gets Desktop's row menu - Edit in composer / Send now / Remove -
     // plus a drag handle once there are several (queueRowActions, below).
-    if (queued) { m.appendChild(el('div', 'queued-label', 'Queued · Claude reads it after the current step')); queueRowActions(m); }
+    if (queued) { m.appendChild(el('div', 'queued-label', deferred ? 'Queued · sends after this turn' : 'Queued · Claude reads it after the current step')); queueRowActions(m); }
     if (uuid && !queued) rewindRow(m, uuid, text);
     return m;
   }
@@ -2229,20 +2229,8 @@
     return true;
   }
 
-  // The recap + next-step buttons SuggestNextSteps asked for; pressing one sends its prompt the
-  // way any typed message goes in.
-  function paintSuggestCard(card, inp) {
-    card.innerHTML = '';
-    if (inp.recap) { const r = el('div', 'prose suggest-recap'); r.dir = 'auto'; r.innerHTML = md(String(inp.recap)); card.appendChild(r); }
-    const row = el('div', 'suggest-steps');
-    for (const step of Array.isArray(inp.steps) ? inp.steps : []) {
-      if (!step?.prompt) continue;
-      const b = el('button', 'btn btn-ghost suggest-step', step.label || String(step.prompt).slice(0, 40)); b.type = 'button';
-      b.addEventListener('click', () => { input.value = step.prompt; input.dispatchEvent(new Event('input')); submit(); });
-      row.appendChild(b);
-    }
-    if (row.children.length) card.appendChild(row);
-  }
+  // paintRecapCard (below, with the plan box it replaces) renders SuggestNextSteps' card now -
+  // summary/question/steps, Desktop's wrap_up shape, with the old recap/steps still accepted.
   // SuggestTask's card: the same prompt either goes into this session or starts a new one.
   function paintSuggestedTaskCard(card, inp) {
     card.innerHTML = '';
@@ -2275,8 +2263,8 @@
     }
     if (toolNamed(block.name, 'SuggestNextSteps')) {
       let node = msg.blocks.get(index);
-      if (!node) { node = el('div', 'suggest-card'); node._toolId = block.id; msg.body.appendChild(node); msg.blocks.set(index, node); msg.group = null; }
-      paintSuggestCard(node, inp);
+      if (!node) { node = el('div', 'suggest-card recap-card'); node._toolId = block.id; msg.body.appendChild(node); msg.blocks.set(index, node); msg.group = null; }
+      paintRecapCard(node, inp);
       return true;
     }
     if (toolNamed(block.name, 'SuggestTask')) {
@@ -2300,7 +2288,7 @@
   // This app's own small switches: the default Transcript view, and whether Claude's
   // SetSessionStatus tool exists at all (lib/tools-conversation.mjs reads the same setting).
   const TRANSCRIPT_VIEWS = [['normal', 'Normal'], ['thinking', 'Thinking'], ['verbose', 'Verbose']];
-  let convSettings = { transcriptView: 'normal', autoClassify: false };
+  let convSettings = { transcriptView: 'normal', autoClassify: false, showRecap: true };
   let explicitTranscriptView = null; // set by the session menu, consumed once by the next openSession
   async function loadConvSettings() { try { convSettings = { ...convSettings, ...(await api('/conversation/settings')) }; } catch {} }
   function paintConvSettings() {
@@ -2316,6 +2304,9 @@
     const wrap = $('#set-auto-classify');
     if (wrap && !wrap.firstChild) wrap.appendChild(toggleEl(convSettings.autoClassify, async (on) => { convSettings.autoClassify = on; try { await api('/conversation/settings', { method: 'POST', body: JSON.stringify({ autoClassify: on }) }); } catch (e) { convSettings.autoClassify = !on; throw e; } }));
     else if (wrap) { const t = wrap.firstChild; t.classList.toggle('on', convSettings.autoClassify); t.setAttribute('aria-checked', String(convSettings.autoClassify)); }
+    const recapWrap = $('#set-show-recap');
+    if (recapWrap && !recapWrap.firstChild) recapWrap.appendChild(toggleEl(convSettings.showRecap, async (on) => { convSettings.showRecap = on; try { await api('/conversation/settings', { method: 'POST', body: JSON.stringify({ showRecap: on }) }); } catch (e) { convSettings.showRecap = !on; throw e; } }));
+    else if (recapWrap) { const t = recapWrap.firstChild; t.classList.toggle('on', convSettings.showRecap); t.setAttribute('aria-checked', String(convSettings.showRecap)); }
   }
 
   // A floating "Plan comment" button that appears over a selection made inside the plan text,
@@ -2395,43 +2386,108 @@
     return true;
   }
 
-  // ---------- the live plan box above the composer (TodoWrite, or TaskCreate/TaskUpdate) ----------
+  // ---------- the live plan box at the end of the conversation (TodoWrite, or TaskCreate/TaskUpdate) ----------
   // Two different shapes feed the same box: TodoWrite replaces its whole list every call (no
   // ids), while TaskCreate/TaskUpdate build one up incrementally by id - normalised to the same
-  // {text, status, activeForm} here so one painter and one checklist widget serve both.
+  // {text, status, activeForm} here so one painter and one checklist widget serve both. Desktop
+  // draws this as a card at the END of the conversation, scrolling with it, not pinned above the
+  // composer - so it lives in `thread` now and shares a "trailing slot" with the recap card
+  // below: only one of the two is ever the thread's last word.
   let planTodos = null;              // the latest TodoWrite call's list, or null if never used
   const planTasks = new Map();       // taskId -> {text, status, activeForm}, from TaskCreate/TaskUpdate
+  let planFoldOpen = false;          // the "N earlier steps" row, collapsed until clicked open
+  let planStopped = false;           // the turn ended mid-step: that item reads "Stopped", not "In progress"
+  const TODO_STATUS_WORD = { completed: 'Done', in_progress: 'In progress', pending: 'Not started' };
+  // Filled check / spinner ring / dashed circle - Desktop's three glyphs; the spinner only spins
+  // via the CSS .todo-spin animation, so a paused tab or a screenshot still reads as "working".
+  const TODO_ICON = {
+    completed: '<svg viewBox="0 0 16 16" width="15" height="15"><circle cx="8" cy="8" r="7" fill="currentColor"/><path d="M4.8 8.2l2 2 4-4.6" fill="none" stroke="var(--bg-1, #fff)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    in_progress: '<svg class="todo-spin" viewBox="0 0 16 16" width="15" height="15"><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-dasharray="20 18.9" stroke-linecap="round"/></svg>',
+    pending: '<svg viewBox="0 0 16 16" width="15" height="15"><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="2.2 2.2"/></svg>',
+  };
+  function todoItem(t) {
+    const status = t.status || 'pending';
+    const li = el('li', 'todo-item status-' + status); li.dir = 'auto';
+    const check = el('span', 'todo-check'); check.innerHTML = TODO_ICON[status] || TODO_ICON.pending;
+    li.appendChild(check);
+    li.appendChild(el('span', 'todo-label', (status === 'in_progress' && t.activeForm) || t.text || ''));
+    const stopped = status === 'in_progress' && planStopped;
+    li.appendChild(el('span', 'sr-only', stopped ? 'Stopped' : (TODO_STATUS_WORD[status] || 'Not started')));
+    // Hover (or focus, for keyboard and touch) reveals a small "comment on this item" button,
+    // same affordance as the terminal and diff lines: attachContext does the rest.
+    const comment = el('button', 'todo-comment-btn'); comment.type = 'button';
+    comment.setAttribute('aria-label', 'Comment on this item'); comment.title = 'Ask a question or recommend a change';
+    comment.innerHTML = '<svg viewBox="0 0 20 20" width="13" height="13"><path d="M3 4.5A1.5 1.5 0 0 1 4.5 3h11A1.5 1.5 0 0 1 17 4.5v7a1.5 1.5 0 0 1-1.5 1.5H9l-3.5 3.5V13H4.5A1.5 1.5 0 0 1 3 11.5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>';
+    comment.addEventListener('click', (e) => { e.stopPropagation(); attachContext({ label: 'Todo item', text: `Regarding Todo item: “${t.text || ''}”` }); });
+    li.appendChild(comment);
+    return li;
+  }
   function todoItems(items) {
     const frag = document.createDocumentFragment();
-    for (const t of items || []) {
-      const li = el('li', 'todo-item status-' + (t.status || 'pending')); li.dir = 'auto';
-      li.appendChild(el('span', 'todo-check'));
-      li.appendChild(el('span', 'todo-label', (t.status === 'in_progress' && t.activeForm) || t.text || ''));
-      frag.appendChild(li);
-    }
+    for (const t of items || []) frag.appendChild(todoItem(t));
     return frag;
   }
   // A checklist of its own (for the TodoWrite step's "Updated the task list" row, expanded).
   function todoChecklist(items) { const ul = el('ul', 'todo-checklist'); ul.appendChild(todoItems(items)); return ul; }
   function planItemsNow() { return planTodos ? planTodos.map((t) => ({ text: t.content, status: t.status, activeForm: t.activeForm })) : [...planTasks.values()]; }
-  let planBoxClosedByUser = false; // respected once; the box still opens itself for a new plan
-  function paintPlanBox() {
-    const box = $('#plan-box'); if (!box) return;
-    const items = planItemsNow();
-    const wasHidden = box.classList.contains('hidden');
-    box.classList.toggle('hidden', !items.length);
-    if (!items.length) return;
-    // A <details> starts closed; open it the first time a plan appears, as Desktop shows one
-    // unasked - but leave it alone once the person has chosen to collapse it themselves.
-    if (wasHidden && !planBoxClosedByUser) box.open = true;
-    $('#plan-box-count').textContent = items.filter((t) => t.status === 'completed').length + ' of ' + items.length;
-    const list = $('#plan-box-list'); list.innerHTML = ''; list.appendChild(todoItems(items));
+  // The plan box and the recap card never show at once: whichever was asked for most recently
+  // sits right in front of the live status line (or at the very end, once that line is gone),
+  // so a turn still "Thinking…" never looks like it is happening after its own plan.
+  function positionTrailing(node) {
+    if (status.el && status.el.isConnected) thread.insertBefore(node, status.el);
+    else if (thread.lastElementChild !== node) thread.appendChild(node);
   }
-  $('#plan-box')?.addEventListener('toggle', (e) => { planBoxClosedByUser = !e.target.open; });
+  let planBoxEl = null;
+  function buildPlanBox() {
+    const box = el('div', 'plan-box');
+    const head = el('div', 'plan-box-head');
+    head.innerHTML = '<span class="spark">✱</span><span id="plan-box-title">Claude’s plan</span><span id="plan-box-count" class="muted"></span>';
+    box.appendChild(head);
+    box.appendChild(el('ul', 'todo-checklist'));
+    return box;
+  }
+  function paintPlanBox() {
+    const items = planItemsNow();
+    if (!items.length) { planBoxEl?.remove(); return; }
+    if (!planBoxEl) planBoxEl = buildPlanBox();
+    positionTrailing(planBoxEl);
+    planBoxEl.querySelector('#plan-box-count').textContent = items.filter((t) => t.status === 'completed').length + ' of ' + items.length;
+    const list = planBoxEl.querySelector('.todo-checklist'); list.innerHTML = '';
+    // More than ~3 steps already done before the one under way fold into one row, Desktop's own
+    // "{n} earlier steps" - without it a long plan is mostly ticked boxes nobody needs again.
+    const cursor = items.findIndex((t) => t.status !== 'completed');
+    const boundary = cursor === -1 ? items.length : cursor;
+    if (boundary > 3) {
+      const row = el('li', 'todo-fold-row');
+      const btn = el('button', 'todo-fold-btn', planFoldOpen ? 'Hide earlier steps' : (boundary + (boundary === 1 ? ' earlier step' : ' earlier steps')));
+      btn.type = 'button';
+      btn.addEventListener('click', () => { planFoldOpen = !planFoldOpen; paintPlanBox(); });
+      row.appendChild(btn); list.appendChild(row);
+      if (planFoldOpen) list.appendChild(todoItems(items.slice(0, boundary)));
+      list.appendChild(todoItems(items.slice(boundary)));
+    } else list.appendChild(todoItems(items));
+    paintPlanChip(items);
+  }
+  // The title bar chip ("{task} · Step {current} of {total}") while a step is in progress;
+  // clicking it scrolls to the box, which is why it needs the item count too, not just the text.
+  function paintPlanChip(items) {
+    const chip = $('#plan-step-chip'); if (!chip) return;
+    const idx = items.findIndex((t) => t.status === 'in_progress');
+    if (idx === -1 || planStopped) { chip.classList.add('hidden'); return; }
+    chip.textContent = (items[idx].activeForm || items[idx].text || 'Task') + ' · Step ' + (idx + 1) + ' of ' + items.length;
+    chip.classList.remove('hidden');
+  }
+  $('#plan-step-chip')?.addEventListener('click', () => {
+    if (!planBoxEl?.isConnected) return;
+    planBoxEl.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    const active = planBoxEl.querySelector('.todo-item.status-in_progress');
+    if (active) { active.classList.add('step-flash'); setTimeout(() => active.classList.remove('step-flash'), 1200); }
+  });
   // Called for every tool_use block renderBlock sees (cheap no-op for anything else); reopening a
   // session feeds the same calls from history, in file order, so the box is right from the start.
   function updatePlanFromTool(name, inp) {
     if (!inp || typeof inp !== 'object') return;
+    planStopped = false;
     if (name === 'TodoWrite' && Array.isArray(inp.todos)) { planTodos = inp.todos; paintPlanBox(); }
     else if (name === 'TaskUpdate' && inp.taskId) {
       const t = planTasks.get(inp.taskId) || { text: inp.subject || '', status: 'pending', activeForm: '' };
@@ -2451,6 +2507,38 @@
     const prev = planTasks.get(id);
     planTasks.set(id, { text: subject || prev?.text || '(task)', status: prev?.status || 'pending', activeForm: prev?.activeForm || '' });
     paintPlanBox();
+  }
+  // A turn that stops mid-step (the person pressed Stop) reads that item as "Stopped" for a
+  // screen reader instead of "In progress" forever; the visible spinner is left alone - Desktop
+  // does not swap the glyph either, only what it says it means.
+  function planMarkStopped() { if (planItemsNow().some((t) => t.status === 'in_progress')) { planStopped = true; paintPlanBox(); } }
+
+  // ---------- the recap card (SuggestNextSteps' summary, question and next-step buttons) ----------
+  // Desktop's "wrap_up": a short summary, an optional question, and buttons - the first shown as
+  // primary with the Ctrl/⌘+Enter hint, since pressing it is the one-keystroke answer to that
+  // question. SuggestNextSteps renders where its tool_use block naturally falls - the end of the
+  // final turn - so this needs no slot of its own; it only has to clear the plan box, since
+  // there is nothing left to track once the recap is in.
+  const ctrlOrCmd = () => (navigator.platform || navigator.userAgent || '').match(/Mac|iPhone|iPad/) ? '⌘' : 'Ctrl';
+  function paintRecapCard(card, inp) {
+    card.innerHTML = '';
+    planBoxEl?.remove();
+    const close = el('button', 'recap-dismiss icon-btn small', ''); close.type = 'button'; close.title = 'Dismiss recap'; close.setAttribute('aria-label', 'Dismiss recap');
+    close.innerHTML = '<svg viewBox="0 0 20 20" width="13" height="13"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+    close.addEventListener('click', () => card.classList.add('hidden'));
+    card.appendChild(close);
+    const summary = inp.summary || inp.recap;
+    if (summary) { const s = el('div', 'recap-summary muted'); s.dir = 'auto'; s.innerHTML = md(String(summary)); card.appendChild(s); }
+    if (inp.question) { const q = el('div', 'recap-question'); q.dir = 'auto'; q.textContent = inp.question; card.appendChild(q); }
+    const row = el('div', 'suggest-steps recap-steps');
+    const steps = (Array.isArray(inp.steps) ? inp.steps : []).filter((s) => s?.prompt);
+    steps.forEach((step, i) => {
+      const b = el('button', 'btn ' + (i === 0 ? 'btn-primary' : 'btn-ghost') + ' suggest-step', step.label || String(step.prompt).slice(0, 40)); b.type = 'button';
+      if (i === 0) b.appendChild(el('span', 'recap-hint', ctrlOrCmd() + '↵'));
+      b.addEventListener('click', () => { input.value = step.prompt; input.dispatchEvent(new Event('input')); submit(); });
+      row.appendChild(b);
+    });
+    if (row.children.length) card.appendChild(row);
   }
 
   // ---------- masking API keys and tokens in the transcript, with an eye to reveal ----------
@@ -2695,6 +2783,25 @@
     copy.innerHTML = '<svg viewBox="0 0 20 20" width="15" height="15"><rect x="7" y="7" width="9" height="9" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M13 7V5.5A1.5 1.5 0 0 0 11.5 4h-6A1.5 1.5 0 0 0 4 5.5v6A1.5 1.5 0 0 0 5.5 13H7" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>';
     copy.addEventListener('click', async () => { const t = [...msg.body.querySelectorAll('.prose')].map((n) => n.innerText).join('\n\n'); try { await navigator.clipboard.writeText(t); copy.title = 'Copied'; setTimeout(() => copy.title = 'Copy', 1500); } catch {} });
     row.appendChild(copy);
+    // "Read aloud": the browser's own speechSynthesis, no dependency - a fenced code block read
+    // out as punctuation and indentation is worse than silence, so it is cut before the rest of
+    // the answer goes to the voice; toggling the same button again is Stop.
+    if ('speechSynthesis' in window) {
+      const speak = el('button'); speak.type = 'button'; speak.title = 'Read aloud';
+      speak.innerHTML = '<svg viewBox="0 0 20 20" width="15" height="15"><path d="M3 8v4h3l4 3V5L6 8z" fill="currentColor"/><path d="M13.5 7a4 4 0 0 1 0 6M15.7 5a7 7 0 0 1 0 10" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
+      speak.addEventListener('click', () => {
+        if (speak.classList.contains('speaking')) { speechSynthesis.cancel(); speak.classList.remove('speaking'); speak.title = 'Read aloud'; return; }
+        for (const b of thread.querySelectorAll('.msg-actions .speaking')) b.classList.remove('speaking');
+        speechSynthesis.cancel();
+        const text = [...msg.body.querySelectorAll('.prose')].map((n) => { const c = n.cloneNode(true); c.querySelectorAll('pre').forEach((p) => p.remove()); return c.innerText; }).join('\n\n').trim();
+        if (!text) return;
+        const utter = new SpeechSynthesisUtterance(text);
+        utter.onend = utter.onerror = () => { speak.classList.remove('speaking'); speak.title = 'Read aloud'; };
+        speechSynthesis.speak(utter);
+        speak.classList.add('speaking'); speak.title = 'Stop reading';
+      });
+      row.appendChild(speak);
+    }
     if (whenMs) row.appendChild(el('span', 'time', relTime(whenMs) === 'now' ? 'just now' : relTime(whenMs) + (/\d[mhd]$/.test(relTime(whenMs)) ? ' ago' : '')));
     msg.body.appendChild(row);
   }
@@ -2994,7 +3101,10 @@
     local_agent: '<svg viewBox="0 0 20 20" width="15" height="15"><path d="M10 2.5l1.6 4.4 4.4 1.6-4.4 1.6L10 14.5 8.4 10.1 4 8.5l4.4-1.6z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M15.5 13.5l.6 1.6 1.6.6-1.6.6-.6 1.6-.6-1.6-1.6-.6 1.6-.6z" fill="currentColor"/></svg>',
     local_workflow: '<svg viewBox="0 0 20 20" width="15" height="15"><circle cx="5" cy="10" r="2" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="15" cy="5" r="2" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="15" cy="15" r="2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M7 10h3l3-5M10 10l3 5" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>',
   };
-  const taskKind = (t) => t.type === 'local_bash' ? 'Command' : t.type === 'local_agent' ? 'Agent' + (t.subagentType ? ' · ' + t.subagentType : '') : t.type === 'local_workflow' ? 'Workflow' + (t.workflow ? ' · ' + t.workflow : '') : t.type === 'mcp_task' ? 'Connector task' : t.type === 'remote_agent' ? 'Remote agent' : 'Task';
+  // Desktop's three badges - Agent, Bash, Server - cover every task type we know of; a
+  // workflow or connector task runs server-side like a background command does, so it reads
+  // as "Server" too rather than inventing a fourth badge nobody asked for.
+  const taskKind = (t) => t.type === 'local_bash' ? 'Bash' : t.type === 'local_agent' ? 'Agent' + (t.subagentType ? ' · ' + t.subagentType : '') : t.type === 'local_workflow' ? 'Server · ' + (t.workflow || 'workflow') : t.type === 'mcp_task' ? 'Server · connector' : t.type === 'remote_agent' ? 'Agent · remote' : 'Server';
   const taskState = (t) => t.status === 'running' ? (t.backgrounded ? 'Running in background' : 'Running') : t.status === 'completed' ? 'Finished' : t.status === 'failed' ? 'Failed' : t.status === 'stopped' ? 'Stopped' : t.status;
   const fmtTok = (n) => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n || 0);
   const fmtDur = (ms) => { const s = Math.max(0, Math.round(ms / 1000)); return s < 60 ? s + 's' : s < 3600 ? Math.floor(s / 60) + 'm ' + (s % 60) + 's' : Math.floor(s / 3600) + 'h ' + Math.floor((s % 3600) / 60) + 'm'; };
@@ -3034,7 +3144,7 @@
       tpList.appendChild(el('div', 'tp-section', label));
       for (const t of items) tpList.appendChild(taskRow(t, keep.get(t.id)));
     };
-    section('Running', running); section('Finished', finished);
+    section('Running', running); section('Completed', finished);
     if (!all.length) tpList.appendChild(el('div', 'muted small pad', 'Nothing is running.'));
   }
   function taskRow(t, keptOutput) {
@@ -3101,6 +3211,10 @@
     await load();
     if (state.tasks.find((x) => x.id === t.id)?.status === 'running') o.timer = setInterval(load, 2000);
   }
+  // The activity indicator (the "Working" pill) is also a running-tasks button, same as
+  // Desktop: a background command is still running work even once the turn's own answer is
+  // done, so the pill outlives "Working" and stays a way into the pane.
+  $('#live-pill')?.addEventListener('click', () => { if (visibleTasks().some((t) => t.status === 'running')) (tasksOpen ? closeTasks() : openTasks()); });
 
   // ---------- the window's own title bar (native app only) ----------
   // The Tauri window is frameless on Windows, like Claude Desktop's: the header row is
@@ -5013,6 +5127,9 @@
     state.answering = on;
     $('#live-pill').classList.toggle('hidden', !on && !state.elsewhere);
     if (on) { $('#live-pill').classList.remove('elsewhere'); $('#live-text').textContent = 'Working'; statusStart(); } else statusStop();
+    // Enter still sends into the running turn right now; Ctrl/⌘+Enter is the one that
+    // waits - the placeholder says both, since neither is discoverable from the box alone.
+    input.placeholder = on ? '↵ to send, ' + ctrlOrCmd() + '↵ to queue for later' : (state.current ? 'Type / for commands' : 'Describe a task or ask a question');
     paintSendButton();
   }
   // Our live run's stream is open, so a send is queued into it rather than starting a fresh
@@ -5129,7 +5246,7 @@
         case 'queued': {
           const mine = bubbleFor(ev);
           if (mine) { mine.dataset.promptId = ev.id; delete mine.dataset.pending; restackQueue(); break; }
-          thread.appendChild(userMsg(ev.text, { queued: true, id: ev.id })); autoscroll(); restackQueue(); break;
+          thread.appendChild(userMsg(ev.text, { queued: true, deferred: !!ev.afterTurn, id: ev.id })); autoscroll(); restackQueue(); break;
         }
         case 'prompt': {
           state.live = null;
@@ -5235,6 +5352,7 @@
         case 'result':
           // A turn stopped from here is an error result too: the Stop was the point, not a failure.
           if (ev.isError && !ev.stopped) authNote(ev.text, ev.startupFailure);
+          if (ev.stopped) planMarkStopped(); else $('#plan-step-chip')?.classList.add('hidden');
           fastNote(ev.fast);
           if (state.live) addActions(state.live, Date.now());
           state.live = null; refreshGit();
@@ -5465,6 +5583,9 @@
     // The "/" and "@" popover owns these keys while it is open; its own listener, registered
     // below, handles them instead - so Enter picks a row rather than sending the message.
     if (composerPopOpen() && (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Enter' || e.key === 'Tab' || e.key === 'Escape')) return;
+    // Ctrl/Cmd+Enter while Claude works: Desktop's "queue for later" (held until the turn
+    // ends), distinct from plain Enter, which yields into the running turn right away.
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.isComposing) { e.preventDefault(); submit({ defer: state.answering }); return; }
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && window.matchMedia('(min-width: 861px)').matches) { e.preventDefault(); submit(); }
     if (e.key === 'Escape' && state.answering) { e.preventDefault(); stop(); }
   });
@@ -5645,6 +5766,45 @@
     },
   });
   registerCommand('usage', { description: 'Show session cost, plan usage, and what’s contributing to your limits', argumentHint: '', run: () => $('#usage-btn').click() });
+  // ---------- /context: the breakdown behind the usage ring's percentage ----------
+  // getContextUsage's `categories` (lib/runs.mjs keeps it alongside the totals the ring already
+  // used) is a per-row {name, tokens, color, kind} list - exactly the segments and the colour
+  // for Desktop's bar, so the card below only has to lay them out, not classify anything itself.
+  function renderContextCard(c) {
+    const card = el('div', 'context-card');
+    const pct = c ? Math.round(c.percentage) : 0;
+    card.appendChild(el('div', 'context-card-title', 'Context window ' + (c ? `${fmtK(c.totalTokens)} / ${fmtK(c.maxTokens)} (${pct}%)` : 'Unknown until this session runs a turn')));
+    const cats = (c?.categories || []).filter((r) => r.tokens > 0);
+    const bar = el('div', 'context-seg-bar');
+    for (const r of cats) {
+      const seg = el('span', 'context-seg'); seg.style.width = Math.max(0.6, (r.tokens / (c.maxTokens || 1)) * 100) + '%';
+      seg.style.background = r.color || 'var(--ink-3)'; seg.title = r.name + ' · ' + fmtK(r.tokens);
+      bar.appendChild(seg);
+    }
+    card.appendChild(bar);
+    if (cats.length) {
+      const toggle = el('button', 'context-expand', '› Breakdown'); toggle.type = 'button';
+      const detail = el('ul', 'context-breakdown hidden');
+      for (const r of cats) {
+        const li = el('li', 'context-row');
+        li.appendChild(Object.assign(el('span', 'context-dot'), { style: 'background:' + (r.color || 'var(--ink-3)') }));
+        li.appendChild(el('span', 'context-name', r.name));
+        li.appendChild(el('span', 'muted', fmtK(r.tokens) + ' · ' + (c.maxTokens ? Math.round((r.tokens / c.maxTokens) * 100) : 0) + '%'));
+        detail.appendChild(li);
+      }
+      toggle.addEventListener('click', () => { detail.classList.toggle('hidden'); toggle.classList.toggle('open'); });
+      card.appendChild(toggle); card.appendChild(detail);
+    }
+    thread.appendChild(card); autoscroll();
+  }
+  registerCommand('context', {
+    description: 'Show a breakdown of context window usage', argumentHint: '',
+    async run() {
+      if (!state.current) return toast('Open a session first.');
+      try { const u = await api(`/sessions/${state.current}/usage`); usage.context = u.context || usage.context; paintUsage(); } catch {}
+      renderContextCard(usage.context);
+    },
+  });
   registerCommand('model', {
     description: 'Set the AI model for Claude Code', argumentHint: '<model>',
     run(args) {
@@ -5952,7 +6112,7 @@
     ev.listen('tauri://drag-drop', (e) => { $('#composer').classList.remove('drop'); addPaths(e.payload?.paths || []); }).catch(() => {});
   })();
 
-  async function submit() {
+  async function submit({ defer = false } = {}) {
     const typed = input.value.trim(); if (!typed && !pending.length && !contextChips.length) return;
     if (await runComposerIntercepts(typed)) return;
     // Context chips are quoted ahead of what you typed, the same shape "Attach as context" used
@@ -5979,12 +6139,12 @@
     // The message's own id, drawn on its bubble now and sent with it: every event about the
     // message carries it back, so this bubble is the one that turns solid - never a second one.
     const cid = newId();
-    const body = { text, attachments, files, cid };
+    const body = { text, attachments, files, cid, defer };
     // Our run's stream is open (Claude is answering, or Claude Code is resting ready for the next
     // message), so the message goes into it, like Desktop. If Claude is still answering it waits
     // its turn and is labelled so; otherwise it runs at once and is shown as a plain message.
     if (state.running && state.current) {
-      const ghost = userMsg(shown, { queued: state.answering, images, id: cid }); ghost.dataset.pending = '1';
+      const ghost = userMsg(shown, { queued: state.answering, deferred: defer && state.answering, images, id: cid }); ghost.dataset.pending = '1';
       thread.appendChild(ghost); statusPaint(); autoscroll(); paintSendButton();
       try { const r = await api(`/sessions/${state.current}/send`, { method: 'POST', body: JSON.stringify(body) }); if (r.id) ghost.dataset.promptId = r.id; }
       catch (e) { ghost.remove(); thread.appendChild(el('div', 'note error', e.message)); }
@@ -6412,7 +6572,7 @@
   async function openSession(id, { jumpTo } = {}) {
     const seq = ++openSeq;
     state.current = id; state.live = null; state.tasks = []; hiddenTasks.clear(); paintTasks(); if (changesOpen) closeChanges(); if (previewOpen) closePreview(); if (filesOpen) closeFiles(); if (terminalOpen) closeTerminal();
-    planTodos = null; planTasks.clear(); planBoxClosedByUser = false; paintPlanBox();
+    planTodos = null; planTasks.clear(); planFoldOpen = false; planStopped = false; planBoxEl?.remove(); planBoxEl = null; $('#plan-step-chip')?.classList.add('hidden'); paintPlanBox();
     findQuery = ''; findHits = []; findIndex = -1; findSeq++; findBar.classList.add('hidden');
     if (state.es) { state.es.close(); state.es = null; }
     app.classList.remove('sidebar-open'); app.classList.remove('new');
@@ -6485,7 +6645,7 @@
     if (state.cwdIsChat) { state.cwdIsChat = false; state.cwd = localStorage.getItem('cr.cwd') || ''; renderProjectChip(); }
     hist.id = null; hist.more = false;
     chapters = []; registeredChapters.clear();
-    planTodos = null; planTasks.clear(); planBoxClosedByUser = false; paintPlanBox();
+    planTodos = null; planTasks.clear(); planFoldOpen = false; planStopped = false; planBoxEl?.remove(); planBoxEl = null; $('#plan-step-chip')?.classList.add('hidden'); paintPlanBox();
     findQuery = ''; findHits = []; findIndex = -1; findSeq++; findBar.classList.add('hidden');
     state.current = null; state.live = null; state.tasks = []; hiddenTasks.clear(); paintTasks(); if (changesOpen) closeChanges(); if (filesOpen) closeFiles(); if (terminalOpen) closeTerminal(); stopPrWatch(); $("#sb-pr-state").classList.add("hidden");
     if (state.es) { state.es.close(); state.es = null; }
