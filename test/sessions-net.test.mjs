@@ -57,3 +57,17 @@ test('sidebar prefs persist and merge', () => {
   net.setSidebarPrefs({ groupBy: 'project' });
   assert.deepEqual(net.getSidebarPrefs(), { groupBy: 'project', sortBy: 'recent', showEmptyGroups: false });
 });
+
+test('set_session_model/effort/permission_mode persist to prefs.json even with no live run', async () => {
+  const applied = await net.setControls('session-b', { model: 'claude-opus-5-5', effort: 'high', permissionMode: 'plan' });
+  assert.equal(applied.model, 'claude-opus-5-5');
+  assert.equal(applied.effort, 'high');
+  assert.equal(applied.permissionMode, 'plan');
+  const saved = JSON.parse(fs.readFileSync(path.join(tmp, 'data', 'prefs.json'), 'utf8'));
+  assert.deepEqual(saved.sessionPrefs['session-b'], { model: 'claude-opus-5-5', effort: 'high', permissionMode: 'plan' });
+  // A second call only touches the keys it is given.
+  await net.setControls('session-b', { model: 'claude-haiku-4-5' });
+  const saved2 = JSON.parse(fs.readFileSync(path.join(tmp, 'data', 'prefs.json'), 'utf8'));
+  assert.equal(saved2.sessionPrefs['session-b'].model, 'claude-haiku-4-5');
+  assert.equal(saved2.sessionPrefs['session-b'].effort, 'high');
+});
