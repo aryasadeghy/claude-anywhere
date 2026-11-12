@@ -7,6 +7,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-11-12
+
 ### Added
 
 - **Claude's plan works like Desktop's.** The to-do list sits at the end of the conversation with a
@@ -674,7 +676,8 @@ settings across.
   from a browser, with live streaming, permission prompts and a new-session
   flow.
 
-[Unreleased]: https://github.com/aryasadeghy/claude-anywhere/compare/v0.12.1...HEAD
+[Unreleased]: https://github.com/aryasadeghy/claude-anywhere/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/aryasadeghy/claude-anywhere/compare/v0.12.1...v0.13.0
 [0.12.1]: https://github.com/aryasadeghy/claude-anywhere/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/aryasadeghy/claude-anywhere/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/aryasadeghy/claude-anywhere/compare/v0.10.5...v0.11.0
