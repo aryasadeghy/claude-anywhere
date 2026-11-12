@@ -55,7 +55,7 @@ async function main() {
   const id = makeFilesSession(path.join(tmp, 'claude'), cwd);
   // The fake API: no real account behind the app, and none in the screenshots.
   const api = await fx.startFakeApi();
-  const app = await fx.startApp({ port: await fx.freePort(), dataDir: path.join(tmp, 'data'), configDir: path.join(tmp, 'claude'), env: fx.fakeApiEnv(api) });
+  const app = await fx.startApp({ port: await fx.freePort(), dataDir: path.join(tmp, 'data'), configDir: path.join(tmp, 'claude'), env: { ...fx.fakeApiEnv(api), CLAUDE_ANYWHERE_BROWSER: 'off' } }) // the frame pane, whose page the test can read; browser-real.cjs covers the real one;
   const browser = await chromium.launch({ channel });
   const errors = [];
   try {
