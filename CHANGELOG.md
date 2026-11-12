@@ -7,6 +7,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.12.1] — 2026-11-12
+
 ### Fixed
 
 - **The server no longer runs itself out of memory on a big file.** Opening an untracked file in
@@ -638,7 +640,8 @@ settings across.
   from a browser, with live streaming, permission prompts and a new-session
   flow.
 
-[Unreleased]: https://github.com/aryasadeghy/claude-anywhere/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/aryasadeghy/claude-anywhere/compare/v0.12.1...HEAD
+[0.12.1]: https://github.com/aryasadeghy/claude-anywhere/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/aryasadeghy/claude-anywhere/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/aryasadeghy/claude-anywhere/compare/v0.10.5...v0.11.0
 [0.10.5]: https://github.com/aryasadeghy/claude-anywhere/compare/v0.10.4...v0.10.5
