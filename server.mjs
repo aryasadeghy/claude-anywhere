@@ -38,6 +38,7 @@ import * as pr from './lib/pr.mjs';
 import * as gitActions from './lib/git-actions.mjs';
 import * as autofix from './lib/autofix.mjs';
 import * as awake from './lib/awake.mjs';
+import * as routines from './lib/routines.mjs';
 import * as update from './lib/update.mjs';
 import * as models from './lib/models.mjs';
 import * as commandsMod from './lib/commands.mjs';
@@ -406,6 +407,7 @@ const shape = (s, pinned) => ({
   pinned: !!pinned?.has(s.sessionId),
   tag: s.tag || '',
   archived: s.tag === 'archived',
+  routine: routines.nameForSession(s.sessionId) || null, // "started by this scheduled task", for the sidebar
   context: contextBySession.get(s.sessionId) || null,
   // Set by Claude's own SetSessionStatus tool (lib/tools-conversation.mjs), shown as a sidebar badge.
   status: readConvSettings().status[s.sessionId] || null,
@@ -1197,6 +1199,16 @@ claudeCode.useDir(path.join(DATA_DIR, 'claude-code')); // first: asking for the 
 models.useCache(DATA_DIR);
 limitQueue.init(DATA_DIR); // messages held while the plan's usage limit is reached; survives a restart
 autofix.init(DATA_DIR); // per-PR auto-fix and auto-archive switches, and the watcher behind them
+// Scheduled tasks: each due run is a new session, started the same way /api/sessions starts one.
+routines.init(DATA_DIR, {
+  onDue: async (routine) => {
+    if (!fs.existsSync(routine.folder)) throw new Error('Folder no longer exists: ' + routine.folder);
+    const newId = randomUUID();
+    const { ready } = startRun({ newId, cwd: routine.folder, prompt: routine.prompt, model: routine.model, permissionMode: routine.permissionMode, disabledMcp: readPrefs().disabledMcp || [] });
+    const sessionId = await ready;
+    return { sessionId };
+  },
+}).catch((e) => console.error('[routines] startup catch-up failed:', e.message || e));
 models.warm().catch(() => {});
 // Refresh waits: a background refresh would answer with the very list it was asked to
 // replace, and the menu would need a second press to show what changed.
@@ -1228,6 +1240,38 @@ app.post('/api/plugins/:id', (req, res) => {
   settings.enabledPlugins = { ...(settings.enabledPlugins || {}), [req.params.id]: !!req.body?.enabled };
   fs.writeFileSync(file, JSON.stringify(settings, null, 2));
   res.json({ id: req.params.id, enabled: !!req.body?.enabled });
+});
+
+// ---------- routines ----------
+// Scheduled tasks: CRUD plus Run now, each backed by lib/routines.mjs (storage, cron, the
+// scheduler loop) and started the same way a session started by hand is (startRun, above).
+app.get('/api/routines', (_req, res) => res.json({ routines: routines.list() }));
+app.post('/api/routines', (req, res) => {
+  const { name, prompt, folder, model, permissionMode, schedule } = req.body || {};
+  if (!prompt || !String(prompt).trim()) return res.status(400).json({ error: 'A routine needs a prompt.' });
+  const dir = String(folder || '').trim();
+  if (!dir || !fs.existsSync(dir)) return res.status(400).json({ error: 'That folder does not exist on this machine.' });
+  try { res.json(routines.create({ name, prompt, folder: dir, model, permissionMode, schedule })); }
+  catch (e) { res.status(400).json({ error: String(e.message || e) }); }
+});
+app.put('/api/routines/:id', (req, res) => {
+  const row = routines.get(req.params.id);
+  if (!row) return res.status(404).json({ error: 'No such routine.' });
+  const folder = req.body?.folder !== undefined ? String(req.body.folder).trim() : row.folder;
+  if (!fs.existsSync(folder)) return res.status(400).json({ error: 'That folder does not exist on this machine.' });
+  try { res.json(routines.update(req.params.id, { ...req.body, folder })); }
+  catch (e) { res.status(400).json({ error: String(e.message || e) }); }
+});
+app.delete('/api/routines/:id', (req, res) => res.json({ ok: routines.remove(req.params.id) }));
+app.post('/api/routines/:id/run', async (req, res) => {
+  const row = await routines.runNow(req.params.id);
+  if (!row) return res.status(404).json({ error: 'No such routine.' });
+  res.json(row);
+});
+app.get('/api/routines/:id/runs', (req, res) => {
+  const row = routines.get(req.params.id);
+  if (!row) return res.status(404).json({ error: 'No such routine.' });
+  res.json({ runs: row.runs });
 });
 
 // Where another device can reach this computer — the answer to "what do I type on the
