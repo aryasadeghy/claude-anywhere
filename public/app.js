@@ -1499,10 +1499,20 @@
   async function openConnectors() {
     if (settingsModal.classList.contains('hidden') || !$('.set-pane[data-pane="connectors"]').classList.contains('on')) return openSettings('connectors');
     $('#connectors-error').hidden = true;
-    $('#connectors-list').innerHTML = '<div class="muted small pad">Loading…</div>'; $('#plugins-list').innerHTML = '';
+    $('#connectors-list').innerHTML = '<div class="muted small pad">Loading…</div>'; $('#plugins-list').innerHTML = ''; $('#skills-list').innerHTML = '';
     let data;
     try { data = await api('/connectors?cwd=' + encodeURIComponent(state.cwd || '') + '&sessionId=' + encodeURIComponent(state.current || '')); }
     catch (e) { $('#connectors-error').hidden = false; $('#connectors-error').textContent = e.message; return; }
+    const sl = $('#skills-list'); sl.innerHTML = '';
+    for (const sk of data.skills || []) {
+      const row = el('div', 'ct-row');
+      const info = el('div', 'ct-info');
+      const name = el('div', 'ct-name'); name.appendChild(document.createTextNode(sk.name)); name.appendChild(el('span', 'tag', sk.source));
+      info.appendChild(name);
+      if (sk.description) info.appendChild(el('div', 'ct-desc', sk.description.slice(0, 160)));
+      row.appendChild(info); sl.appendChild(row);
+    }
+    if (!(data.skills || []).length) sl.appendChild(el('div', 'muted small pad', 'No skills found in .claude/skills.'));
     const cl = $('#connectors-list'); cl.innerHTML = '';
     for (const c of data.connectors) {
       const row = el('div', 'ct-row');

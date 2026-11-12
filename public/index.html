@@ -654,8 +654,10 @@
         </section>
 
         <section class="set-pane" data-pane="connectors">
-          <h3 class="set-title">Connectors &amp; plugins <button id="connectors-refresh" class="link-btn small" type="button">Refresh</button></h3>
-          <p class="modal-hint">MCP servers from this computer's Claude Code config (user, project and <code>.mcp.json</code>). Switching one off applies to the next turn, or right away in a running one.</p>
+          <h3 class="set-title">Customize <button id="connectors-refresh" class="link-btn small" type="button">Refresh</button></h3>
+          <p class="modal-hint">This session's skills, plugins and connectors (user, project and <code>.mcp.json</code>). Switching a connector or plugin off applies to the next turn, or right away in a running one; skills have no switch of their own, so this list is for reading only.</p>
+      <div class="ct-title">Skills</div>
+      <div id="skills-list" class="ct-list"></div>
       <div class="ct-title">Connectors</div>
       <div id="connectors-list" class="ct-list"><div class="muted small pad">Loading…</div></div>
       <div class="ct-title">Plugins</div>

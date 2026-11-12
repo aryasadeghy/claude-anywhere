@@ -1160,6 +1160,25 @@ function listConnectors(cwd) {
   out.push({ name: 'claude-anywhere', scope: 'built-in', type: 'in-process', target: 'SendUserFile — shows files in this chat', enabled: true, builtin: true });
   return out;
 }
+// Skills (Customize page): no on/off switch per skill exists in Claude Code's settings - they
+// are turned on by being present, project or user-wide (options.skills, not a settings key) -
+// so this list is read-only, same reasoning as the Session Info panel's skill count.
+function listSkills(cwd) {
+  const out = [];
+  const scan = (dir, source) => {
+    let names; try { names = fs.readdirSync(dir); } catch { return; }
+    for (const name of names) {
+      const md = path.join(dir, name, 'SKILL.md');
+      let text; try { text = fs.readFileSync(md, 'utf8'); } catch { continue; }
+      const fm = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)?.[1] || '';
+      const field = (k) => new RegExp(`^${k}:\\s*(.+)$`, 'm').exec(fm)?.[1]?.trim().replace(/^["']|["']$/g, '') || '';
+      out.push({ name: field('name') || name, source, description: field('description') || '' });
+    }
+  };
+  if (cwd) scan(path.join(cwd, '.claude', 'skills'), 'project');
+  scan(path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'skills'), 'user');
+  return out;
+}
 function listPlugins() {
   const settings = readJson(path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'settings.json')) || {};
   const enabled = settings.enabledPlugins || {};
@@ -1191,7 +1210,7 @@ app.get('/api/connectors', async (req, res) => {
   const connectors = listConnectors(cwd);
   const run = runs.get(sessionId);
   if (run && !run.done && run.query) { try { for (const s of await run.query.mcpServerStatus()) { const c = connectors.find((x) => x.name === s.name); if (c) { c.status = s.status; c.tools = (s.tools || []).length; c.error = s.error; } } } catch {} }
-  res.json({ connectors, plugins: listPlugins() });
+  res.json({ connectors, plugins: listPlugins(), skills: listSkills(cwd) });
 });
 app.post('/api/connectors/:name', async (req, res) => {
   const name = req.params.name; const enabled = !!req.body?.enabled;
