@@ -170,6 +170,135 @@
   $('#settings-close').addEventListener('click', () => { settingsModal.classList.add('hidden'); localStorage.setItem('cr.accountChosen', '1'); });
   settingsModal.addEventListener('click', (e) => { if (e.target === settingsModal) $('#settings-close').click(); });
 
+  // ---------- routines: scheduled tasks, customize, output styles, environments ----------
+  // Scheduled tasks: Claude running itself on a clock. One modal, three views inside it
+  // (list / create-edit form / run history), the same "one window, several panes" shape
+  // as Settings above - a second top-level modal for the same feature would be one more
+  // thing to find.
+  const schModal = $('#scheduled-modal');
+  let schRoutines = [], schEditingId = null, schRunsFor = null;
+  function schShowView(name) {
+    $('#sch-list-view').classList.toggle('hidden', name !== 'list');
+    $('#sch-edit-view').classList.toggle('hidden', name !== 'edit');
+    $('#sch-runs-view').classList.toggle('hidden', name !== 'runs');
+  }
+  async function openScheduled() {
+    schModal.classList.remove('hidden');
+    schShowView('list');
+    await loadRoutines();
+  }
+  async function loadRoutines() {
+    const list = $('#sch-list');
+    try { schRoutines = (await api('/routines')).routines; }
+    catch (e) { list.innerHTML = ''; list.appendChild(el('div', 'note error', e.message)); return; }
+    list.innerHTML = '';
+    if (!schRoutines.length) { list.appendChild(el('div', 'muted small pad', 'No scheduled tasks yet. "New scheduled task" runs a prompt on this computer, on its own schedule.')); return; }
+    for (const r of schRoutines) list.appendChild(schCard(r));
+  }
+  function schCard(r) {
+    const card = el('div', 'sch-card-row' + (r.enabled ? '' : ' off'));
+    const info = el('div', 'sch-card-info');
+    info.appendChild(el('div', 'sch-card-name', r.name));
+    info.appendChild(el('div', 'sch-card-desc', describeSchedule(r.schedule) + ' · ' + (r.folder.split(/[\\/]/).pop() || r.folder)));
+    const status = el('div', 'sch-card-status');
+    if (r.missedAtStartup) status.appendChild(el('span', 'tag', 'Ran at startup — missed while this computer was off'));
+    if (r.nextRunAt) status.appendChild(el('span', 'muted small', 'Next run: ' + fmtWhen(r.nextRunAt)));
+    if (r.lastRunAt) status.appendChild(el('span', 'muted small', (r.lastRunStatus === 'failed' ? 'Last run failed' : 'Last run') + ': ' + fmtWhen(r.lastRunAt)));
+    info.appendChild(status);
+    card.appendChild(info);
+    const actions = el('div', 'sch-card-actions');
+    const sw = toggleEl(r.enabled, async (on) => { try { await api('/routines/' + r.id, { method: 'PUT', body: JSON.stringify({ enabled: on }) }); loadRoutines(); } catch (e) { alert(e.message); } });
+    actions.appendChild(sw);
+    const runBtn = el('button', 'btn btn-ghost small', 'Run now'); runBtn.type = 'button';
+    runBtn.addEventListener('click', async () => { runBtn.disabled = true; try { await api('/routines/' + r.id + '/run', { method: 'POST' }); await loadSessions(); toast('Started "' + r.name + '"'); } catch (e) { alert(e.message); } finally { runBtn.disabled = false; loadRoutines(); } });
+    actions.appendChild(runBtn);
+    const histBtn = el('button', 'btn btn-ghost small', 'History'); histBtn.type = 'button';
+    histBtn.addEventListener('click', () => openRunsFor(r));
+    actions.appendChild(histBtn);
+    const editBtn = el('button', 'btn btn-ghost small', 'Edit'); editBtn.type = 'button';
+    editBtn.addEventListener('click', () => openScheduledForm(r));
+    actions.appendChild(editBtn);
+    const delBtn = el('button', 'btn btn-ghost small danger', 'Delete'); delBtn.type = 'button';
+    delBtn.addEventListener('click', async () => { if (!confirm('Delete "' + r.name + '"? Its past runs stay in the sidebar.')) return; await api('/routines/' + r.id, { method: 'DELETE' }); loadRoutines(); });
+    actions.appendChild(delBtn);
+    card.appendChild(actions);
+    return card;
+  }
+  const fmtWhen = (ms) => { const d = new Date(ms); const now = Date.now(); const day = Math.abs(d - now) < 86400000 && d.getDate() === new Date(now).getDate(); return (day ? '' : d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ') + d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); };
+  function describeSchedule(s) {
+    if (s.type === 'hourly') return 'Every hour';
+    if (s.type === 'custom') return 'Custom: ' + s.cron;
+    const time = s.time ? new Date(2000, 0, 1, +s.time.split(':')[0], +s.time.split(':')[1]).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '';
+    if (s.type === 'daily') return 'Daily at ' + time;
+    if (s.type === 'weekdays') return 'Weekdays at ' + time;
+    if (s.type === 'weekly') return 'Weekly on ' + ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][Number(s.day) || 0] + ' at ' + time;
+    return s.cron || '';
+  }
+  function schScheduleFields() {
+    const type = $('#sch-sched-type').value;
+    $('#sch-time-row').classList.toggle('hidden', !['daily', 'weekdays', 'weekly'].includes(type));
+    $('#sch-day-row').classList.toggle('hidden', type !== 'weekly');
+    $('#sch-cron-row').classList.toggle('hidden', type !== 'custom');
+  }
+  $('#sch-sched-type').addEventListener('change', schScheduleFields);
+  function openScheduledForm(r) {
+    schEditingId = r ? r.id : null;
+    $('#sch-id').value = r ? r.id : '';
+    $('#sch-name').value = r ? r.name : '';
+    $('#sch-prompt').value = r ? r.prompt : '';
+    $('#sch-folder').value = r ? r.folder : (state.cwd || '');
+    const sel = $('#sch-model'); sel.innerHTML = '';
+    for (const m of MODELS) sel.appendChild(new Option(m.displayName, m.value));
+    sel.value = r && r.model ? r.model : 'default';
+    $('#sch-permission').value = r ? r.permissionMode : 'default';
+    const s = r ? r.schedule : { type: 'daily' };
+    $('#sch-sched-type').value = s.type === 'custom' ? 'custom' : s.type;
+    $('#sch-time').value = s.time || '09:00';
+    $('#sch-day').value = String(s.day ?? 1);
+    $('#sch-cron').value = s.cron || '';
+    schScheduleFields();
+    $('#sch-error').hidden = true;
+    schShowView('edit');
+  }
+  $('#sch-new').addEventListener('click', () => openScheduledForm(null));
+  $('#sch-cancel').addEventListener('click', () => schShowView('list'));
+  $('#sch-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const type = $('#sch-sched-type').value;
+    const schedule = type === 'custom' ? { type, cron: $('#sch-cron').value.trim() }
+      : type === 'weekly' ? { type, time: $('#sch-time').value, day: Number($('#sch-day').value) }
+      : type === 'hourly' ? { type } : { type, time: $('#sch-time').value };
+    const body = { name: $('#sch-name').value.trim(), prompt: $('#sch-prompt').value, folder: $('#sch-folder').value.trim(), model: $('#sch-model').value, permissionMode: $('#sch-permission').value, schedule };
+    $('#sch-error').hidden = true;
+    try {
+      if (schEditingId) await api('/routines/' + schEditingId, { method: 'PUT', body: JSON.stringify(body) });
+      else await api('/routines', { method: 'POST', body: JSON.stringify(body) });
+      schShowView('list'); await loadRoutines();
+    } catch (err) { $('#sch-error').hidden = false; $('#sch-error').textContent = err.message; }
+  });
+  async function openRunsFor(r) {
+    schRunsFor = r; $('#sch-runs-title').textContent = r.name; schShowView('runs');
+    const list = $('#sch-runs-list'); list.innerHTML = '<div class="muted small pad">Loading…</div>';
+    try {
+      const { runs } = await api('/routines/' + r.id + '/runs');
+      list.innerHTML = '';
+      if (!runs.length) { list.appendChild(el('div', 'muted small pad', 'No runs yet.')); return; }
+      for (const run of runs) {
+        const row = el('div', 'sch-card-row');
+        const info = el('div', 'sch-card-info');
+        info.appendChild(el('div', 'sch-card-name', fmtWhen(run.startedAt)));
+        info.appendChild(el('div', 'sch-card-desc', run.status === 'failed' ? 'Failed to start' : run.status === 'missed-at-startup' ? 'Ran at startup (missed while off)' : 'Started'));
+        row.appendChild(info);
+        if (run.sessionId) { const open = el('a', 'btn btn-ghost small', 'Open'); open.href = '#/s/' + run.sessionId; open.addEventListener('click', () => schModal.classList.add('hidden')); row.appendChild(open); }
+        list.appendChild(row);
+      }
+    } catch (e) { list.innerHTML = ''; list.appendChild(el('div', 'note error', e.message)); }
+  }
+  $('#sch-runs-back').addEventListener('click', () => schShowView('list'));
+  $('#scheduled-btn').addEventListener('click', () => openScheduled());
+  $('#sch-close').addEventListener('click', () => schModal.classList.add('hidden'));
+  schModal.addEventListener('click', (e) => { if (e.target === schModal) schModal.classList.add('hidden'); });
+
   // ---------- accounts: this computer's login or a token, switchable any time ----------
   const acctModal = settingsModal;
   let accounts = null;
