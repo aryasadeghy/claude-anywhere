@@ -46,6 +46,7 @@ import * as shell from './lib/shell.mjs';
 import * as claudeCode from './lib/claude-code.mjs';
 import * as access from './lib/access.mjs';
 import * as terminal from './lib/terminal.mjs';
+import * as browser from './lib/browser.mjs';
 import { getAuth, activeAccount, setActive, setToken, clearToken, setProvider, clearProvider, classifyToken, envFor, localSource, verifyEnv, candidateEnv, candidateProviderEnv } from './lib/auth.mjs';
 import { findByName, searchContents, officePreview, writeFileChecked } from './lib/files.mjs';
 
@@ -319,6 +320,20 @@ function writePrefs(p) {
   fs.mkdirSync(path.dirname(PREFS_PATH), { recursive: true });
   fs.writeFileSync(PREFS_PATH, JSON.stringify(p, null, 2));
 }
+
+// ---------- browser ----------
+// The Browser pane's real browser (lib/browser.mjs): a headless Chrome or Edge on this
+// computer, streamed to the pane over /api/browser/ws. It reads project files the way the
+// iframe did, through /files/ with a key of its own, at this server's loopback address -
+// the address the page was loaded from may be a tunnel the browser here cannot reach.
+browser.configure({ dataDir: path.join(DATA_DIR, 'browser'), filesPrefix: `http://${/^(0\.0\.0\.0|::|localhost)$/.test(HOST) ? '127.0.0.1' : HOST.includes(':') ? '[' + HOST + ']' : HOST}:${PORT}/files/`, fileKey: () => previewKeyFor('browser') });
+app.get('/api/browser/status', (_req, res) => res.json({ available: browser.available(), name: browser.browserName(), running: browser.running() }));
+app.get('/api/browser/tabs/:id/screenshot', async (req, res) => {
+  const tab = browser.getTab(req.params.id);
+  if (!tab) return res.status(404).json({ error: 'That tab is closed.' });
+  try { res.json({ dataUrl: 'data:image/jpeg;base64,' + (await browser.screenshot(tab, { quality: 85 })), title: tab.title, url: tab.url }); } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.delete('/api/browser/tabs/:id', async (req, res) => res.json({ ok: await browser.closeTab(req.params.id) }));
 
 // Who a given account ('local' = this computer's `claude login`, 'token' = the pasted
 // token) is, as reported by the CLI itself. Nothing secret leaves this function.
@@ -1967,6 +1982,11 @@ export function startServer({ host = HOST, port = PORT } = {}) {
     const server = app.listen(port, host, () => {
       // Hot reload is a WebSocket, and express never sees an upgrade.
       server.on('upgrade', (req, socket, head) => {
+        if ((req.url || '').split('?')[0] === '/api/browser/ws') {
+          const q = new URL(req.url, 'http://x').searchParams;
+          if ((!access.remoteAllowed() && !access.isLocal(req)) || !knownToken(q.get('token') || '')) return socket.destroy();
+          return browser.handleUpgrade(req, socket, head, { key: q.get('session') || '', tabId: q.get('tab') || '' });
+        }
         if ((req.url || '').split('?')[0] === '/api/terminal/ws') {
           const q = new URL(req.url, 'http://x').searchParams;
           if ((!access.remoteAllowed() && !access.isLocal(req)) || !knownToken(q.get('token') || '')) return socket.destroy();

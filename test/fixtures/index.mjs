@@ -212,6 +212,7 @@ export function makeLongSession(configDir, cwd, { id = 'eeeeeeee-1111-2222-3333-
 // "[ask]" with a question for the person (AskUserQuestion); "[slow]" streams at 150 ms a word;
 // "[write:<path>] <content>" with a real Write tool call - the CLI executes it for real, which is
 // what gives file checkpointing (and so rewind) something genuine to have tracked.
+// "[browse:<url>]" walks the Browser tools: preview_navigate, preview_screenshot, preview_click #btn.
 // "[terminal]" opens a terminal tab (the app's own open_terminal_tab, which runs without asking).
 // `requests` lists what the CLI asked for, `bodies` what it sent.
 export async function startFakeApi({ delay = 15 } = {}) {
@@ -241,7 +242,13 @@ export async function startFakeApi({ delay = 15 } = {}) {
     const toolTag = (said.match(/\[(suggest|chapter|sugtask|status|plan|todo|tasktool)\]/) || [])[1];
     const writeMatch = said.match(/\[write:([^\]]+)\]\s*([\s\S]*)/);
     const opensTerminal = /\[terminal\]/.test(said);
-    const words = afterTool ? (askedBefore ? `Noted: ${toolText.replace(/\s+/g, ' ').slice(0, 160)}` : wroteBefore ? 'Done writing it.' : 'Started it in the background.')
+    // [browse:<url>]: the Browser tools in turn - open the page, look at it, click its #btn - then a word.
+    const msgs = j.messages || [];
+    const hi = msgs.findLastIndex((m) => m.role === 'user' && /\[browse:/.test(userText(m)));
+    const browse = hi >= 0 ? /\[browse:([^\]\s]+)\]/.exec(userText(msgs[hi]))[1] : null;
+    const BROWSE = [['preview_navigate', { url: browse }], ['preview_screenshot', { scale: 0.5 }], ['preview_click', { selector: '#btn' }]];
+    const browseStep = browse ? msgs.slice(hi).filter((m) => m.role === 'assistant' && Array.isArray(m.content)).flatMap((m) => m.content).filter((b) => b.type === 'tool_use' && /preview_/.test(b.name)).length : -1;
+    const words = browse ? (browseStep >= BROWSE.length ? 'Clicked the button.' : null) : afterTool ? (askedBefore ? `Noted: ${toolText.replace(/\s+/g, ' ').slice(0, 160)}` : wroteBefore ? 'Done writing it.' : 'Started it in the background.')
       : /\[background\]/.test(said) || asking || writeMatch || opensTerminal || toolTag ? null
       : /\[math\]/.test(said) ? 'The area under the curve is $\\int_0^1 x\\,dx = \\frac{1}{2}$ and the price is $5 or $10, not a range.\n\n$$E = mc^2$$'
       : /\[secret\]/.test(said) ? 'Found it in .env: ANTHROPIC_API_KEY=sk-ant-api03-fakeFAKEfakeFAKEfakeFAKEfakeFAKEfakeFAKE and a GitHub token ghp_FAKEfakeFAKEfakeFAKEfakeFAKEfake1234.'
@@ -283,8 +290,9 @@ export async function startFakeApi({ delay = 15 } = {}) {
         tasktool: ['TaskCreate', { subject: 'Write the README', description: 'A short one', activeForm: 'Writing the README' }],
       };
       const [tagName, tagInput] = TOOL_TAGS[toolTag] || [];
-      const name = asking ? 'AskUserQuestion' : writeMatch ? 'Write' : opensTerminal ? 'mcp__claude-anywhere__open_terminal_tab' : tagName || 'Bash';
-      const input = JSON.stringify(asking ? { questions: [{ question: 'Which colour should the button be?', header: 'Colour', options: [{ label: 'Red', description: 'Warm' }, { label: 'Blue', description: 'Calm' }], multiSelect: false }] } : writeMatch ? { file_path: writeMatch[1].trim(), content: writeMatch[2] } : opensTerminal ? {} : tagInput || { command: 'sleep 20', description: 'Render the long video', run_in_background: true });
+      const [browseName, browseInput] = browse ? BROWSE[browseStep] : [];
+      const name = browseName ? 'mcp__claude-anywhere__' + browseName : asking ? 'AskUserQuestion' : writeMatch ? 'Write' : opensTerminal ? 'mcp__claude-anywhere__open_terminal_tab' : tagName || 'Bash';
+      const input = JSON.stringify(browseInput ? browseInput : asking ? { questions: [{ question: 'Which colour should the button be?', header: 'Colour', options: [{ label: 'Red', description: 'Warm' }, { label: 'Blue', description: 'Calm' }], multiSelect: false }] } : writeMatch ? { file_path: writeMatch[1].trim(), content: writeMatch[2] } : opensTerminal ? {} : tagInput || { command: 'sleep 20', description: 'Render the long video', run_in_background: true });
       send('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'toolu_fake_' + requests.length, name, input: {} } });
       send('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: input } });
       send('content_block_stop', { type: 'content_block_stop', index: 0 });
