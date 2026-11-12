@@ -62,12 +62,17 @@
 
       <div id="filter-menu" class="menu hidden"></div>
 
-      <a href="#/" class="new-chat">
-        <span class="new-chat-icon">
-          <svg viewBox="0 0 20 20" width="14" height="14"><path d="M10 4v12M4 10h12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
-        </span>
-        New
-      </a>
+      <div class="new-row">
+        <a href="#/" class="new-chat">
+          <span class="new-chat-icon">
+            <svg viewBox="0 0 20 20" width="14" height="14"><path d="M10 4v12M4 10h12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          </span>
+          New
+        </a>
+        <button id="scheduled-btn" class="icon-btn" type="button" title="Scheduled tasks" aria-label="Scheduled tasks">
+          <svg viewBox="0 0 20 20" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="10" cy="10.5" r="7"/><path d="M10 7v3.5l2.4 1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M7 2.3h6" stroke-linecap="round"/></svg>
+        </button>
+      </div>
 
       <div class="sidebar-section">
         <div class="sidebar-search">
@@ -111,12 +116,34 @@
           <button id="topbar-computer" class="chat-meta computer-chip hidden" type="button" title="Switch computer"></button>
           <div id="chat-title" class="chat-title">New session</div>
           <div id="chat-meta" class="chat-meta"></div>
+          <!-- The step a plan is on while Claude works; clicking it jumps to the plan box at the end of the thread. -->
+          <button id="plan-step-chip" class="plan-step-chip hidden" type="button"></button>
         </div>
         <div class="topbar-right">
           <span id="live-pill" class="pill hidden"><span class="dot"></span><span id="live-text">Working</span></span>
           <button id="pin-btn" class="icon-btn hidden" aria-label="Pin this chat" title="Pin">
             <svg viewBox="0 0 20 20" width="17" height="17"><path d="M12.5 2.5l5 5-2.2.7-3.1 3.1.4 3.6-1.4 1.4L8 13.1l-4.6 4.6-.7-.7L7.3 12.4 4.1 9.2l1.4-1.4 3.6.4 3.1-3.1z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
           </button>
+          <!-- Desktop's row of pane toggles in the title bar: rail, terminal, changes, browser,
+               files, then the same ⋮ menu for everything else. Desktop-width only; a phone
+               reaches these panes through the session menu instead (no room for six icons). -->
+          <div id="pane-btns" class="pane-btns hidden">
+            <button id="pane-rail-btn" class="icon-btn" aria-label="Show session rail" title="Show session rail">
+              <svg viewBox="0 0 20 20" width="17" height="17"><rect x="2.5" y="3.5" width="15" height="13" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M13 3.5v13" stroke="currentColor" stroke-width="1.5"/></svg>
+            </button>
+            <button id="pane-terminal-btn" class="icon-btn" aria-label="Terminal" title="Terminal">
+              <svg viewBox="0 0 20 20" width="17" height="17"><rect x="2.5" y="3.5" width="15" height="13" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M5.5 8l3 2.3-3 2.3M10.5 13h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <button id="pane-changes-btn" class="icon-btn" aria-label="Changes" title="Changes">
+              <svg viewBox="0 0 20 20" width="17" height="17"><circle cx="6" cy="5" r="2" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="6" cy="15" r="2" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="14" cy="8" r="2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M6 7v6M14 10c0 3-8 1-8 3" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>
+            </button>
+            <button id="pane-browser-btn" class="icon-btn" aria-label="Browser" title="Browser">
+              <svg viewBox="0 0 20 20" width="17" height="17"><circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M3 10h14M10 3a11 11 0 0 1 0 14M10 3a11 11 0 0 0 0 14" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
+            </button>
+            <button id="pane-files-btn" class="icon-btn" aria-label="Files" title="Files">
+              <svg viewBox="0 0 20 20" width="17" height="17"><path d="M3 5.5A1.5 1.5 0 0 1 4.5 4h3.2l1.6 1.8h6.2A1.5 1.5 0 0 1 17 7.3v7.2a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 3 14.5z" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>
+            </button>
+          </div>
           <div class="composer-left">
             <button id="session-menu-btn" class="icon-btn hidden" aria-label="Session menu" title="More">
               <svg viewBox="0 0 20 20" width="18" height="18"><circle cx="10" cy="4.5" r="1.6" fill="currentColor"/><circle cx="10" cy="10" r="1.6" fill="currentColor"/><circle cx="10" cy="15.5" r="1.6" fill="currentColor"/></svg>
@@ -183,11 +210,6 @@
           <span class="sb-spacer"></span>
           <span class="tb-open">Show</span>
         </button>
-        <!-- Claude's plan while it works (TodoWrite, or TaskCreate/TaskUpdate), above the composer. -->
-        <details id="plan-box" class="plan-box hidden">
-          <summary><span class="spark">✱</span><span id="plan-box-title">Claude's plan</span><span id="plan-box-count" class="muted"></span></summary>
-          <ul id="plan-box-list" class="todo-checklist"></ul>
-        </details>
         <div id="update-banner" class="limit-banner update-banner hidden">
           <svg viewBox="0 0 20 20" width="15" height="15"><path d="M10 3v9M6 8l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 15h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
           <span id="ub-text">A new version is ready</span>
@@ -222,14 +244,6 @@
                 <div id="attach-menu" class="menu hidden"></div>
               </div>
               <input id="file-input" type="file" multiple accept="image/*,.pdf,.txt,.md,.csv,.json,.log,.zip,video/*,audio/*" hidden />
-              <div class="composer-left">
-                <button id="mode-btn" class="chip" type="button" title="Permission mode">
-                  <svg viewBox="0 0 20 20" width="14" height="14"><path d="M10 2.5l6 2.2v4.6c0 3.6-2.5 6.6-6 8.2-3.5-1.6-6-4.6-6-8.2V4.7z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>
-                  <span id="mode-name">Default</span>
-                  <svg class="chev" viewBox="0 0 20 20" width="12" height="12"><path d="M5 8l5 5 5-5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
-                </button>
-                <div id="mode-menu" class="menu hidden"></div>
-              </div>
               <button id="project-btn" class="chip" type="button" title="Folder Claude Code will work in">
                 <svg viewBox="0 0 20 20" width="14" height="14"><path d="M3 5.5A1.5 1.5 0 0 1 4.5 4h3.2l1.6 1.8h6.2A1.5 1.5 0 0 1 17 7.3v7.2a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 3 14.5z" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>
                 <span id="project-name">Pick a folder</span>
@@ -238,40 +252,6 @@
               <div id="project-menu" class="menu hidden"></div>
             </div>
             <div class="composer-right">
-              <div class="composer-left">
-                <button id="model-btn" class="chip" type="button" title="Model"><span id="model-label">Claude Fable 5.1</span><svg class="chev" viewBox="0 0 20 20" width="12" height="12"><path d="M5 8l5 5 5-5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
-                <div id="model-menu" class="menu menu-end hidden"></div>
-              </div>
-              <!-- Effort sits beside the model, as it does in Claude: its own chip, and a
-                   slider from Faster to Smarter rather than five buttons in a menu. -->
-              <div class="composer-left">
-                <button id="effort-btn" class="chip effort-chip hidden" type="button" title="Effort"><span id="effort-label">High</span></button>
-                <div id="effort-pop" class="menu menu-end effort-pop hidden">
-                  <div class="ef-head">
-                    <span class="ef-what">Effort</span>
-                    <span id="ef-level" class="ef-level">High</span>
-                    <button id="ef-help" class="ef-help" type="button" aria-label="What effort does">?</button>
-                  </div>
-                  <div class="ef-ends"><span>Faster</span><span>Smarter</span></div>
-                  <div id="ef-track" class="ef-track" role="slider" tabindex="0" aria-label="Effort" aria-valuemin="1" aria-valuenow="3" aria-valuemax="5">
-                    <div id="ef-fill" class="ef-fill"></div>
-                    <div id="ef-dots" class="ef-dots"></div>
-                    <div id="ef-knob" class="ef-knob"></div>
-                  </div>
-                  <p id="ef-note" class="ef-note"></p>
-                </div>
-              </div>
-              <div class="composer-left">
-                <button id="usage-btn" class="usage-ring hidden" type="button" title="Context window"><i></i></button>
-                <div id="usage-pop" class="menu menu-end usage-pop hidden">
-                  <div class="uc-head"><span>Context window</span><span class="uc-value">…</span></div>
-                  <div class="uc-bar"><i></i></div>
-                  <div class="uc-foot"><span class="muted">Compacts automatically at 97%</span><button id="usage-compact" class="link-btn" type="button">Compact session</button></div>
-                  <div class="menu-sep"></div>
-                  <div class="ul-title">Plan usage limits</div>
-                  <div class="ul-list"></div>
-                </div>
-              </div>
               <button id="dictate-btn" class="chip icon-only hidden" type="button" title="Dictation" aria-label="Dictation">
                 <svg viewBox="0 0 20 20" width="16" height="16"><rect x="7.5" y="2.5" width="5" height="9" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M4.5 10a5.5 5.5 0 0 0 11 0M10 15.5v2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
               </button>
@@ -282,9 +262,66 @@
             </div>
           </div>
         </div>
+        <!-- Desktop's row under the box: permission mode, model + effort as one menu, the
+             context ring. The + and the microphone stay inside the box above. -->
+        <div class="composer-footrow" id="composer-footrow">
+          <div class="composer-left">
+            <button id="mode-btn" class="chip" type="button" title="Permission mode">
+              <svg viewBox="0 0 20 20" width="14" height="14"><path d="M10 2.5l6 2.2v4.6c0 3.6-2.5 6.6-6 8.2-3.5-1.6-6-4.6-6-8.2V4.7z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>
+              <span id="mode-name">Default</span>
+              <svg class="chev" viewBox="0 0 20 20" width="12" height="12"><path d="M5 8l5 5 5-5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+            </button>
+            <div id="mode-menu" class="menu hidden"></div>
+          </div>
+          <!-- One chip, one menu: the model list, then (when the model takes levels) the
+               effort slider below it - Desktop shows them as a single control, not two. -->
+          <div class="composer-left">
+            <button id="model-btn" class="chip" type="button" title="Model and effort"><span id="model-label">Claude Fable 5.1</span><svg class="chev" viewBox="0 0 20 20" width="12" height="12"><path d="M5 8l5 5 5-5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+            <div id="modeleffort-menu" class="menu menu-end hidden">
+              <div id="model-menu"></div>
+              <div id="effort-pop" class="effort-pop hidden">
+                <div class="menu-sep"></div>
+                <div class="ef-head">
+                  <span class="ef-what">Effort</span>
+                  <span id="ef-level" class="ef-level">High</span>
+                  <button id="ef-help" class="ef-help" type="button" aria-label="What effort does">?</button>
+                </div>
+                <div class="ef-ends"><span>Faster</span><span>Smarter</span></div>
+                <div id="ef-track" class="ef-track" role="slider" tabindex="0" aria-label="Effort" aria-valuemin="1" aria-valuenow="3" aria-valuemax="5">
+                  <div id="ef-fill" class="ef-fill"></div>
+                  <div id="ef-dots" class="ef-dots"></div>
+                  <div id="ef-knob" class="ef-knob"></div>
+                </div>
+                <p id="ef-note" class="ef-note"></p>
+              </div>
+            </div>
+          </div>
+          <div class="composer-left">
+            <button id="usage-btn" class="usage-ring hidden" type="button" title="Context window"><i></i></button>
+            <div id="usage-pop" class="menu menu-end usage-pop hidden">
+              <div class="uc-head"><span>Context window</span><span class="uc-value">…</span></div>
+              <div class="uc-bar"><i></i></div>
+              <div class="uc-foot"><span class="muted">Compacts automatically at 97%</span><button id="usage-compact" class="link-btn" type="button">Compact session</button></div>
+              <div class="menu-sep"></div>
+              <div class="ul-title">Plan usage limits</div>
+              <div class="ul-list"></div>
+            </div>
+          </div>
+        </div>
         <div class="composer-foot">Claude can make mistakes. Tools run on <span id="foot-host">your computer</span>.</div>
       </div>
     </main>
+
+    <!-- A second session beside the current one (session menu "Open in split view", or
+         Alt+click a sidebar session): the app's own page again, embedded, at that session. -->
+    <div id="split-pane" class="split-pane hidden">
+      <div class="tp-head">
+        <span id="split-title" class="tp-title">Session</span>
+        <span class="sb-spacer"></span>
+        <button id="split-close" class="icon-btn small" type="button" title="Close split view" aria-label="Close split view"><svg viewBox="0 0 20 20" width="15" height="15"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+      </div>
+      <iframe id="split-frame" class="split-frame" title="Split session"></iframe>
+    </div>
 
     <!-- Native app only: this window has no Windows frame, so the page draws the controls. -->
     <div id="win-controls" class="win-controls" aria-label="Window controls">
@@ -303,6 +340,7 @@
         <button id="pv-new" class="icon-btn small" type="button" title="New tab" aria-label="New tab"><svg viewBox="0 0 20 20" width="15" height="15"><path d="M10 4.5v11M4.5 10h11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
         <span class="sb-spacer"></span>
         <button id="pv-open" class="icon-btn small" type="button" title="Open in your browser"><svg viewBox="0 0 20 20" width="15" height="15"><path d="M8 4H5.5A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16h9a1.5 1.5 0 0 0 1.5-1.5V12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M11 4h5v5M16 4l-7 7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <button id="pv-min" class="icon-btn small" type="button" title="Minimize" aria-label="Minimize"><svg viewBox="0 0 20 20" width="15" height="15"><path d="M4 14h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
         <button id="pv-close" class="icon-btn small" type="button" title="Close"><svg viewBox="0 0 20 20" width="15" height="15"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
       </div>
       <!-- A browser's bar: back, forward, reload, home, then the address itself -->
@@ -318,6 +356,9 @@
           </button>
           <div id="pv-port-menu" class="menu menu-top menu-end pv-menu hidden"></div>
         </div>
+        <button id="pv-device" class="icon-btn small rv-only" type="button" title="Phone size" aria-label="Phone size" aria-pressed="false"><svg viewBox="0 0 20 20" width="15" height="15"><rect x="6" y="2.5" width="8" height="15" rx="1.8" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M9 15h2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+        <button id="pv-capture" class="icon-btn small rv-only" type="button" title="Capture screenshot" aria-label="Capture screenshot"><svg viewBox="0 0 20 20" width="15" height="15"><path d="M3.5 7.5A1.5 1.5 0 0 1 5 6h1.8l1.2-1.8h4l1.2 1.8H15a1.5 1.5 0 0 1 1.5 1.5v7A1.5 1.5 0 0 1 15 16H5a1.5 1.5 0 0 1-1.5-1.5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><circle cx="10" cy="10.8" r="2.7" fill="none" stroke="currentColor" stroke-width="1.4"/></svg></button>
+        <button id="pv-kbd" class="icon-btn small rv-only rv-touch" type="button" title="Keyboard" aria-label="Keyboard"><svg viewBox="0 0 20 20" width="15" height="15"><rect x="2.5" y="5" width="15" height="10" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5.5 8h1M8.5 8h1M11.5 8h1M14 8h.5M5.5 10.5h1M8.5 10.5h3M13.5 10.5h1M7 12.8h6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></button>
       </div>
       <div id="pv-note" class="pv-note muted small hidden"></div>
       <!-- One frame per tab, kept while another is in front -->
@@ -401,10 +442,42 @@
         <button id="term-close" class="icon-btn small" type="button" title="Close"><svg viewBox="0 0 20 20" width="15" height="15"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
       </div>
       <div id="term-stage" class="term-stage"></div>
-      <!-- Minimized: a thin strip, the running dot still visible, click to restore -->
-      <button id="term-pill" class="term-pill hidden" type="button" title="Terminal"><span class="term-pill-dot"></span>Terminal</button>
+    </aside>
+
+    <!-- The session rail: Desktop's column to the right of the conversation (desktop widths
+         only - a phone reaches these cards from the session menu as a sheet instead). -->
+    <aside id="rail" class="tasks-panel rail-panel hidden" aria-label="Session rail">
+      <div class="tp-head">
+        <span class="tp-title">Session</span>
+        <span class="sb-spacer"></span>
+        <button id="rail-close" class="icon-btn small" type="button" title="Hide session rail" aria-label="Hide session rail"><svg viewBox="0 0 20 20" width="15" height="15"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+      </div>
+      <!-- A minimized Terminal or Browser docks here instead of floating, while the rail is shown. -->
+      <div id="rail-dock" class="rail-dock hidden"></div>
+      <div id="rail-cards" class="rail-cards tp-list"></div>
+    </aside>
+
+    <!-- /btw: a side chat beside the session, one tab per question, forked off this session's
+         context (lib/sessions-net.mjs) and never added to the main thread. -->
+    <aside id="btw-panel" class="tasks-panel btw-panel hidden" aria-label="Side chat">
+      <div class="tp-head">
+        <div id="btw-tabs" class="pv-tabs" role="tablist" aria-label="Side chat tabs"></div>
+        <span class="sb-spacer"></span>
+        <button id="btw-close" class="icon-btn small" type="button" title="Close"><svg viewBox="0 0 20 20" width="15" height="15"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+      </div>
+      <div id="btw-stage" class="btw-stage"></div>
     </aside>
   </div>
+
+  <!-- A minimized Terminal or Browser, while the rail is not shown: a small live view that
+       can be dragged and resized, with Expand and Close of its own. -->
+  <div id="mini-host" class="mini-host"></div>
+
+  <!-- Right-click a rail card's header (long-press on touch) to choose which cards show -->
+  <div id="rail-card-menu" class="menu hidden"></div>
+  <!-- The Changes card's PR button opens the same renderPrMenu content here, positioned on
+       the card instead of the session bar's own chip. -->
+  <div id="rail-pr-menu" class="menu pr-pop hidden"></div>
 
   <!-- Connectors (MCP servers) and plugins -->
 
@@ -471,6 +544,82 @@
     </div>
   </div>
 
+  <!-- Scheduled tasks ("routines"): Claude running itself on a schedule, each run a normal
+       session. The list and the create/edit dialog share one modal, like Open folder above. -->
+  <div id="scheduled-modal" class="modal hidden">
+    <div class="modal-card sch-card">
+      <div class="modal-head"><span>Scheduled</span><button id="sch-close" class="icon-btn" aria-label="Close"><svg viewBox="0 0 20 20" width="16" height="16"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div>
+      <div id="sch-list-view">
+        <div class="sch-toolbar"><button id="sch-new" class="btn btn-primary" type="button">New scheduled task</button></div>
+        <div id="sch-list" class="sch-list"><div class="muted small pad">Loading…</div></div>
+      </div>
+      <div id="sch-edit-view" class="hidden">
+        <form id="sch-form" class="sch-form">
+          <input id="sch-id" type="hidden" />
+          <label class="sch-field">Name<input id="sch-name" type="text" required placeholder="Morning standup notes" /></label>
+          <label class="sch-field">Prompt<textarea id="sch-prompt" rows="3" required placeholder="What should Claude do each run?"></textarea></label>
+          <label class="sch-field">Folder<input id="sch-folder" type="text" required placeholder="C:\path\to\project" /></label>
+          <label class="sch-field">Model<select id="sch-model"></select></label>
+          <label class="sch-field">Permission mode
+            <select id="sch-permission">
+              <option value="default">Ask as normal</option>
+              <option value="acceptEdits">Accept edits</option>
+              <option value="plan">Plan first</option>
+              <option value="bypassPermissions">Bypass permissions</option>
+            </select>
+          </label>
+          <div class="sch-field">
+            <span>Schedule</span>
+            <select id="sch-sched-type">
+              <option value="hourly">Hourly</option>
+              <option value="daily">Daily at</option>
+              <option value="weekdays">Weekdays at</option>
+              <option value="weekly">Weekly on</option>
+              <option value="custom">Custom cron expression</option>
+            </select>
+          </div>
+          <label class="sch-field hidden" id="sch-time-row">Time<input id="sch-time" type="time" value="09:00" /></label>
+          <label class="sch-field hidden" id="sch-day-row">Day
+            <select id="sch-day">
+              <option value="0">Sunday</option><option value="1">Monday</option><option value="2">Tuesday</option>
+              <option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option>
+            </select>
+          </label>
+          <label class="sch-field hidden" id="sch-cron-row">Cron expression<input id="sch-cron" type="text" placeholder="0 9 * * *" /></label>
+          <p id="sch-error" class="login-error" hidden></p>
+          <div class="sch-foot">
+            <button id="sch-cancel" class="btn btn-ghost" type="button">Cancel</button>
+            <button id="sch-save" class="btn btn-primary" type="submit">Save</button>
+          </div>
+        </form>
+      </div>
+      <div id="sch-runs-view" class="hidden">
+        <div class="sch-toolbar"><button id="sch-runs-back" class="btn btn-ghost" type="button">&larr; Back</button><span id="sch-runs-title" class="sch-runs-title"></span></div>
+        <div id="sch-runs-list" class="sch-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Save as environment: a folder plus a worktree/branch preference and environment
+       variables, saved from an open session and offered again for a new one. -->
+  <div id="env-modal" class="modal hidden">
+    <div class="modal-card env-card">
+      <div class="modal-head"><span>Save as environment</span><button id="env-close" class="icon-btn" aria-label="Close"><svg viewBox="0 0 20 20" width="16" height="16"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div>
+      <form id="env-form" class="sch-form">
+        <label class="sch-field">Name<input id="env-name" type="text" required /></label>
+        <label class="sch-field">Folder<input id="env-folder" type="text" readonly /></label>
+        <label class="sch-field"><span><input id="env-worktree-on" type="checkbox" /> Start a fresh worktree branch each time</span></label>
+        <label class="sch-field hidden" id="env-branch-row">Branch name (optional, a name is made up if left blank)<input id="env-branch" type="text" /></label>
+        <label class="sch-field">Environment variables<textarea id="env-vars" rows="4" placeholder="ONE_KEY=value&#10;ANOTHER_KEY=value"></textarea></label>
+        <p id="env-error" class="login-error" hidden></p>
+        <div class="sch-foot">
+          <button id="env-cancel" class="btn btn-ghost" type="button">Cancel</button>
+          <button class="btn btn-primary" type="submit">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <!-- Account chooser: this computer's login, or a token; switch any time -->
 
   <!-- Which computer this window is showing. Its sessions, files and account are the ones you see. -->
@@ -521,6 +670,18 @@
             <div class="set-info"><div class="set-name">Classify sessions automatically</div><div class="set-desc">Allow Claude to automatically classify sessions as blocked, ready for review, or done.</div></div>
             <div id="set-auto-classify"></div>
           </div>
+          <div class="set-row">
+            <div class="set-info"><div class="set-name">Summary and next steps</div><div class="set-desc">Show Claude’s short summary and suggested next steps after Claude finishes.</div></div>
+            <div id="set-show-recap"></div>
+          </div>
+          <div class="set-row">
+            <div class="set-info"><div class="set-name">Default output style</div><div class="set-desc">What a new session starts with, unless it says otherwise.</div></div>
+            <select id="set-output-style"></select>
+          </div>
+          <div class="set-row env-list-row">
+            <div class="set-info"><div class="set-name">Saved environments</div><div class="set-desc">Folders with their own worktree preference and variables, saved from a session's menu.</div></div>
+          </div>
+          <div id="set-environments" class="ct-list"></div>
         </section>
 
         <section class="set-pane" data-pane="account">
@@ -654,8 +815,10 @@
         </section>
 
         <section class="set-pane" data-pane="connectors">
-          <h3 class="set-title">Connectors &amp; plugins <button id="connectors-refresh" class="link-btn small" type="button">Refresh</button></h3>
-          <p class="modal-hint">MCP servers from this computer's Claude Code config (user, project and <code>.mcp.json</code>). Switching one off applies to the next turn, or right away in a running one.</p>
+          <h3 class="set-title">Customize <button id="connectors-refresh" class="link-btn small" type="button">Refresh</button></h3>
+          <p class="modal-hint">This session's skills, plugins and connectors (user, project and <code>.mcp.json</code>). Switching a connector or plugin off applies to the next turn, or right away in a running one; skills have no switch of their own, so this list is for reading only.</p>
+      <div class="ct-title">Skills</div>
+      <div id="skills-list" class="ct-list"></div>
       <div class="ct-title">Connectors</div>
       <div id="connectors-list" class="ct-list"><div class="muted small pad">Loading…</div></div>
       <div class="ct-title">Plugins</div>

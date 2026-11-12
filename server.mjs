@@ -23,6 +23,8 @@ import { listSessions, getSessionMessages, getSessionInfo, renameSession, forkSe
 import { runs, pendingPermissions, isLive, isBusy, startRun, answerPermission, bus, contextBySession, lastLimits, ensureLive } from './lib/runs.mjs';
 import { historyPage, historyImage, searchSession } from './lib/history.mjs';
 import { readConvSettings, writeConvSettings } from './lib/conv-settings.mjs';
+import * as net from './lib/sessions-net.mjs';
+import { answerElicit } from './lib/tools-sessions.mjs';
 import * as runsMod from './lib/runs.mjs';
 import * as limitQueue from './lib/limit-queue.mjs';
 import * as rewindStore from './lib/rewind.mjs';
@@ -38,6 +40,9 @@ import * as pr from './lib/pr.mjs';
 import * as gitActions from './lib/git-actions.mjs';
 import * as autofix from './lib/autofix.mjs';
 import * as awake from './lib/awake.mjs';
+import * as routines from './lib/routines.mjs';
+import * as outputStyles from './lib/output-styles.mjs';
+import * as environments from './lib/environments.mjs';
 import * as update from './lib/update.mjs';
 import * as models from './lib/models.mjs';
 import * as commandsMod from './lib/commands.mjs';
@@ -46,8 +51,10 @@ import * as shell from './lib/shell.mjs';
 import * as claudeCode from './lib/claude-code.mjs';
 import * as access from './lib/access.mjs';
 import * as terminal from './lib/terminal.mjs';
+import * as browser from './lib/browser.mjs';
 import { getAuth, activeAccount, setActive, setToken, clearToken, setProvider, clearProvider, classifyToken, envFor, localSource, verifyEnv, candidateEnv, candidateProviderEnv } from './lib/auth.mjs';
 import { findByName, searchContents, officePreview, writeFileChecked } from './lib/files.mjs';
+import { sessionOutputs } from './lib/outputs.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -320,6 +327,20 @@ function writePrefs(p) {
   fs.writeFileSync(PREFS_PATH, JSON.stringify(p, null, 2));
 }
 
+// ---------- browser ----------
+// The Browser pane's real browser (lib/browser.mjs): a headless Chrome or Edge on this
+// computer, streamed to the pane over /api/browser/ws. It reads project files the way the
+// iframe did, through /files/ with a key of its own, at this server's loopback address -
+// the address the page was loaded from may be a tunnel the browser here cannot reach.
+browser.configure({ dataDir: path.join(DATA_DIR, 'browser'), filesPrefix: `http://${/^(0\.0\.0\.0|::|localhost)$/.test(HOST) ? '127.0.0.1' : HOST.includes(':') ? '[' + HOST + ']' : HOST}:${PORT}/files/`, fileKey: () => previewKeyFor('browser') });
+app.get('/api/browser/status', (_req, res) => res.json({ available: browser.available(), name: browser.browserName(), running: browser.running() }));
+app.get('/api/browser/tabs/:id/screenshot', async (req, res) => {
+  const tab = browser.getTab(req.params.id);
+  if (!tab) return res.status(404).json({ error: 'That tab is closed.' });
+  try { res.json({ dataUrl: 'data:image/jpeg;base64,' + (await browser.screenshot(tab, { quality: 85 })), title: tab.title, url: tab.url }); } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.delete('/api/browser/tabs/:id', async (req, res) => res.json({ ok: await browser.closeTab(req.params.id) }));
+
 // Who a given account ('local' = this computer's `claude login`, 'token' = the pasted
 // token) is, as reported by the CLI itself. Nothing secret leaves this function.
 const whoCache = new Map(); // which -> { at, value }
@@ -406,9 +427,14 @@ const shape = (s, pinned) => ({
   pinned: !!pinned?.has(s.sessionId),
   tag: s.tag || '',
   archived: s.tag === 'archived',
+  routine: routines.nameForSession(s.sessionId) || null, // "started by this scheduled task", for the sidebar
   context: contextBySession.get(s.sessionId) || null,
   // Set by Claude's own SetSessionStatus tool (lib/tools-conversation.mjs), shown as a sidebar badge.
   status: readConvSettings().status[s.sessionId] || null,
+  // A nested session (start_session) nests under its parent in the sidebar; "received" is the
+  // "Received N messages" fold a parent shows once a child's answers land (lib/sessions-net.mjs).
+  parentId: net.linkFor(s.sessionId)?.parentId || null,
+  received: net.noteReceived(s.sessionId, 0),
 });
 
 // ---------- composer: "/" commands, "@" file mentions, "!" shell commands ----------
@@ -489,6 +515,59 @@ app.post('/api/sessions/:id/archive', async (req, res, next) => {
     res.json({ ok: true, archived });
   } catch (e) { next(e); }
 });
+// ---------- sessions ----------
+// A nested session's final answer each turn is handed back into the session that started it -
+// through the same fold/start path the composer uses (lib/sessions-net.mjs's sendMessage), so a
+// parent resting between turns gets fed properly and one another window has since moved past is
+// never written into. `turn_done` only carries the first 200 chars; that is plenty for a relay line.
+bus.on('turn_done', ({ sessionId, text, isError }) => {
+  const link = net.linkFor(sessionId);
+  if (!link || link.dismissed || isError) return;
+  net.sendMessage(link.parentId, `[from "${link.title || 'nested session'}"] ${text}`).then(() => {
+    net.noteReceived(link.parentId, 1);
+    const parentRun = runs.get(link.parentId);
+    if (parentRun) parentRun.push({ t: 'session_received', childId: sessionId, count: net.noteReceived(link.parentId, 0) });
+  }).catch(() => {}); // the parent may itself be gone (deleted, trashed) - nothing to deliver into
+});
+
+app.get('/api/sessions/:id/children', (req, res) => {
+  res.json({ children: net.childrenOf(req.params.id).filter((c) => !c.dismissed), parent: net.linkFor(req.params.id) });
+});
+app.post('/api/sessions/:id/children/:childId/dismiss', (req, res) => res.json({ ok: net.dismiss(req.params.childId) }));
+app.get('/api/sessions/:id/received', (req, res) => res.json({ count: net.noteReceived(req.params.id, 0) }));
+app.post('/api/sessions/:id/received/clear', (req, res) => { net.clearReceived(req.params.id); res.json({ ok: true }); });
+
+// The sidebar's own sections (independent of Claude Code's folders/projects) and its "Group and
+// sort" menu state - one small store so the phone and the desktop agree (lib/sessions-net.mjs).
+app.get('/api/sidebar/sections', (req, res) => res.json({ sections: net.listSections() }));
+app.post('/api/sidebar/sections', (req, res) => res.json(net.createSection(String(req.body?.name || '').slice(0, 80))));
+app.post('/api/sidebar/sections/:id/rename', (req, res) => res.json({ ok: net.renameSection(req.params.id, String(req.body?.name || '').slice(0, 80)) }));
+app.delete('/api/sidebar/sections/:id', (req, res) => res.json({ ok: net.deleteSection(req.params.id) }));
+app.post('/api/sidebar/sections/:id/move', (req, res) => res.json({ ok: net.moveToSection(String(req.body?.sessionId || ''), req.params.id) }));
+app.post('/api/sidebar/move-out', (req, res) => res.json({ ok: net.moveToSection(String(req.body?.sessionId || ''), null) }));
+app.get('/api/sidebar/prefs', (req, res) => res.json(net.getSidebarPrefs()));
+app.post('/api/sidebar/prefs', (req, res) => res.json(net.setSidebarPrefs(req.body || {})));
+
+// /btw: a side chat forked from this session (hidden - never in /api/sessions), one per question,
+// answering with this session's context without the main thread ever seeing it.
+app.get('/api/sessions/:id/side-chats', (req, res) => res.json({ tabs: net.sideChatsOf(req.params.id) }));
+app.post('/api/sessions/:id/side-chats', async (req, res, next) => {
+  try {
+    const text = String(req.body?.text || '').trim();
+    if (!text) return res.status(400).json({ error: 'Empty question' });
+    res.json(await net.openSideChat(req.params.id, text));
+  } catch (e) { next(e); }
+});
+app.delete('/api/sessions/:id/side-chats/:sideId', async (req, res, next) => {
+  try { res.json({ ok: await net.closeSideChat(req.params.sideId) }); } catch (e) { next(e); }
+});
+
+// present_options / request_secret (lib/tools-sessions.mjs): the person's click or typed value
+// comes back over this one route regardless of which tool is waiting on it.
+app.post('/api/elicit/:reqId', (req, res) => {
+  res.json({ ok: answerElicit(req.params.reqId, req.body?.value ?? null) });
+});
+
 // ---------- deleting a session puts it aside, it does not destroy it ----------
 // Sessions are the only thing here that cannot be made again, and deleting several
 // at once is one confirm away. So the transcript is moved to a trash folder and can
@@ -852,13 +931,14 @@ app.delete('/api/sessions/:id/chapters/:uuid', (req, res) => {
 
 // The app-wide switches: the default Transcript view for a newly opened session, and whether
 // Claude's SetSessionStatus tool exists at all (lib/tools-conversation.mjs reads it per turn).
-app.get('/api/conversation/settings', (_req, res) => { const { transcriptView, autoClassify } = readConvSettings(); res.json({ transcriptView, autoClassify }); });
+app.get('/api/conversation/settings', (_req, res) => { const { transcriptView, autoClassify, showRecap } = readConvSettings(); res.json({ transcriptView, autoClassify, showRecap }); });
 app.post('/api/conversation/settings', (req, res) => {
   const s = readConvSettings();
   if (req.body?.transcriptView && ['normal', 'thinking', 'verbose'].includes(req.body.transcriptView)) s.transcriptView = req.body.transcriptView;
   if (req.body?.autoClassify !== undefined) s.autoClassify = !!req.body.autoClassify;
+  if (req.body?.showRecap !== undefined) s.showRecap = !!req.body.showRecap;
   writeConvSettings(s);
-  res.json({ transcriptView: s.transcriptView, autoClassify: s.autoClassify });
+  res.json({ transcriptView: s.transcriptView, autoClassify: s.autoClassify, showRecap: s.showRecap });
 });
 
 // Text anywhere in one session's own transcript (not every session - that is /api/search):
@@ -1003,6 +1083,28 @@ app.post('/api/sessions/:id/pr/auto-merge', async (req, res) => {
     res.json(await pr.cached(cwd));
   } catch (e) { res.status(500).json({ error: worktrees.cliError(e) }); }
 });
+
+// ---------- layout: session rail (context breakdown, outputs, connector reconnect) ----------
+// The rail's Context card wants the per-category breakdown the composer's usage ring does
+// not: that one keeps only the summary refreshUsage() left on contextBySession (lib/runs.mjs).
+// Live, ask the running process directly; resting or gone, fall back to the summary so the
+// card still shows a number, just not the breakdown.
+app.get('/api/sessions/:id/context', async (req, res) => {
+  const run = runs.get(req.params.id);
+  if (run && !run.done && run.query) {
+    try { return res.json(await run.query.getContextUsage({ detail: 'full' })); } catch {}
+  }
+  const c = contextBySession.get(req.params.id);
+  res.json(c ? { categories: [], totalTokens: c.totalTokens, maxTokens: c.maxTokens, rawMaxTokens: c.maxTokens, summaryOnly: true } : { categories: [], totalTokens: 0, maxTokens: 0, rawMaxTokens: 0 });
+});
+// Connectors: reconnect-by-name is the rail's, toggling is already /api/connectors/:name.
+app.post('/api/sessions/:id/mcp/:name/reconnect', async (req, res) => {
+  const run = runs.get(req.params.id);
+  if (!run || run.done || !run.query) return res.status(400).json({ error: "This session has no live Claude Code to reconnect it in." });
+  try { await run.query.reconnectMcpServer(req.params.name); res.json({ ok: true }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.get('/api/sessions/:id/outputs', (req, res) => res.json({ outputs: sessionOutputs(req.params.id) }));
 
 // ---------- Files pane: fuzzy find, content search, write, Office previews, live refresh ----------
 // Every route here takes a path inside a folder some session has worked in (insideProjectRoots),
@@ -1160,6 +1262,25 @@ function listConnectors(cwd) {
   out.push({ name: 'claude-anywhere', scope: 'built-in', type: 'in-process', target: 'SendUserFile — shows files in this chat', enabled: true, builtin: true });
   return out;
 }
+// Skills (Customize page): no on/off switch per skill exists in Claude Code's settings - they
+// are turned on by being present, project or user-wide (options.skills, not a settings key) -
+// so this list is read-only, same reasoning as the Session Info panel's skill count.
+function listSkills(cwd) {
+  const out = [];
+  const scan = (dir, source) => {
+    let names; try { names = fs.readdirSync(dir); } catch { return; }
+    for (const name of names) {
+      const md = path.join(dir, name, 'SKILL.md');
+      let text; try { text = fs.readFileSync(md, 'utf8'); } catch { continue; }
+      const fm = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)?.[1] || '';
+      const field = (k) => new RegExp(`^${k}:\\s*(.+)$`, 'm').exec(fm)?.[1]?.trim().replace(/^["']|["']$/g, '') || '';
+      out.push({ name: field('name') || name, source, description: field('description') || '' });
+    }
+  };
+  if (cwd) scan(path.join(cwd, '.claude', 'skills'), 'project');
+  scan(path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'skills'), 'user');
+  return out;
+}
 function listPlugins() {
   const settings = readJson(path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'settings.json')) || {};
   const enabled = settings.enabledPlugins || {};
@@ -1178,6 +1299,17 @@ claudeCode.useDir(path.join(DATA_DIR, 'claude-code')); // first: asking for the 
 models.useCache(DATA_DIR);
 limitQueue.init(DATA_DIR); // messages held while the plan's usage limit is reached; survives a restart
 autofix.init(DATA_DIR); // per-PR auto-fix and auto-archive switches, and the watcher behind them
+// Scheduled tasks: each due run is a new session, started the same way /api/sessions starts one.
+routines.init(DATA_DIR, {
+  onDue: async (routine) => {
+    if (!fs.existsSync(routine.folder)) throw new Error('Folder no longer exists: ' + routine.folder);
+    const newId = randomUUID();
+    const { ready } = startRun({ newId, cwd: routine.folder, prompt: routine.prompt, model: routine.model, permissionMode: routine.permissionMode, disabledMcp: readPrefs().disabledMcp || [] });
+    const sessionId = await ready;
+    return { sessionId };
+  },
+}).catch((e) => console.error('[routines] startup catch-up failed:', e.message || e));
+environments.init(DATA_DIR); // folder + worktree preference + env vars, saved from a session and offered again for a new one
 models.warm().catch(() => {});
 // Refresh waits: a background refresh would answer with the very list it was asked to
 // replace, and the menu would need a second press to show what changed.
@@ -1191,7 +1323,7 @@ app.get('/api/connectors', async (req, res) => {
   const connectors = listConnectors(cwd);
   const run = runs.get(sessionId);
   if (run && !run.done && run.query) { try { for (const s of await run.query.mcpServerStatus()) { const c = connectors.find((x) => x.name === s.name); if (c) { c.status = s.status; c.tools = (s.tools || []).length; c.error = s.error; } } } catch {} }
-  res.json({ connectors, plugins: listPlugins() });
+  res.json({ connectors, plugins: listPlugins(), skills: listSkills(cwd) });
 });
 app.post('/api/connectors/:name', async (req, res) => {
   const name = req.params.name; const enabled = !!req.body?.enabled;
@@ -1209,6 +1341,60 @@ app.post('/api/plugins/:id', (req, res) => {
   settings.enabledPlugins = { ...(settings.enabledPlugins || {}), [req.params.id]: !!req.body?.enabled };
   fs.writeFileSync(file, JSON.stringify(settings, null, 2));
   res.json({ id: req.params.id, enabled: !!req.body?.enabled });
+});
+
+// ---------- routines ----------
+// Scheduled tasks: CRUD plus Run now, each backed by lib/routines.mjs (storage, cron, the
+// scheduler loop) and started the same way a session started by hand is (startRun, above).
+app.get('/api/routines', (_req, res) => res.json({ routines: routines.list() }));
+app.post('/api/routines', (req, res) => {
+  const { name, prompt, folder, model, permissionMode, schedule } = req.body || {};
+  if (!prompt || !String(prompt).trim()) return res.status(400).json({ error: 'A routine needs a prompt.' });
+  const dir = String(folder || '').trim();
+  if (!dir || !fs.existsSync(dir)) return res.status(400).json({ error: 'That folder does not exist on this machine.' });
+  try { res.json(routines.create({ name, prompt, folder: dir, model, permissionMode, schedule })); }
+  catch (e) { res.status(400).json({ error: String(e.message || e) }); }
+});
+app.put('/api/routines/:id', (req, res) => {
+  const row = routines.get(req.params.id);
+  if (!row) return res.status(404).json({ error: 'No such routine.' });
+  const folder = req.body?.folder !== undefined ? String(req.body.folder).trim() : row.folder;
+  if (!fs.existsSync(folder)) return res.status(400).json({ error: 'That folder does not exist on this machine.' });
+  try { res.json(routines.update(req.params.id, { ...req.body, folder })); }
+  catch (e) { res.status(400).json({ error: String(e.message || e) }); }
+});
+app.delete('/api/routines/:id', (req, res) => res.json({ ok: routines.remove(req.params.id) }));
+app.post('/api/routines/:id/run', async (req, res) => {
+  const row = await routines.runNow(req.params.id);
+  if (!row) return res.status(404).json({ error: 'No such routine.' });
+  res.json(row);
+});
+// Output styles: this folder's list (built-in + project + user), the session's current one if
+// live, and the app-wide default new sessions start with.
+app.get('/api/output-styles', (req, res) => {
+  const cwd = String(req.query.cwd || ''); const sessionId = String(req.query.sessionId || '');
+  const run = runs.get(sessionId);
+  res.json({ styles: outputStyles.list(cwd), current: run && !run.done ? run.controls.outputStyle || 'default' : '', default: readPrefs().outputStyle || 'default' });
+});
+app.post('/api/output-style-default', (req, res) => {
+  const p = readPrefs(); p.outputStyle = String(req.body?.style || '') || undefined; writePrefs(p);
+  res.json({ default: p.outputStyle || 'default' });
+});
+
+// Saved environments: "Started on this computer" banner's "Save as environment", the new-session
+// folder menu's recent-environments section, and Settings' own list.
+app.get('/api/environments', (_req, res) => res.json({ environments: environments.list() }));
+app.post('/api/environments', (req, res) => {
+  const { name, folder, worktree, env } = req.body || {};
+  if (!folder || !fs.existsSync(String(folder))) return res.status(400).json({ error: 'That folder does not exist on this machine.' });
+  res.json(environments.create({ name, folder, worktree, env }));
+});
+app.delete('/api/environments/:id', (req, res) => res.json({ ok: environments.remove(req.params.id) }));
+
+app.get('/api/routines/:id/runs', (req, res) => {
+  const row = routines.get(req.params.id);
+  if (!row) return res.status(404).json({ error: 'No such routine.' });
+  res.json({ runs: row.runs });
 });
 
 // Where another device can reach this computer — the answer to "what do I type on the
@@ -1329,7 +1515,7 @@ app.get('/api/sessions', async (req, res, next) => {
     const offset = Number(req.query.offset) || 0;
     const pinned = new Set(readPrefs().pinned);
     const showArchived = req.query.archived === '1';
-    res.json((await listSessions({ limit, offset })).filter((s) => showArchived || s.tag !== 'archived').map((s) => shape(s, pinned)));
+    res.json((await listSessions({ limit, offset })).filter((s) => (showArchived || s.tag !== 'archived') && !net.isSideChat(s.sessionId)).map((s) => shape(s, pinned)));
   } catch (e) { next(e); }
 });
 
@@ -1504,7 +1690,9 @@ app.post('/api/sessions/:id/send', async (req, res, next) => {
     const cid = clientId(req.body?.cid);
     // Claude Code is running for this session - mid-turn, or resting ready for the next message:
     // hand the message over, it runs right after (Desktop behaviour), without starting it again.
-    if (isLive(id)) { const qid = runs.get(id).enqueue(prompt, images, cid || undefined); if (qid) return res.json({ queued: true, id: qid, sessionId: id }); }
+    // Ctrl/Cmd+Enter in the composer: hold it until the turn running now truly ends, rather
+    // than fold it into that turn at the next tool boundary like plain Enter does.
+    if (isLive(id)) { const qid = runs.get(id).enqueue(prompt, images, cid || undefined, { defer: !!req.body?.defer }); if (qid) return res.json({ queued: true, id: qid, sessionId: id }); }
     const info = await getSessionInfo(id);
     if (!info) return res.status(404).json({ error: 'Session not found' });
     const { model, permissionMode, effort, ultracode, fast } = req.body || {};
@@ -1528,8 +1716,8 @@ app.post('/api/sessions/:id/controls', async (req, res, next) => {
   try {
     const run = runs.get(req.params.id);
     if (!run || run.done) return res.json({ applied: {}, live: false });
-    const { permissionMode, model, effort, ultracode, fast } = req.body || {};
-    res.json({ applied: await run.setControls({ permissionMode, model, effort, ultracode, fast }), live: true });
+    const { permissionMode, model, effort, ultracode, fast, outputStyle } = req.body || {};
+    res.json({ applied: await run.setControls({ permissionMode, model, effort, ultracode, fast, outputStyle }), live: true });
   } catch (e) { next(e); }
 });
 
@@ -1546,7 +1734,11 @@ app.post('/api/sessions', async (req, res) => {
   if (!cwd || cwd === '~') { newId = randomUUID(); cwd = path.join(CHATS_DIR, newId); fs.mkdirSync(cwd, { recursive: true }); }
   if (!fs.existsSync(cwd)) return res.status(400).json({ error: 'That folder does not exist on this machine.' });
   const { model, permissionMode, effort, ultracode, fast } = req.body || {};
-  const { run, ready } = startRun({ newId, cwd, prompt, images, model, permissionMode, effort, ultracode, fast, disabledMcp: readPrefs().disabledMcp || [], promptId: clientId(req.body?.cid) });
+  // No style named for this chat: the one picked as the default in Settings, if any.
+  const outputStyle = req.body?.outputStyle || readPrefs().outputStyle || undefined;
+  // A saved environment chosen for this chat: its own variables travel with the run.
+  const env = req.body?.environmentId ? environments.get(req.body.environmentId) : null;
+  const { run, ready } = startRun({ newId, cwd, prompt, images, model, permissionMode, effort, ultracode, fast, outputStyle, extraEnv: env?.env, disabledMcp: readPrefs().disabledMcp || [], promptId: clientId(req.body?.cid) });
   try {
     const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('Claude Code did not start in time')), 60000));
     const sessionId = await Promise.race([ready, timeout]);
@@ -1967,6 +2159,11 @@ export function startServer({ host = HOST, port = PORT } = {}) {
     const server = app.listen(port, host, () => {
       // Hot reload is a WebSocket, and express never sees an upgrade.
       server.on('upgrade', (req, socket, head) => {
+        if ((req.url || '').split('?')[0] === '/api/browser/ws') {
+          const q = new URL(req.url, 'http://x').searchParams;
+          if ((!access.remoteAllowed() && !access.isLocal(req)) || !knownToken(q.get('token') || '')) return socket.destroy();
+          return browser.handleUpgrade(req, socket, head, { key: q.get('session') || '', tabId: q.get('tab') || '' });
+        }
         if ((req.url || '').split('?')[0] === '/api/terminal/ws') {
           const q = new URL(req.url, 'http://x').searchParams;
           if ((!access.remoteAllowed() && !access.isLocal(req)) || !knownToken(q.get('token') || '')) return socket.destroy();

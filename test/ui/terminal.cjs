@@ -121,10 +121,10 @@ async function main() {
 
   // 7. Minimize.
   await page.click('#term-min');
-  check('minimizing hides the tabs and shows the pill', await until(() => page.isVisible('#term-pill:not(.hidden)'), 3000));
+  check('minimizing shrinks it to a small live window', await until(() => page.isVisible('.mini-shell'), 3000));
   check('...and the chat behind it is reachable again', await until(() => page.isVisible('#thread'), 2000));
-  await page.click('#term-pill');
-  check('clicking the pill restores it', await until(async () => (await page.isVisible('#terminal-panel:not(.hidden)')) && !(await page.isVisible('#term-pill:not(.hidden)')), 3000));
+  await page.click('.mini-bar .icon-btn'); // Expand
+  check('Expand restores it', await until(async () => (await page.isVisible('#terminal-panel:not(.hidden)')) && !(await page.isVisible('.mini-shell')), 3000));
 
   // 8. Found from the command palette and the session menu too.
   await page.click('#term-close');

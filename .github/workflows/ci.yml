@@ -56,11 +56,11 @@ jobs:
       matrix:
         include:
           - part: browser, history, settings
-            suites: browser history claude-code
+            suites: browser history claude-code browser-real tasks
           - part: turns and the box
-            suites: realtime queue controls composer queue-controls
+            suites: realtime queue controls composer queue-controls layout routines
           - part: files, terminal, conversation
-            suites: files files-pane terminal conversation git
+            suites: files files-pane terminal conversation git sessions sessions-tools
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

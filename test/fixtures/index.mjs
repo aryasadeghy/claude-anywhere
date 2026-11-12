@@ -212,6 +212,7 @@ export function makeLongSession(configDir, cwd, { id = 'eeeeeeee-1111-2222-3333-
 // "[ask]" with a question for the person (AskUserQuestion); "[slow]" streams at 150 ms a word;
 // "[write:<path>] <content>" with a real Write tool call - the CLI executes it for real, which is
 // what gives file checkpointing (and so rewind) something genuine to have tracked.
+// "[browse:<url>]" walks the Browser tools: preview_navigate, preview_screenshot, preview_click #btn.
 // "[terminal]" opens a terminal tab (the app's own open_terminal_tab, which runs without asking).
 // `requests` lists what the CLI asked for, `bodies` what it sent.
 export async function startFakeApi({ delay = 15 } = {}) {
@@ -238,10 +239,16 @@ export async function startFakeApi({ delay = 15 } = {}) {
     const asking = /\[ask\]/.test(said);
     // The conversation package's own tags, each asking for one Claude-facing tool call (or
     // ExitPlanMode) instead of a Bash command - a fixed name and input, not the real model's.
-    const toolTag = (said.match(/\[(suggest|chapter|sugtask|status|plan|todo|tasktool)\]/) || [])[1];
+    const toolTag = (said.match(/\[(suggest|recap|chapter|sugtask|status|plan|todo|tasktool|spawn|options|asksecret|pane)\]/) || [])[1];
     const writeMatch = said.match(/\[write:([^\]]+)\]\s*([\s\S]*)/);
     const opensTerminal = /\[terminal\]/.test(said);
-    const words = afterTool ? (askedBefore ? `Noted: ${toolText.replace(/\s+/g, ' ').slice(0, 160)}` : wroteBefore ? 'Done writing it.' : 'Started it in the background.')
+    // [browse:<url>]: the Browser tools in turn - open the page, look at it, click its #btn - then a word.
+    const msgs = j.messages || [];
+    const hi = msgs.findLastIndex((m) => m.role === 'user' && /\[browse:/.test(userText(m)));
+    const browse = hi >= 0 ? /\[browse:([^\]\s]+)\]/.exec(userText(msgs[hi]))[1] : null;
+    const BROWSE = [['preview_navigate', { url: browse }], ['preview_screenshot', { scale: 0.5 }], ['preview_click', { selector: '#btn' }]];
+    const browseStep = browse ? msgs.slice(hi).filter((m) => m.role === 'assistant' && Array.isArray(m.content)).flatMap((m) => m.content).filter((b) => b.type === 'tool_use' && /preview_/.test(b.name)).length : -1;
+    const words = browse ? (browseStep >= BROWSE.length ? 'Clicked the button.' : null) : afterTool ? (askedBefore ? `Noted: ${toolText.replace(/\s+/g, ' ').slice(0, 160)}` : wroteBefore ? 'Done writing it.' : 'Started it in the background.')
       : /\[background\]/.test(said) || asking || writeMatch || opensTerminal || toolTag ? null
       : /\[math\]/.test(said) ? 'The area under the curve is $\\int_0^1 x\\,dx = \\frac{1}{2}$ and the price is $5 or $10, not a range.\n\n$$E = mc^2$$'
       : /\[secret\]/.test(said) ? 'Found it in .env: ANTHROPIC_API_KEY=sk-ant-api03-fakeFAKEfakeFAKEfakeFAKEfakeFAKEfakeFAKE and a GitHub token ghp_FAKEfakeFAKEfakeFAKEfakeFAKEfake1234.'
@@ -275,16 +282,23 @@ export async function startFakeApi({ delay = 15 } = {}) {
     } else {
       const TOOL_TAGS = {
         suggest: ['mcp__claude-anywhere__SuggestNextSteps', { recap: 'Set up the thing.', steps: [{ label: 'Add tests', prompt: 'Add tests for the thing' }] }],
+        // The new shape: a summary, a question, and a primary first button - Desktop's wrap_up.
+        recap: ['mcp__claude-anywhere__SuggestNextSteps', { summary: 'Set up the database and wrote the tests.', question: 'Want me to ship it too?', steps: [{ label: 'Ship it', prompt: 'Ship it' }, { label: 'Not yet', prompt: 'Hold off for now' }] }],
         chapter: ['mcp__claude-anywhere__MarkChapter', { title: 'Set up the database' }],
         sugtask: ['mcp__claude-anywhere__SuggestTask', { title: 'Write the README', prompt: 'Write a README for this project' }],
         status: ['mcp__claude-anywhere__SetSessionStatus', { status: 'ready_for_review', note: 'Looks good' }],
         plan: ['ExitPlanMode', { plan: '# Plan\n\n1. Do the first thing\n2. Do the second thing' }],
         todo: ['TodoWrite', { todos: [{ content: 'Set up the database', status: 'completed', activeForm: 'Setting up the database' }, { content: 'Write the tests', status: 'in_progress', activeForm: 'Writing the tests' }, { content: 'Ship it', status: 'pending', activeForm: 'Shipping it' }] }],
         tasktool: ['TaskCreate', { subject: 'Write the README', description: 'A short one', activeForm: 'Writing the README' }],
+        spawn: ['mcp__claude-anywhere__start_session', { title: 'Coast towns', prompt: 'List 5 coast towns worth visiting' }],
+        options: ['mcp__claude-anywhere__present_options', { question: 'Which colour?', options: [{ label: 'Red', description: 'Warm' }, { label: 'Blue' }] }],
+        asksecret: ['mcp__claude-anywhere__request_secret', { prompt: 'Stripe secret key' }],
+        pane: ['mcp__claude-anywhere__show_pane', { pane: 'terminal' }],
       };
       const [tagName, tagInput] = TOOL_TAGS[toolTag] || [];
-      const name = asking ? 'AskUserQuestion' : writeMatch ? 'Write' : opensTerminal ? 'mcp__claude-anywhere__open_terminal_tab' : tagName || 'Bash';
-      const input = JSON.stringify(asking ? { questions: [{ question: 'Which colour should the button be?', header: 'Colour', options: [{ label: 'Red', description: 'Warm' }, { label: 'Blue', description: 'Calm' }], multiSelect: false }] } : writeMatch ? { file_path: writeMatch[1].trim(), content: writeMatch[2] } : opensTerminal ? {} : tagInput || { command: 'sleep 20', description: 'Render the long video', run_in_background: true });
+      const [browseName, browseInput] = browse ? BROWSE[browseStep] : [];
+      const name = browseName ? 'mcp__claude-anywhere__' + browseName : asking ? 'AskUserQuestion' : writeMatch ? 'Write' : opensTerminal ? 'mcp__claude-anywhere__open_terminal_tab' : tagName || 'Bash';
+      const input = JSON.stringify(browseInput ? browseInput : asking ? { questions: [{ question: 'Which colour should the button be?', header: 'Colour', options: [{ label: 'Red', description: 'Warm' }, { label: 'Blue', description: 'Calm' }], multiSelect: false }] } : writeMatch ? { file_path: writeMatch[1].trim(), content: writeMatch[2] } : opensTerminal ? {} : tagInput || { command: 'sleep 20', description: 'Render the long video', run_in_background: true });
       send('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'toolu_fake_' + requests.length, name, input: {} } });
       send('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: input } });
       send('content_block_stop', { type: 'content_block_stop', index: 0 });

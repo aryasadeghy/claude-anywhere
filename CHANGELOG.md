@@ -7,6 +7,40 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Claude's plan works like Desktop's.** The to-do list sits at the end of the conversation with a
+  check, a spinner or a dashed circle per step; finished steps fold into "N earlier steps", the title
+  bar says "Step 2 of 5", and a step can be commented on in the next message. When a turn ends, a
+  recap card gives a short summary and buttons for what to do next (Settings: *Summary and next
+  steps*). The Tasks pane lists running and completed work with Agent, Bash and Server labels.
+- **A real browser in the Browser pane.** Chrome or Edge runs on this computer and is shown live in
+  the pane, so any website opens there, from a phone too, with each session's logins kept apart.
+  Claude gets Desktop's browser tools - start the dev server, open, screenshot, read, click, fill,
+  console and network - on the same tab you see, and asks before acting on a site outside this
+  computer. Without Chrome or Edge the pane works as before (`CLAUDE_ANYWHERE_BROWSER=off` forces it).
+- **The session rail.** A column beside the conversation with Environment, Context, Connectors (with
+  Reconnect), Outputs, Changes with the pull request, Servers and Background tasks; right-click a
+  card's header to choose which show. Pane buttons sit in the title bar, the mode, model and effort,
+  and the context ring in a row under the message box.
+- **Minimize and split view.** The Terminal and Browser panes shrink to a small live window you can
+  move and resize. Alt+click a session, or *Open in split view*, to work in two side by side.
+- **Sessions that work together.** Claude can start a task in a session of its own, which appears
+  under the original in the sidebar and reports back; one session can list, read, message, stop,
+  rename and archive the others. `/btw` asks a side question in a pane of its own without adding it
+  to the conversation. The sidebar has sections, Group and sort, and *Load more*.
+- **More of Desktop's tools for Claude**: open and close panes, open a file in your editor or the
+  file manager, offer choices as buttons, ask for a secret in a masked box, read a pull request's
+  checks, turn on Merge when ready and Auto-fix, list and stop terminal tabs.
+- **Scheduled tasks.** *Scheduled*, next to New, runs a prompt hourly, daily, on weekdays, weekly or on
+  a cron expression, on this computer, with a run history; a run missed while the app was closed runs
+  at start-up. Claude can create and run them too.
+- **Output styles, saved environments and Customize.** Switch the output style from the session menu
+  or `/output-style`; save a session's folder, worktree choice and variables as an environment to
+  start from later; Customize lists skills beside connectors and plugins.
+- `↵ to send, Ctrl+↵ to queue for later` while Claude works, the `/context` card, and *Read aloud* on
+  an answer.
+
 ## [0.12.1] — 2026-11-12
 
 ### Fixed

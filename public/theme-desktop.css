@@ -217,7 +217,7 @@ button.nb-chip:hover { color: var(--ink); background: var(--bg-3); }
 
 /* ---------- v11: phone ---------- */
 @media (max-width: 860px) {
-  .usage-pop, #mode-menu, #model-menu, #session-menu, #nb-folder-menu, #project-menu { position: fixed; left: 12px; right: 12px; inset-inline: 12px; bottom: 88px; top: auto; min-width: 0; max-width: none; width: auto; max-height: 60vh; overflow: auto; }
+  .usage-pop, #mode-menu, #modeleffort-menu, #session-menu, #nb-folder-menu, #project-menu { position: fixed; left: 12px; right: 12px; inset-inline: 12px; bottom: 88px; top: auto; min-width: 0; max-width: none; width: auto; max-height: 60vh; overflow: auto; }
   #session-menu { bottom: auto; top: 56px; }
   .new-bar { padding: 0 2px; }
   .nb-chip { font-size: 13px; padding: 5px 9px; }
@@ -227,7 +227,7 @@ button.nb-chip:hover { color: var(--ink); background: var(--bg-3); }
   .modal-card { max-height: 88vh; overflow: auto; }
 }
 @media (max-width: 860px) {
-  #usage-pop.menu, #mode-menu.menu, #model-menu.menu, #session-menu.menu, #nb-folder-menu.menu, #project-menu.menu { left: 12px !important; right: 12px !important; inset-inline: 12px !important; }
+  #usage-pop.menu, #mode-menu.menu, #modeleffort-menu.menu, #session-menu.menu, #nb-folder-menu.menu, #project-menu.menu { left: 12px !important; right: 12px !important; inset-inline: 12px !important; }
 }
 
 /* ---------- v12: phone top bar in one row; long-press menu as a sheet ---------- */
@@ -1296,3 +1296,242 @@ mark.find-hit.current { background: var(--accent); color: var(--accent-ink); }
 @media (max-width: 860px) {
   .ch-actions { flex-wrap: wrap; }
 }
+
+/* ---------- v70: the plan box at the end of the thread, the recap card, the Tasks pane's
+   Desktop wording, the composer's busy hint, the /context card, and read aloud ---------- */
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* The plan box now lives inside `thread`, not pinned above the composer, so it scrolls with
+   the conversation and needs its own card chrome - `.tasks-bar`'s used to come free from
+   being a child of composer-wrap. */
+.plan-box { max-width: 48rem; width: 100%; margin: 10px auto; padding: 10px 12px; border-radius: 12px; background: var(--bg-2); border: 1px solid var(--line); font-size: 13px; color: var(--ink); }
+.plan-box-head { display: flex; align-items: center; gap: 8px; }
+.plan-box .todo-checklist { margin: 8px 0 0; }
+.todo-item { position: relative; padding-inline-end: 22px; }
+.todo-check svg { display: block; color: var(--ink-3); }
+.todo-item.status-completed .todo-check svg { color: var(--success); }
+.todo-item.status-in_progress .todo-check svg { color: var(--accent); }
+.todo-spin { animation: todo-spin 1s linear infinite; }
+@keyframes todo-spin { to { transform: rotate(360deg); } }
+.todo-comment-btn { position: absolute; top: 0; inset-inline-end: 0; width: 18px; height: 18px; display: flex; align-items: center; justify-content: center; border-radius: 5px; border: none; background: transparent; color: var(--ink-3); opacity: 0; transition: opacity .12s; cursor: pointer; }
+.todo-item:hover .todo-comment-btn, .todo-item:focus-within .todo-comment-btn, .todo-comment-btn:focus-visible { opacity: 1; }
+.todo-comment-btn:hover { background: var(--bg-3); color: var(--ink); }
+.todo-fold-row { list-style: none; }
+.todo-fold-btn { font: inherit; font-size: 12.5px; color: var(--ink-3); background: none; border: none; padding: 2px 0; cursor: pointer; }
+.todo-fold-btn:hover { color: var(--ink-2); text-decoration: underline; }
+/* Clicked in from the title bar chip: a brief highlight, not a permanent one - the point is
+   "here", not "still here". */
+.todo-item.step-flash { animation: step-flash 1.2s ease-out; border-radius: 6px; }
+@keyframes step-flash { 0% { background: color-mix(in srgb, var(--accent) 22%, transparent); } 100% { background: transparent; } }
+
+/* The title bar chip: "{task} · Step {current} of {total}" while a step is under way. */
+.plan-step-chip { font: inherit; font-size: 12.5px; color: var(--ink-2); background: var(--bg-2); border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; margin-inline-start: 8px; max-width: 32ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; flex: none; }
+.plan-step-chip:hover { background: var(--bg-3); }
+
+/* The recap card: SuggestNextSteps' summary + question + buttons, Desktop's wrap_up. It reuses
+   `.suggest-card`'s position in the message body (renderConvTool); `.recap-card` only adds the
+   dismiss corner and the hint on its first, primary button. */
+.recap-card { position: relative; padding-inline-end: 22px; }
+.recap-dismiss { position: absolute; top: -2px; inset-inline-end: -4px; color: var(--ink-3); }
+.recap-summary { margin-bottom: 2px; }
+.recap-question { font-weight: 500; margin-top: 4px; }
+.recap-steps .btn-primary { display: inline-flex; align-items: center; gap: 6px; }
+.recap-hint { font-size: 11px; opacity: .75; font-weight: 400; border: 1px solid color-mix(in srgb, var(--accent-ink) 35%, transparent); border-radius: 5px; padding: 0 4px; }
+
+/* /context card. */
+.context-card { max-width: 48rem; width: 100%; margin: 10px auto; padding: 10px 12px; border-radius: 12px; background: var(--bg-2); border: 1px solid var(--line); font-size: 13px; }
+.context-card-title { font-weight: 500; }
+.context-seg-bar { display: flex; height: 8px; border-radius: 5px; overflow: hidden; margin-top: 8px; background: var(--bg-3); }
+.context-seg { height: 100%; }
+.context-expand { margin-top: 8px; font: inherit; font-size: 12.5px; color: var(--ink-3); background: none; border: none; padding: 0; cursor: pointer; }
+.context-expand:hover { color: var(--ink-2); }
+.context-expand.open { color: var(--ink); }
+.context-breakdown { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+.context-row { display: flex; align-items: center; gap: 7px; font-size: 12.5px; }
+.context-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.context-name { flex: 1; }
+
+/* Read aloud toggles the same speaker button to a "stop" look while speaking. */
+.msg-actions .speaking { color: var(--accent); }
+
+@media (max-width: 860px) {
+  .plan-box, .recap-card, .context-card { font-size: 12.5px; }
+  .plan-step-chip { display: none; } /* the title bar is tight enough on a phone without it */
+}
+
+/* ---------- v71: the Browser's real browser, streamed into the pane ---------- */
+.pv-stage > .rv { position: absolute; inset: 0; overflow: hidden; background: #fff; touch-action: none; cursor: default; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.rv.emu { background: var(--bg-3); }
+.rv-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
+.rv:not(.live) .rv-img { visibility: hidden; }
+.rv-wait { position: absolute; inset: 0; display: grid; place-items: center; padding: 20px; text-align: center; color: var(--ink-3); font-size: 13px; background: var(--bg); }
+.rv.live .rv-wait { display: none; }
+/* Off screen but focusable: it is what raises a phone's keyboard. 16px, or iOS zooms the page in. */
+.rv-kbd { position: absolute; left: 0; bottom: 0; width: 1px; height: 1px; padding: 0; border: 0; opacity: 0; resize: none; font-size: 16px; caret-color: transparent; }
+.pv-bar .rv-only { display: none; }
+.preview-panel.rv-on .pv-bar .rv-only { display: grid; }
+.preview-panel.rv-on .pv-bar .rv-touch { display: none; }
+@media (pointer: coarse) { .preview-panel.rv-on .pv-bar .rv-touch { display: grid; } }
+#pv-device.on { color: var(--accent); background: var(--bg-3); }
+@media (max-width: 860px) { .preview-panel.rv-on .pv-bar { gap: 0; } .preview-panel.rv-on .pv-bar .icon-btn.small { width: 28px; } }
+
+/* ---------- v72: session rail, panes, split view ---------- */
+/* The row under the composer: permission mode, one menu for model + effort, the context
+   ring. Same chip look as the box above, just moved below it. */
+.composer-footrow { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.composer-footrow .composer-left:last-child { margin-inline-start: auto; }
+#modeleffort-menu { display: flex; flex-direction: column; }
+.effort-pop.hidden { display: none; }
+.effort-pop:not(.hidden) { width: auto; }
+
+/* The title-bar pane buttons: rail, terminal, changes, browser, files. Desktop widths only -
+   a phone reaches the same panes through the session ⋮ menu (no room for six icons there). */
+.pane-btns { display: flex; align-items: center; gap: 2px; }
+.pane-btns .icon-btn.on { color: var(--accent); background: var(--bg-2); }
+@media (max-width: 860px) { .pane-btns { display: none !important; } }
+
+/* The session rail: a column like any other side panel, just with cards instead of a tree. */
+.rail-panel { width: 300px; }
+@media (min-width: 861px) { .rail-panel { width: var(--rail-w, 300px); } }
+.rail-cards { display: flex; flex-direction: column; gap: 1px; overflow: auto; }
+.rail-card { padding: 10px 14px; border-bottom: 1px solid var(--line); }
+.rail-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; cursor: default; user-select: none; }
+.rail-card-title { font-size: 12.5px; font-weight: 600; color: var(--ink-2); }
+.rail-card-extra { font-size: 12px; }
+.rail-card-body { margin-top: 6px; display: flex; flex-direction: column; gap: 4px; }
+.rail-line { font-size: 13px; line-height: 1.4; }
+.rail-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 3px 0; font-size: 13px; }
+.rail-link { background: none; border: 0; width: 100%; text-align: start; cursor: pointer; color: inherit; font: inherit; border-radius: 6px; }
+.rail-link:hover { background: var(--bg-2); }
+.rail-bar { height: 5px; border-radius: 3px; background: var(--bg-3); overflow: hidden; margin: 2px 0; }
+.rail-bar i { display: block; height: 100%; background: var(--accent); border-radius: inherit; }
+.rail-detail { margin-top: 2px; }
+.rail-detail summary { font-size: 12px; color: var(--ink-3); cursor: pointer; list-style: none; }
+.rail-detail summary::-webkit-details-marker { display: none; }
+.rail-pr-btn { width: 100%; justify-content: flex-start; margin-top: 4px; }
+@media (max-width: 860px) { .rail-panel:not(.hidden) { position: fixed; inset: 0; width: auto; z-index: 45; } }
+
+/* Minimize: the real Terminal/Browser pane, shrunk - a live view, not a frozen pill. */
+.mini-host { position: fixed; inset: auto 16px 16px auto; z-index: 40; pointer-events: none; }
+.mini-shell { pointer-events: auto; display: flex; flex-direction: column; background: var(--bg-000); border: 1px solid var(--line-2); border-radius: 12px; box-shadow: 0 8px 28px rgba(0, 0, 0, .22); overflow: hidden; }
+.mini-shell.floating { position: fixed; width: 320px; height: 220px; right: 16px; bottom: 16px; }
+.mini-shell.docked { position: relative; width: 100%; height: 220px; flex: none; border-radius: 10px; margin: 8px 0; }
+.mini-bar { display: flex; align-items: center; gap: 4px; padding: 5px 8px; border-bottom: 1px solid var(--line); flex: none; cursor: move; touch-action: none; }
+.mini-shell.docked .mini-bar { cursor: default; }
+.mini-title { font-size: 12px; font-weight: 500; color: var(--ink-2); }
+.mini-resize { position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize; touch-action: none; }
+.mini-resize::after { content: ""; position: absolute; right: 3px; bottom: 3px; width: 7px; height: 7px; border-right: 1.5px solid var(--line-2); border-bottom: 1.5px solid var(--line-2); }
+/* The pane shrinks inside its shell instead of hiding anything: the head stays, so its own
+   tabs and address bar are still there, just smaller than a full panel. */
+.preview-panel.mini, .terminal-panel.mini { width: 100%; flex: 1; border-inline-start: 0; min-height: 0; }
+.rail-dock { flex: none; padding: 0 10px; }
+.rail-dock.hidden { display: none; }
+
+/* Split view: a second session beside the current one, as an embedded copy of the page. */
+.app.split-open .main { flex: 1 1 50%; min-width: 0; }
+.app.split-open .main, .app.split-open .split-pane { transition: opacity 120ms; }
+.app.split-open.split-focus-left .split-pane { opacity: .55; }
+.app.split-open:not(.split-focus-left) .main { opacity: .55; }
+.split-pane { display: flex; flex-direction: column; flex: 1 1 50%; min-width: 0; border-inline-start: 1px solid var(--line); background: var(--bg-000); }
+.split-pane.hidden { display: none; }
+.split-frame { flex: 1; border: 0; width: 100%; height: 100%; background: var(--bg-000); }
+@media (max-width: 860px) { .split-pane { display: none !important; } } /* two sessions do not fit a phone */
+
+/* Embedded (split view's own iframe, ?embed=1): the sidebar and outer chrome are the parent
+   window's job, not this copy's - it is one conversation, not a second whole app. */
+html.embed #sidebar, html.embed #sidebar-open, html.embed #win-controls, html.embed .pane-btns, html.embed #pin-btn { display: none !important; }
+html.embed .main { border-inline-start: 0; }
+
+/* ---------- v74: routines (scheduled tasks), customize, output styles, environments ---------- */
+.new-row { display: flex; align-items: center; gap: 6px; padding: 0 12px 8px; }
+.new-row .new-chat { flex: 1; }
+.sch-card { max-width: 620px; width: 100%; max-height: 82vh; display: flex; flex-direction: column; }
+.sch-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 2px 0 10px; flex: none; }
+.sch-runs-title { font-weight: 500; font-size: 13.5px; color: var(--ink-2); }
+.sch-list { overflow-y: auto; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.sch-card-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg-2); }
+.sch-card-row.off { opacity: .55; }
+.sch-card-info { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.sch-card-name { font-weight: 500; font-size: 13.5px; }
+.sch-card-desc { font-size: 12px; color: var(--ink-3); }
+.sch-card-status { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+.sch-card-actions { display: flex; align-items: center; gap: 6px; flex: none; flex-wrap: wrap; justify-content: flex-end; }
+.sch-form { display: flex; flex-direction: column; gap: 10px; overflow-y: auto; min-height: 0; }
+.sch-field { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--ink-3); }
+.sch-field input, .sch-field select, .sch-field textarea { font: inherit; font-size: 13.5px; color: var(--ink); background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 9px; padding: 7px 10px; resize: vertical; }
+.sch-foot { display: flex; justify-content: flex-end; gap: 10px; margin-top: 4px; flex: none; }
+.env-card { max-width: 420px; }
+.sch-start-banner { max-width: 48rem; width: 100%; margin: 0 auto 10px; font-size: 12.5px; color: var(--ink-3); }
+.env-list-row { padding-bottom: 0; }
+@media (max-width: 860px) {
+  .sch-card { max-width: none; max-height: none; height: 100%; border-radius: 0; }
+  .sch-card-row { flex-direction: column; align-items: stretch; }
+  .sch-card-actions { justify-content: flex-start; }
+}
+
+/* ---------- v73: nested sessions, sidebar sections ---------- */
+/* A sidebar row for a session start_session made: indented under its parent, same list. */
+.session-item.session-child { padding-inline-start: 30px; position: relative; }
+.session-item.session-child::before { content: ''; position: absolute; left: 18px; top: 0; bottom: 0; width: 1px; background: var(--line); }
+
+/* The "List 5 coast towns ›" card a start_session call renders as, in the parent's chat. */
+.session-card { margin: 6px 0; }
+.session-card-btn { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; padding: 7px 12px; border: 1px solid var(--line-2); border-radius: 10px; background: var(--bg-2); color: var(--ink); font: inherit; font-size: 13.5px; cursor: pointer; }
+.session-card-btn:hover { background: var(--bg-3); }
+.session-card-btn .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-card-btn .chev { color: var(--ink-3); }
+.session-card-btn .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.session-card-btn .dot.running { background: #d9a757; animation: pulse 1.4s infinite; }
+.session-card-btn .dot.done { background: var(--success); }
+.session-card-btn .dot.needs-you { background: var(--danger, #c75146); }
+
+/* "Started by Claude from <parent>" + the Task card a child session opens with (eat-17b). */
+.parent-header { margin: 0 0 10px; font-size: 12.5px; color: var(--ink-3); }
+.parent-header .link { color: var(--accent); text-decoration: none; }
+.parent-header .link:hover { text-decoration: underline; }
+.task-card { margin: 0 0 16px; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.task-card-head { display: flex; gap: 8px; align-items: baseline; padding: 10px 14px; border-bottom: 1px solid var(--line); font-size: 13.5px; }
+.task-card-head .label { color: var(--ink-3); }
+.task-card-head .t { font-weight: 600; }
+.task-card-prompt { padding: 10px 14px; font-size: 13.5px; color: var(--ink-2); white-space: pre-wrap; }
+.task-card-context { border-top: 1px solid var(--line); }
+.task-card-context summary { padding: 8px 14px; font-size: 12.5px; color: var(--ink-3); cursor: pointer; }
+.task-card-context .muted { padding: 0 14px 10px; white-space: pre-wrap; }
+
+/* The "Received N messages" fold a parent shows once a nested session answers. */
+.received-fold { margin: 10px 0; }
+.received-fold summary { font-size: 12.5px; color: var(--ink-3); cursor: pointer; }
+
+/* Sidebar sections (New section / rename / delete / Move to section) and "Load more". */
+.section-group > summary { font-weight: 600; }
+.load-more { display: block; width: calc(100% - 20px); margin: 6px 10px; padding: 7px 0; text-align: center; border-radius: 8px; background: none; border: 1px dashed var(--line-2); color: var(--ink-3); }
+.load-more:hover { background: var(--bg-2); color: var(--ink); }
+
+/* /btw's side chat pane: tabs along the top (reuses .pv-tab), a question, messages, a composer. */
+.btw-panel { width: 360px; }
+.btw-stage { flex: 1; min-height: 0; position: relative; }
+.btw-tab-view { position: absolute; inset: 0; display: flex; flex-direction: column; }
+.btw-tab-view.hidden { display: none; }
+.btw-tab-head { padding: 10px 14px; border-bottom: 1px solid var(--line); }
+.btw-question { font-size: 13px; font-weight: 600; color: var(--ink-2); }
+.btw-messages { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 14px; display: flex; flex-direction: column; gap: 10px; }
+.btw-msg { font-size: 13px; }
+.btw-msg p { margin: 0 0 8px; }
+.btw-msg p:last-child { margin-bottom: 0; }
+.btw-msg.user { color: var(--ink-3); }
+.btw-msg.assistant { color: var(--ink); }
+.btw-compose { display: flex; gap: 8px; align-items: flex-end; padding: 10px 14px; border-top: 1px solid var(--line); flex: none; }
+.btw-input { flex: 1; resize: none; min-height: 32px; max-height: 120px; padding: 7px 10px; border-radius: 9px; border: 1px solid var(--line-2); background: var(--bg-2); color: var(--ink); font: inherit; font-size: 13px; }
+
+/* present_options / request_secret: a small card in the thread, answered with a click or a
+   typed value that never becomes visible chat text (lib/tools-sessions.mjs explains why). */
+.options-card, .secret-card { margin: 10px 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg-2); max-width: 32rem; }
+.options-question, .secret-prompt { font-size: 13.5px; margin-bottom: 10px; }
+.options-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.options-row button.picked { background: var(--accent); color: var(--accent-ink); }
+.options-card.answered button:not(.picked), .secret-card.answered button, .secret-card.answered input { opacity: .5; }
+.secret-row { display: flex; align-items: center; gap: 6px; }
+.secret-field { flex: 1; min-width: 0; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--line-2); background: var(--bg-000); color: var(--ink); font: inherit; font-size: 13px; }
+
+/* ---------- v75: the plan box's step icons are Desktop's circles, not the older checklist's squares ---------- */
+.plan-box .todo-check { width: 15px; height: 15px; border: 0; border-radius: 50%; background: none; display: grid; place-items: center; }
