@@ -1296,3 +1296,65 @@ mark.find-hit.current { background: var(--accent); color: var(--accent-ink); }
 @media (max-width: 860px) {
   .ch-actions { flex-wrap: wrap; }
 }
+
+/* ---------- v70: the plan box at the end of the thread, the recap card, the Tasks pane's
+   Desktop wording, the composer's busy hint, the /context card, and read aloud ---------- */
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* The plan box now lives inside `thread`, not pinned above the composer, so it scrolls with
+   the conversation and needs its own card chrome - `.tasks-bar`'s used to come free from
+   being a child of composer-wrap. */
+.plan-box { max-width: 48rem; width: 100%; margin: 10px auto; padding: 10px 12px; border-radius: 12px; background: var(--bg-2); border: 1px solid var(--line); font-size: 13px; color: var(--ink); }
+.plan-box-head { display: flex; align-items: center; gap: 8px; }
+.plan-box .todo-checklist { margin: 8px 0 0; }
+.todo-item { position: relative; padding-inline-end: 22px; }
+.todo-check svg { display: block; color: var(--ink-3); }
+.todo-item.status-completed .todo-check svg { color: var(--success); }
+.todo-item.status-in_progress .todo-check svg { color: var(--accent); }
+.todo-spin { animation: todo-spin 1s linear infinite; }
+@keyframes todo-spin { to { transform: rotate(360deg); } }
+.todo-comment-btn { position: absolute; top: 0; inset-inline-end: 0; width: 18px; height: 18px; display: flex; align-items: center; justify-content: center; border-radius: 5px; border: none; background: transparent; color: var(--ink-3); opacity: 0; transition: opacity .12s; cursor: pointer; }
+.todo-item:hover .todo-comment-btn, .todo-item:focus-within .todo-comment-btn, .todo-comment-btn:focus-visible { opacity: 1; }
+.todo-comment-btn:hover { background: var(--bg-3); color: var(--ink); }
+.todo-fold-row { list-style: none; }
+.todo-fold-btn { font: inherit; font-size: 12.5px; color: var(--ink-3); background: none; border: none; padding: 2px 0; cursor: pointer; }
+.todo-fold-btn:hover { color: var(--ink-2); text-decoration: underline; }
+/* Clicked in from the title bar chip: a brief highlight, not a permanent one - the point is
+   "here", not "still here". */
+.todo-item.step-flash { animation: step-flash 1.2s ease-out; border-radius: 6px; }
+@keyframes step-flash { 0% { background: color-mix(in srgb, var(--accent) 22%, transparent); } 100% { background: transparent; } }
+
+/* The title bar chip: "{task} · Step {current} of {total}" while a step is under way. */
+.plan-step-chip { font: inherit; font-size: 12.5px; color: var(--ink-2); background: var(--bg-2); border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; margin-inline-start: 8px; max-width: 32ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; flex: none; }
+.plan-step-chip:hover { background: var(--bg-3); }
+
+/* The recap card: SuggestNextSteps' summary + question + buttons, Desktop's wrap_up. It reuses
+   `.suggest-card`'s position in the message body (renderConvTool); `.recap-card` only adds the
+   dismiss corner and the hint on its first, primary button. */
+.recap-card { position: relative; padding-inline-end: 22px; }
+.recap-dismiss { position: absolute; top: -2px; inset-inline-end: -4px; color: var(--ink-3); }
+.recap-summary { margin-bottom: 2px; }
+.recap-question { font-weight: 500; margin-top: 4px; }
+.recap-steps .btn-primary { display: inline-flex; align-items: center; gap: 6px; }
+.recap-hint { font-size: 11px; opacity: .75; font-weight: 400; border: 1px solid color-mix(in srgb, var(--accent-ink) 35%, transparent); border-radius: 5px; padding: 0 4px; }
+
+/* /context card. */
+.context-card { max-width: 48rem; width: 100%; margin: 10px auto; padding: 10px 12px; border-radius: 12px; background: var(--bg-2); border: 1px solid var(--line); font-size: 13px; }
+.context-card-title { font-weight: 500; }
+.context-seg-bar { display: flex; height: 8px; border-radius: 5px; overflow: hidden; margin-top: 8px; background: var(--bg-3); }
+.context-seg { height: 100%; }
+.context-expand { margin-top: 8px; font: inherit; font-size: 12.5px; color: var(--ink-3); background: none; border: none; padding: 0; cursor: pointer; }
+.context-expand:hover { color: var(--ink-2); }
+.context-expand.open { color: var(--ink); }
+.context-breakdown { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+.context-row { display: flex; align-items: center; gap: 7px; font-size: 12.5px; }
+.context-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.context-name { flex: 1; }
+
+/* Read aloud toggles the same speaker button to a "stop" look while speaking. */
+.msg-actions .speaking { color: var(--accent); }
+
+@media (max-width: 860px) {
+  .plan-box, .recap-card, .context-card { font-size: 12.5px; }
+  .plan-step-chip { display: none; } /* the title bar is tight enough on a phone without it */
+}
