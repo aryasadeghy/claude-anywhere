@@ -1195,6 +1195,48 @@
   }
   $('#btw-close').addEventListener('click', closeBtwPanel);
 
+  // ---------- present_options / request_secret (Desktop's elicit) ----------
+  // Both wait on a click or a typed value the same way AskUserQuestion does, but as this app's
+  // own tools rather than a built-in the permission dialog already renders, so they draw their
+  // own small card in the thread and answer over POST /api/elicit/:reqId (lib/tools-sessions.mjs).
+  function answerElicitRequest(reqId, value) { return api(`/elicit/${reqId}`, { method: 'POST', body: JSON.stringify({ value }) }).catch(() => {}); }
+  function showOptionsCard(ev) {
+    const card = el('div', 'options-card');
+    card.appendChild(el('div', 'options-question', ev.question));
+    const row = el('div', 'options-row');
+    ev.options.forEach((o, i) => {
+      const b = el('button', 'btn btn-ghost small', o.label); b.type = 'button';
+      if (o.description) b.title = o.description;
+      b.addEventListener('click', () => {
+        for (const x of row.querySelectorAll('button')) x.disabled = true;
+        card.classList.add('answered'); b.classList.add('picked');
+        answerElicitRequest(ev.reqId, i);
+      });
+      row.appendChild(b);
+    });
+    card.appendChild(row);
+    thread.appendChild(card); autoscroll();
+  }
+  function showSecretCard(ev) {
+    const card = el('div', 'secret-card');
+    card.appendChild(el('div', 'secret-prompt', ev.prompt));
+    const row = el('div', 'secret-row');
+    const input = el('input', 'secret-field'); input.type = 'password'; input.placeholder = 'Paste or type it here';
+    const eye = el('button', 'icon-btn small', ''); eye.type = 'button'; eye.title = 'Show'; eye.innerHTML = EYE_SVG;
+    eye.addEventListener('click', () => { input.type = input.type === 'password' ? 'text' : 'password'; });
+    const go = el('button', 'btn btn-primary small', 'Send'); go.type = 'button';
+    const skip = el('button', 'btn btn-ghost small', 'Skip'); skip.type = 'button';
+    const done = (value) => { input.disabled = true; go.disabled = true; skip.disabled = true; eye.disabled = true; card.classList.add('answered'); answerElicitRequest(ev.reqId, value); };
+    go.addEventListener('click', () => done(input.value));
+    skip.addEventListener('click', () => done(null));
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); done(input.value); } });
+    row.appendChild(input); row.appendChild(eye); row.appendChild(go); row.appendChild(skip);
+    card.appendChild(row);
+    // Never logged, never sent anywhere but the answer itself: not attachContext, not stored
+    // in localStorage, no console.log on the way - the card forgets it the moment it is sent.
+    thread.appendChild(card); autoscroll(); input.focus();
+  }
+
   function renderSessions() {
     applyOrder();
     const list = $('#session-list'); const scrolled = list.scrollTop; list.innerHTML = '';
@@ -5225,6 +5267,18 @@
 
         // Claude opened or used a terminal tab: the person sees it, same as if they had.
         case 'terminal_tab': onTerminalTabEvent(ev.tab); break;
+        // Claude's stop_terminal_tab (lib/tools-terminal.mjs): the tab is already gone server-side,
+        // so this just tidies up the client's own view of it (same cleanup as the tab's own X).
+        case 'terminal_tab_closed': { const tab = findTermTab(ev.tabId); if (tab) { try { tab.ws?.close(); } catch {} try { tab.xterm.dispose(); } catch {} tab.el.remove(); term.tabs = term.tabs.filter((t) => t !== tab); if (term.active === tab.id) { term.active = null; if (term.tabs.length) showTerminalTab(term.tabs[term.tabs.length - 1].id); else closeTerminal(); } else paintTermTabs(); } break; }
+        // show_pane / close_pane (lib/tools-sessions.mjs): "browser" has no opener in this build
+        // unless another package's work is merged in beside this one - typeof, not a direct call,
+        // so a name nobody has defined yet is silently a no-op instead of a ReferenceError.
+        case 'show_pane': (({ terminal: () => openTerminal(), changes: () => openChanges(), files: () => openFiles(), tasks: () => openTasks(), browser: () => { if (typeof openBrowserPane === 'function') openBrowserPane(); } })[ev.pane] || (() => {}))(); break;
+        case 'close_pane': (({ terminal: () => terminalOpen && closeTerminal(), changes: () => changesOpen && closeChanges(), files: () => filesOpen && closeFiles(), tasks: () => tasksOpen && closeTasks(), browser: () => { if (typeof closeBrowserPane === 'function') closeBrowserPane(); } })[ev.pane] || (() => {}))(); break;
+        // open_in_editor's fallback when VS Code is not on the session's own computer's PATH.
+        case 'open_external': openExternal(ev.url); break;
+        case 'options_request': showOptionsCard(ev); break;
+        case 'secret_request': showSecretCard(ev); break;
         case 'terminal_focus': showTerminalTab(ev.tabId); break;
         case 'session_status': { const srow = state.sessions.find((x) => x.id === sessionId); if (srow) srow.status = { status: ev.status, note: ev.note }; renderSessions(); break; }
         // start_session's own card (renderSessionTool) is drawn from the transcript's tool_use

@@ -1350,3 +1350,13 @@ mark.find-hit.current { background: var(--accent); color: var(--accent-ink); }
 .btw-msg.assistant { color: var(--ink); }
 .btw-compose { display: flex; gap: 8px; align-items: flex-end; padding: 10px 14px; border-top: 1px solid var(--line); flex: none; }
 .btw-input { flex: 1; resize: none; min-height: 32px; max-height: 120px; padding: 7px 10px; border-radius: 9px; border: 1px solid var(--line-2); background: var(--bg-2); color: var(--ink); font: inherit; font-size: 13px; }
+
+/* present_options / request_secret: a small card in the thread, answered with a click or a
+   typed value that never becomes visible chat text (lib/tools-sessions.mjs explains why). */
+.options-card, .secret-card { margin: 10px 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg-2); max-width: 32rem; }
+.options-question, .secret-prompt { font-size: 13.5px; margin-bottom: 10px; }
+.options-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.options-row button.picked { background: var(--accent); color: var(--accent-ink); }
+.options-card.answered button:not(.picked), .secret-card.answered button, .secret-card.answered input { opacity: .5; }
+.secret-row { display: flex; align-items: center; gap: 6px; }
+.secret-field { flex: 1; min-width: 0; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--line-2); background: var(--bg-000); color: var(--ink); font: inherit; font-size: 13px; }

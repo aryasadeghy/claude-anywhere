@@ -238,7 +238,7 @@ export async function startFakeApi({ delay = 15 } = {}) {
     const asking = /\[ask\]/.test(said);
     // The conversation package's own tags, each asking for one Claude-facing tool call (or
     // ExitPlanMode) instead of a Bash command - a fixed name and input, not the real model's.
-    const toolTag = (said.match(/\[(suggest|chapter|sugtask|status|plan|todo|tasktool|spawn)\]/) || [])[1];
+    const toolTag = (said.match(/\[(suggest|chapter|sugtask|status|plan|todo|tasktool|spawn|options|asksecret|pane)\]/) || [])[1];
     const writeMatch = said.match(/\[write:([^\]]+)\]\s*([\s\S]*)/);
     const opensTerminal = /\[terminal\]/.test(said);
     const words = afterTool ? (askedBefore ? `Noted: ${toolText.replace(/\s+/g, ' ').slice(0, 160)}` : wroteBefore ? 'Done writing it.' : 'Started it in the background.')
@@ -282,6 +282,9 @@ export async function startFakeApi({ delay = 15 } = {}) {
         todo: ['TodoWrite', { todos: [{ content: 'Set up the database', status: 'completed', activeForm: 'Setting up the database' }, { content: 'Write the tests', status: 'in_progress', activeForm: 'Writing the tests' }, { content: 'Ship it', status: 'pending', activeForm: 'Shipping it' }] }],
         tasktool: ['TaskCreate', { subject: 'Write the README', description: 'A short one', activeForm: 'Writing the README' }],
         spawn: ['mcp__claude-anywhere__start_session', { title: 'Coast towns', prompt: 'List 5 coast towns worth visiting' }],
+        options: ['mcp__claude-anywhere__present_options', { question: 'Which colour?', options: [{ label: 'Red', description: 'Warm' }, { label: 'Blue' }] }],
+        asksecret: ['mcp__claude-anywhere__request_secret', { prompt: 'Stripe secret key' }],
+        pane: ['mcp__claude-anywhere__show_pane', { pane: 'terminal' }],
       };
       const [tagName, tagInput] = TOOL_TAGS[toolTag] || [];
       const name = asking ? 'AskUserQuestion' : writeMatch ? 'Write' : opensTerminal ? 'mcp__claude-anywhere__open_terminal_tab' : tagName || 'Bash';

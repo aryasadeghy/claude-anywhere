@@ -24,6 +24,7 @@ import { runs, pendingPermissions, isLive, isBusy, startRun, answerPermission, b
 import { historyPage, historyImage, searchSession } from './lib/history.mjs';
 import { readConvSettings, writeConvSettings } from './lib/conv-settings.mjs';
 import * as net from './lib/sessions-net.mjs';
+import { answerElicit } from './lib/tools-sessions.mjs';
 import * as runsMod from './lib/runs.mjs';
 import * as limitQueue from './lib/limit-queue.mjs';
 import * as rewindStore from './lib/rewind.mjs';
@@ -539,6 +540,12 @@ app.post('/api/sessions/:id/side-chats', async (req, res, next) => {
 });
 app.delete('/api/sessions/:id/side-chats/:sideId', async (req, res, next) => {
   try { res.json({ ok: await net.closeSideChat(req.params.sideId) }); } catch (e) { next(e); }
+});
+
+// present_options / request_secret (lib/tools-sessions.mjs): the person's click or typed value
+// comes back over this one route regardless of which tool is waiting on it.
+app.post('/api/elicit/:reqId', (req, res) => {
+  res.json({ ok: answerElicit(req.params.reqId, req.body?.value ?? null) });
 });
 
 // ---------- deleting a session puts it aside, it does not destroy it ----------
