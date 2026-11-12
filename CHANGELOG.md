@@ -7,6 +7,19 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **The server no longer runs itself out of memory on a big file.** Opening an untracked file in
+  the Changes panel read it whole and copied it line by line - a crawl's output or a log of a few
+  gigabytes took the server past 4 GB and down, and every running turn with it ("This turn stopped
+  in the middle of a tool call"). It reads the first megabyte now; Office previews stop at 50 MB.
+  The server also writes its memory and its last requests to its log if it ever holds more than
+  1.5 GB, so a next time says what it was doing.
+- **"This turn stopped" only when it did.** A session at work in another window - Desktop, VS Code,
+  a terminal - running one long command writes nothing for minutes, and was called stopped, with a
+  *Continue* that would have started a second Claude Code on it. Claude Code keeps a record of every
+  running process (`~/.claude/sessions`); the app reads it, and shows *Working in another window*.
+
 ## [0.12.0] — 2026-11-10
 
 ### Added
