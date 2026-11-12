@@ -532,6 +532,26 @@
     </div>
   </div>
 
+  <!-- Save as environment: a folder plus a worktree/branch preference and environment
+       variables, saved from an open session and offered again for a new one. -->
+  <div id="env-modal" class="modal hidden">
+    <div class="modal-card env-card">
+      <div class="modal-head"><span>Save as environment</span><button id="env-close" class="icon-btn" aria-label="Close"><svg viewBox="0 0 20 20" width="16" height="16"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div>
+      <form id="env-form" class="sch-form">
+        <label class="sch-field">Name<input id="env-name" type="text" required /></label>
+        <label class="sch-field">Folder<input id="env-folder" type="text" readonly /></label>
+        <label class="sch-field"><span><input id="env-worktree-on" type="checkbox" /> Start a fresh worktree branch each time</span></label>
+        <label class="sch-field hidden" id="env-branch-row">Branch name (optional, a name is made up if left blank)<input id="env-branch" type="text" /></label>
+        <label class="sch-field">Environment variables<textarea id="env-vars" rows="4" placeholder="ONE_KEY=value&#10;ANOTHER_KEY=value"></textarea></label>
+        <p id="env-error" class="login-error" hidden></p>
+        <div class="sch-foot">
+          <button id="env-cancel" class="btn btn-ghost" type="button">Cancel</button>
+          <button class="btn btn-primary" type="submit">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <!-- Account chooser: this computer's login, or a token; switch any time -->
 
   <!-- Which computer this window is showing. Its sessions, files and account are the ones you see. -->
@@ -582,6 +602,14 @@
             <div class="set-info"><div class="set-name">Classify sessions automatically</div><div class="set-desc">Allow Claude to automatically classify sessions as blocked, ready for review, or done.</div></div>
             <div id="set-auto-classify"></div>
           </div>
+          <div class="set-row">
+            <div class="set-info"><div class="set-name">Default output style</div><div class="set-desc">What a new session starts with, unless it says otherwise.</div></div>
+            <select id="set-output-style"></select>
+          </div>
+          <div class="set-row env-list-row">
+            <div class="set-info"><div class="set-name">Saved environments</div><div class="set-desc">Folders with their own worktree preference and variables, saved from a session's menu.</div></div>
+          </div>
+          <div id="set-environments" class="ct-list"></div>
         </section>
 
         <section class="set-pane" data-pane="account">

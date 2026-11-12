@@ -39,6 +39,8 @@ import * as gitActions from './lib/git-actions.mjs';
 import * as autofix from './lib/autofix.mjs';
 import * as awake from './lib/awake.mjs';
 import * as routines from './lib/routines.mjs';
+import * as outputStyles from './lib/output-styles.mjs';
+import * as environments from './lib/environments.mjs';
 import * as update from './lib/update.mjs';
 import * as models from './lib/models.mjs';
 import * as commandsMod from './lib/commands.mjs';
@@ -1209,6 +1211,7 @@ routines.init(DATA_DIR, {
     return { sessionId };
   },
 }).catch((e) => console.error('[routines] startup catch-up failed:', e.message || e));
+environments.init(DATA_DIR); // folder + worktree preference + env vars, saved from a session and offered again for a new one
 models.warm().catch(() => {});
 // Refresh waits: a background refresh would answer with the very list it was asked to
 // replace, and the menu would need a second press to show what changed.
@@ -1268,6 +1271,28 @@ app.post('/api/routines/:id/run', async (req, res) => {
   if (!row) return res.status(404).json({ error: 'No such routine.' });
   res.json(row);
 });
+// Output styles: this folder's list (built-in + project + user), the session's current one if
+// live, and the app-wide default new sessions start with.
+app.get('/api/output-styles', (req, res) => {
+  const cwd = String(req.query.cwd || ''); const sessionId = String(req.query.sessionId || '');
+  const run = runs.get(sessionId);
+  res.json({ styles: outputStyles.list(cwd), current: run && !run.done ? run.controls.outputStyle || 'default' : '', default: readPrefs().outputStyle || 'default' });
+});
+app.post('/api/output-style-default', (req, res) => {
+  const p = readPrefs(); p.outputStyle = String(req.body?.style || '') || undefined; writePrefs(p);
+  res.json({ default: p.outputStyle || 'default' });
+});
+
+// Saved environments: "Started on this computer" banner's "Save as environment", the new-session
+// folder menu's recent-environments section, and Settings' own list.
+app.get('/api/environments', (_req, res) => res.json({ environments: environments.list() }));
+app.post('/api/environments', (req, res) => {
+  const { name, folder, worktree, env } = req.body || {};
+  if (!folder || !fs.existsSync(String(folder))) return res.status(400).json({ error: 'That folder does not exist on this machine.' });
+  res.json(environments.create({ name, folder, worktree, env }));
+});
+app.delete('/api/environments/:id', (req, res) => res.json({ ok: environments.remove(req.params.id) }));
+
 app.get('/api/routines/:id/runs', (req, res) => {
   const row = routines.get(req.params.id);
   if (!row) return res.status(404).json({ error: 'No such routine.' });
@@ -1591,8 +1616,8 @@ app.post('/api/sessions/:id/controls', async (req, res, next) => {
   try {
     const run = runs.get(req.params.id);
     if (!run || run.done) return res.json({ applied: {}, live: false });
-    const { permissionMode, model, effort, ultracode, fast } = req.body || {};
-    res.json({ applied: await run.setControls({ permissionMode, model, effort, ultracode, fast }), live: true });
+    const { permissionMode, model, effort, ultracode, fast, outputStyle } = req.body || {};
+    res.json({ applied: await run.setControls({ permissionMode, model, effort, ultracode, fast, outputStyle }), live: true });
   } catch (e) { next(e); }
 });
 
@@ -1609,7 +1634,11 @@ app.post('/api/sessions', async (req, res) => {
   if (!cwd || cwd === '~') { newId = randomUUID(); cwd = path.join(CHATS_DIR, newId); fs.mkdirSync(cwd, { recursive: true }); }
   if (!fs.existsSync(cwd)) return res.status(400).json({ error: 'That folder does not exist on this machine.' });
   const { model, permissionMode, effort, ultracode, fast } = req.body || {};
-  const { run, ready } = startRun({ newId, cwd, prompt, images, model, permissionMode, effort, ultracode, fast, disabledMcp: readPrefs().disabledMcp || [], promptId: clientId(req.body?.cid) });
+  // No style named for this chat: the one picked as the default in Settings, if any.
+  const outputStyle = req.body?.outputStyle || readPrefs().outputStyle || undefined;
+  // A saved environment chosen for this chat: its own variables travel with the run.
+  const env = req.body?.environmentId ? environments.get(req.body.environmentId) : null;
+  const { run, ready } = startRun({ newId, cwd, prompt, images, model, permissionMode, effort, ultracode, fast, outputStyle, extraEnv: env?.env, disabledMcp: readPrefs().disabledMcp || [], promptId: clientId(req.body?.cid) });
   try {
     const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('Claude Code did not start in time')), 60000));
     const sessionId = await Promise.race([ready, timeout]);

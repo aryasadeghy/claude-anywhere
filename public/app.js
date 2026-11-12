@@ -299,6 +299,49 @@
   $('#sch-close').addEventListener('click', () => schModal.classList.add('hidden'));
   schModal.addEventListener('click', (e) => { if (e.target === schModal) schModal.classList.add('hidden'); });
 
+  // ---------- output styles: the session menu's submenu and /output-style ----------
+  let schOutputStyles = [], schOutputStyleCurrent = '', schOutputStyleDefault = 'default';
+  const styleLabel = (id) => (schOutputStyles.find((s) => s.id === id) || {}).name || id;
+  async function loadOutputStyles() {
+    try {
+      const r = await api('/output-styles?cwd=' + encodeURIComponent(state.cwd || '') + '&sessionId=' + encodeURIComponent(state.current || ''));
+      schOutputStyles = r.styles; schOutputStyleCurrent = r.current; schOutputStyleDefault = r.default;
+    } catch { schOutputStyles = []; }
+  }
+  async function setOutputStyle(id) {
+    schOutputStyleCurrent = id;
+    if (state.current) { try { await api(`/sessions/${state.current}/controls`, { method: 'POST', body: JSON.stringify({ outputStyle: id }) }); toast('Output style: ' + styleLabel(id)); } catch (e) { alert(e.message); } }
+  }
+  async function renderOutputStyleMenu(m) {
+    await loadOutputStyles();
+    m.innerHTML = '';
+    m.appendChild(item('‹ Back', '', false, () => renderSessionMenu(m)));
+    m.appendChild(el('div', 'menu-sep'));
+    for (const s of schOutputStyles) m.appendChild(item(s.name, s.source === 'built-in' ? '' : s.source, s.id === schOutputStyleCurrent, async () => { m.classList.add('hidden'); await setOutputStyle(s.id); }));
+  }
+  // ---------- saved environments: "Save as environment" and the new-session banner ----------
+  const envModal = $('#env-modal');
+  function openSaveEnvironment() {
+    $('#env-name').value = folderName(state.cwd) || 'Environment';
+    $('#env-folder').value = state.cwd || '';
+    $('#env-worktree-on').checked = false; $('#env-branch').value = ''; $('#env-vars').value = '';
+    $('#env-branch-row').classList.add('hidden');
+    $('#env-error').hidden = true;
+    envModal.classList.remove('hidden');
+  }
+  $('#env-worktree-on').addEventListener('change', () => $('#env-branch-row').classList.toggle('hidden', !$('#env-worktree-on').checked));
+  $('#env-close').addEventListener('click', () => envModal.classList.add('hidden'));
+  $('#env-cancel').addEventListener('click', () => envModal.classList.add('hidden'));
+  envModal.addEventListener('click', (e) => { if (e.target === envModal) envModal.classList.add('hidden'); });
+  $('#env-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const env = {};
+    for (const line of $('#env-vars').value.split('\n')) { const m = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/.exec(line); if (m) env[m[1]] = m[2]; }
+    const body = { name: $('#env-name').value.trim(), folder: $('#env-folder').value, env, worktree: $('#env-worktree-on').checked ? { branch: $('#env-branch').value.trim() } : null };
+    try { await api('/environments', { method: 'POST', body: JSON.stringify(body) }); await loadEnvironments(); envModal.classList.add('hidden'); toast('Saved environment "' + body.name + '"'); }
+    catch (err) { $('#env-error').hidden = false; $('#env-error').textContent = err.message; }
+  });
+
   // ---------- accounts: this computer's login or a token, switchable any time ----------
   const acctModal = settingsModal;
   let accounts = null;
@@ -396,6 +439,30 @@
       : 'Claude Anywhere updates itself from GitHub.';
     claudeCodeRow();
     paintConvSettings();
+    await paintOutputStyleDefault();
+    paintEnvironmentsList();
+  }
+  async function paintOutputStyleDefault() {
+    if (!schOutputStyles.length) await loadOutputStyles();
+    const sel = $('#set-output-style'); sel.innerHTML = '';
+    for (const s of schOutputStyles) sel.appendChild(new Option(s.name, s.id));
+    sel.value = schOutputStyleDefault;
+    sel.onchange = async () => { try { await api('/output-style-default', { method: 'POST', body: JSON.stringify({ style: sel.value }) }); schOutputStyleDefault = sel.value; } catch (e) { alert(e.message); } };
+  }
+  function paintEnvironmentsList() {
+    const list = $('#set-environments'); list.innerHTML = '';
+    if (!savedEnvironments.length) { list.appendChild(el('div', 'muted small pad', 'None saved yet. "Save as environment" is in a session\'s menu.')); return; }
+    for (const e of savedEnvironments) {
+      const row = el('div', 'ct-row');
+      const info = el('div', 'ct-info');
+      info.appendChild(el('div', 'ct-name', e.name));
+      info.appendChild(el('div', 'ct-desc', e.folder + (e.worktree?.prefer ? ' · fresh worktree each time' : '') + (Object.keys(e.env || {}).length ? ' · ' + Object.keys(e.env).length + ' variable' + (Object.keys(e.env).length === 1 ? '' : 's') : '')));
+      row.appendChild(info);
+      const del = el('button', 'btn btn-ghost small danger', 'Delete'); del.type = 'button';
+      del.addEventListener('click', async () => { await api('/environments/' + e.id, { method: 'DELETE' }); await loadEnvironments(); paintEnvironmentsList(); });
+      row.appendChild(del);
+      list.appendChild(row);
+    }
   }
   // ---------- Claude Code: the one that computer runs, and a newer one from npm ----------
   // The app carries a Claude Code of its own, and a model or a fix newer than it used to wait
@@ -1183,6 +1250,8 @@
     if (!state.cwd && state.projects[0]) state.cwd = state.projects[0].cwd;
     renderProjectChip();
   }
+  let savedEnvironments = [];
+  async function loadEnvironments() { try { savedEnvironments = (await api('/environments')).environments; } catch { savedEnvironments = []; } }
   const folderName = (p) => (p || '').replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p;
   async function renderProjectChip() {
     const p = state.projects.find((x) => x.cwd === state.cwd);
@@ -1200,7 +1269,13 @@
       } catch {}
     }
   }
-  function pickFolder(cwd) { state.cwd = cwd || ''; state.cwdWorktreePending = false; localStorage.setItem('cr.cwd', state.cwd); renderProjectChip(); pvFollow(); }
+  function pickFolder(cwd) { state.cwd = cwd || ''; state.cwdWorktreePending = false; state.envPending = null; localStorage.setItem('cr.cwd', state.cwd); renderProjectChip(); pvFollow(); }
+  // An environment carries its own worktree preference along with the folder - the one thing
+  // Worktree (below) sets for a Git folder picked by hand, just saved for next time too.
+  function pickEnvironment(e) {
+    state.cwd = e.folder; state.envPending = e.id; state.cwdWorktreePending = !!e.worktree?.prefer;
+    localStorage.setItem('cr.cwd', state.cwd); renderProjectChip(); pvFollow();
+  }
   // Desktop's folder menu: No folder / Recent / Open folder… / (a Git folder) Worktree
   function renderProjectMenu(menu) {
     menu.innerHTML = '';
@@ -1208,6 +1283,11 @@
     menu.appendChild(el('div', 'menu-sep'));
     menu.appendChild(el('div', 'menu-title', 'Recent'));
     for (const p of state.projects.slice(0, 8)) menu.appendChild(item(p.name, '', p.cwd === state.cwd, () => { pickFolder(p.cwd); menu.classList.add('hidden'); }));
+    if (savedEnvironments.length) {
+      menu.appendChild(el('div', 'menu-sep'));
+      menu.appendChild(el('div', 'menu-title', 'Environments'));
+      for (const e of savedEnvironments) menu.appendChild(item(e.name, e.worktree?.prefer ? 'Worktree' : '', state.envPending === e.id, () => { pickEnvironment(e); menu.classList.add('hidden'); }));
+    }
     menu.appendChild(el('div', 'menu-sep'));
     menu.appendChild(item('Open folder…', '', false, () => { menu.classList.add('hidden'); openFolderBrowser(state.cwd); }));
     // "For a Git folder, Branch and Worktree are at the bottom of the folder menu" (Desktop) -
@@ -1582,9 +1662,11 @@
     // Session chapters: MarkChapter, or a message pinned from its own menu.
     m.appendChild(item('Chapters', chapters.length ? String(chapters.length) : 'None yet', false, (e) => { e.stopPropagation(); renderChaptersMenu(m); }));
     m.appendChild(item('Transcript view', TRANSCRIPT_VIEWS.find((v) => v[0] === state.transcriptView)?.[1] || 'Normal', false, (e) => { e.stopPropagation(); renderTranscriptMenu(m); }));
+    m.appendChild(item('Output style', schOutputStyleCurrent ? styleLabel(schOutputStyleCurrent) : 'Default', false, (e) => { e.stopPropagation(); renderOutputStyleMenu(m); }));
 
     if (state.cwd) m.appendChild(item('Open in editor', '', false, () => { m.classList.add('hidden'); openInEditor(state.cwd); }));
     m.appendChild(item('Worktrees…', 'A second checkout on its own branch', false, () => { m.classList.add('hidden'); showWorktrees(state.cwd); }));
+    m.appendChild(item('Save as environment', 'This folder, its worktree preference and variables, for next time', false, () => { m.classList.add('hidden'); openSaveEnvironment(); }));
     m.appendChild(item('Keep computer awake', (AWAKE.find((a) => a[0] === awakeMode) || AWAKE[0])[1], false, () => {
       m.classList.add('hidden');
       setAwake(AWAKE[(AWAKE.findIndex((a) => a[0] === awakeMode) + 1) % AWAKE.length][0]);
@@ -5555,6 +5637,20 @@
     },
   });
   registerCommand('mcp', { description: 'Open Connectors in Settings', argumentHint: '', run: () => openConnectors() });
+  // registerCommand itself needs appCommands (just above), so the output style command - whose
+  // menu lives with the rest of the routines block, up near Settings - is registered from here
+  // instead: calling it before appCommands exists would hit the const's own TDZ.
+  registerCommand('output-style', {
+    description: 'View or switch this session\'s output style', argumentHint: '[name]',
+    async run(args) {
+      await loadOutputStyles();
+      const q = (args || '').trim().toLowerCase();
+      if (!q) { toast('Output style: ' + styleLabel(schOutputStyleCurrent || schOutputStyleDefault) + '. Open it from the session menu to switch.'); return; }
+      const row = schOutputStyles.find((s) => s.name.toLowerCase() === q) || schOutputStyles.find((s) => s.name.toLowerCase().includes(q));
+      if (!row) return toast(`"${args.trim()}" isn't an available output style.`);
+      await setOutputStyle(row.id);
+    },
+  });
   registerCommand('resume', { description: 'Find and resume a session', argumentHint: '', run: () => { const sb = $('#sidebar'); if (!sb.classList.contains('searching')) $('#search-btn').click(); else $('#search-input').focus(); app.classList.add('sidebar-open'); } });
 
   // ---------- "!" shell command: runs on this computer, in the session's folder ----------
@@ -5903,13 +5999,24 @@
         if (r.id && r.id !== cid) mine.dataset.promptId = r.id;
         subscribe(state.current, { fromTurn: true }); // the turn from its prompt - this bubble, found by its id
       } else {
-        const r = await api('/sessions', { method: 'POST', body: JSON.stringify({ ...body, cwd: state.cwd || '~', ...turnOptions() }) });
-        state.current = r.sessionId;
+        const startedFolder = state.cwd, envId = state.envPending;
+        const r = await api('/sessions', { method: 'POST', body: JSON.stringify({ ...body, cwd: state.cwd || '~', environmentId: envId || undefined, ...turnOptions() }) });
+        state.current = r.sessionId; state.envPending = null;
         history.replaceState(null, '', '#/s/' + r.sessionId);
         app.classList.remove('new');
         $('#chat-title').textContent = text.slice(0, 60);
         $('#chat-meta').textContent = state.cwd.split(/[\\/]/).pop();
         $('#project-btn').classList.add('locked');
+        // "Started on this computer · <folder> · Save as environment" - Desktop's own wording for
+        // a brand new session, shown once above the first message, not kept after a reload.
+        if (startedFolder && !envId) {
+          const banner = el('div', 'note info sch-start-banner');
+          banner.appendChild(document.createTextNode('Started on this computer · ' + folderName(startedFolder) + ' · '));
+          const save = el('button', 'link-btn small', 'Save as environment'); save.type = 'button';
+          save.addEventListener('click', () => openSaveEnvironment());
+          banner.appendChild(save);
+          thread.insertBefore(banner, mine);
+        }
         if (r.id && r.id !== cid) mine.dataset.promptId = r.id;
         subscribe(r.sessionId, { fromTurn: true });
       }
@@ -6463,7 +6570,7 @@
     // Opening the app is exactly when "is there a new one?" should be answered afresh:
     // a merge publishes in about eight minutes, and a stale answer reads as "nothing new".
     api('/version').then((v) => { if (!v.update?.checkedAt || Date.now() - v.update.checkedAt > 120000) return api('/update/check', { method: 'POST', body: JSON.stringify({}) }); }).then(() => checkForUpdate()).catch(() => {});
-    await Promise.all([loadSessions(), loadProjects(), loadAwake(), loadModels(), loadConvSettings()]);
+    await Promise.all([loadSessions(), loadProjects(), loadAwake(), loadModels(), loadConvSettings(), loadEnvironments()]);
     route();
     // First time on this device: ask which account to use (local or token).
     let chosen = false; try { chosen = !!localStorage.getItem('cr.accountChosen'); } catch {}
