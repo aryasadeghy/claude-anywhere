@@ -766,7 +766,7 @@
   // By project, in the order you dragged things into, is the default and the only
   // view drag-and-drop applies to; the others are read-only ways of looking at the
   // same sessions. Kept per device, like the collapsed groups.
-  state.view = { group: 'project', sort: 'manual', archived: false };
+  state.view = { group: 'project', sort: 'manual', archived: false, showEmpty: false };
   try { Object.assign(state.view, JSON.parse(localStorage.getItem('cr.view') || '{}')); } catch {}
   const manualOrder = () => state.view.group === 'project' && state.view.sort === 'manual';
   const DAY = 86400000;
@@ -784,14 +784,31 @@
   // `busy`, not `live`: Claude Code can rest between turns, ready for the next message, and that is not working.
   const working = (s) => (s.busy ?? s.live) || s.working;
   const stateBucket = (s) => s.needsInput ? STATES[0] : working(s) ? STATES[1] : s.failed ? STATES[2] : s.unread ? STATES[3] : s.archived ? STATES[4] : STATES[5];
-  const GROUPS = [['project', 'Project', 'Your own order, drag to arrange'], ['date', 'Date', 'Today, yesterday, this month'], ['state', 'Activity', 'Needs input, working, unread']];
-  const SORTS = [['manual', 'Manual', 'The order you dragged them into'], ['recent', 'Recently active', ''], ['name', 'Name', '']];
+  // Desktop's own three: Project, Status, None (none groups by nothing - just Pinned and Recents).
+  // "Date" stays too (useful, nobody asked for it to go) but is not one of the three the menu's
+  // own "Group by" section highlights first.
+  const GROUPS = [['project', 'Project', 'Your own order, drag to arrange'], ['state', 'Status', 'Needs input, working, unread'], ['none', 'None', 'Pinned and Recents only'], ['date', 'Date', 'Today, yesterday, this month']];
+  const SORTS = [['manual', 'Manual', 'The order you dragged them into'], ['recent', 'Recent', 'Recently active first'], ['created', 'Created', 'Newest first'], ['name', 'A→Z', '']];
   function setView(patch) {
     const reload = 'archived' in patch && patch.archived !== state.view.archived;
     Object.assign(state.view, patch);
     try { localStorage.setItem('cr.view', JSON.stringify(state.view)); } catch {}
+    // Shared across devices (lib/sessions-net.mjs's sidebar prefs) so the phone and desktop agree
+    // on how the list is grouped - localStorage alone left the phone looking like a different app.
+    api('/sidebar/prefs', { method: 'POST', body: JSON.stringify({ groupBy: state.view.group, sortBy: state.view.sort, showEmptyGroups: state.view.showEmpty }) }).catch(() => {});
     $('#filter-btn').classList.toggle('on', state.view.group !== 'project' || state.view.sort !== 'manual' || state.view.archived);
     if (reload) loadSessions().catch(() => {}); else renderSessions();
+  }
+  // The server's copy of the same prefs wins at boot (a phone picking up what the desktop set
+  // last), but only once - after that this device's own clicks are the ones that count.
+  async function loadSidebarPrefsFromServer() {
+    try {
+      const p = await api('/sidebar/prefs');
+      if (!localStorage.getItem('cr.view') && (p.groupBy || p.sortBy)) {
+        Object.assign(state.view, { group: p.groupBy || state.view.group, sort: p.sortBy || state.view.sort, showEmpty: !!p.showEmptyGroups });
+        try { localStorage.setItem('cr.view', JSON.stringify(state.view)); } catch {}
+      }
+    } catch {}
   }
   // The menu belongs to whichever button opened it: the one in the top bar on a phone,
   // or the row's own on a desktop, where the top bar does not carry it any more.
@@ -817,17 +834,25 @@
     // Manual only means anything inside a project group; the other groupings fall back to recent.
     for (const [id, name, desc] of SORTS) m.appendChild(item(name, id === 'manual' && state.view.group !== 'project' ? 'Only when grouped by project' : desc, state.view.sort === id, () => { m.classList.add('hidden'); setView({ sort: id }); }));
     m.appendChild(el('div', 'menu-sep'));
-    m.appendChild(item('Show archived', '', state.view.archived, () => { m.classList.add('hidden'); setView({ archived: !state.view.archived }); }));
+    m.appendChild(item('Show empty groups', '', state.view.showEmpty, () => { m.classList.add('hidden'); setView({ showEmpty: !state.view.showEmpty }); }));
+    m.appendChild(item('View all archived sessions', '', state.view.archived, () => { m.classList.add('hidden'); setView({ archived: !state.view.archived }); }));
+    m.appendChild(el('div', 'menu-sep'));
+    m.appendChild(item('New section', '', false, () => { m.classList.add('hidden'); newSectionPrompt(); }));
     m.appendChild(el('div', 'menu-sep'));
     m.appendChild(item('Deleted sessions…', 'Put one back', false, () => { m.classList.add('hidden'); openTrash(); }));
   });
 
   $('#filter-btn').classList.toggle('on', state.view.group !== 'project' || state.view.sort !== 'manual' || state.view.archived);
 
+  state.sessionsLimit = 200;
   async function loadSessions() {
-    state.sessions = await api('/sessions?limit=200' + (state.view.archived ? '&archived=1' : ''));
+    state.sessions = await api(`/sessions?limit=${state.sessionsLimit}` + (state.view.archived ? '&archived=1' : ''));
     renderSessions();
+    paintSessionCards(); // a nested session's status dot (running/done/needs-you) tracks the fresh list
   }
+  // A long list (every archived session, say) comes a page at a time; the bottom row asks for more
+  // rather than the first load fetching everything the server has.
+  async function loadMoreSessions() { state.sessionsLimit += 200; await loadSessions(); }
   let collapsed = new Set();
   try { collapsed = new Set(JSON.parse(localStorage.getItem('cr.collapsed') || '[]')); } catch {}
   const PIN_SVG = '<svg viewBox="0 0 20 20" width="14" height="14"><path d="M12.5 2.5l5 5-2.2.7-3.1 3.1.4 3.6-1.4 1.4L8 13.1l-4.6 4.6-.7-.7L7.3 12.4 4.1 9.2l1.4-1.4 3.6.4 3.1-3.1z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>';
@@ -871,6 +896,10 @@
     add(s.pinned ? 'Unpin' : 'Pin', 'P', () => togglePin(s.id, !s.pinned));
     add('Rename', 'R', async () => { const t = prompt('Session name', s.title || ''); if (t && t.trim()) { try { await api(`/sessions/${s.id}/rename`, { method: 'POST', body: JSON.stringify({ title: t.trim() }) }); if (state.current === s.id) $('#chat-title').textContent = t.trim(); loadSessions(); } catch (e) { alert(e.message); } } });
     add('Fork', 'F', async () => { try { const r = await api(`/sessions/${s.id}/fork`, { method: 'POST', body: JSON.stringify({}) }); await loadSessions(); location.hash = '#/s/' + r.sessionId; } catch (e) { alert(e.message); } });
+    ctx.appendChild(el('div', 'menu-sep'));
+    if (state.sections.length) for (const sec of state.sections) add('Move to “' + sec.name + '”', '', () => moveToSection(s.id, sec.id));
+    if (state.sections.some((sec) => sec.sessionIds.includes(s.id))) add('Remove from section', '', () => moveToSection(s.id, null));
+    add('New section…', '', async () => { await newSectionPrompt(); const sec = state.sections[state.sections.length - 1]; if (sec) moveToSection(s.id, sec.id); });
     ctx.appendChild(el('div', 'menu-sep'));
     add(s.archived ? 'Unarchive' : 'Archive', 'A', async () => { try { await api(`/sessions/${s.id}/archive`, { method: 'POST', body: JSON.stringify({ archived: !s.archived }) }); await loadSessions(); if (state.current === s.id && !s.archived) location.hash = '#/'; } catch (e) { alert(e.message); } });
     add('Delete', 'D', async () => { if (!confirm(`Delete "${s.title}"? It moves to the trash and can be put back from Deleted sessions.`)) return; try { await api(`/sessions/${s.id}`, { method: 'DELETE' }); await loadSessions(); if (state.current === s.id) location.hash = '#/'; } catch (e) { alert(e.message); } }, 'danger');
@@ -919,8 +948,8 @@
   function sessionRow(s, kind = 'session', group = null) {
     const onBranch = s.branch && !/^(main|master)$/i.test(s.branch);
     const attn = s.needsInput ? 'needs-input' : s.failed ? 'failed' : s.unread ? 'unread' : '';
-    const a = el('a', 'session-item' + (s.id === state.current ? ' active' : '') + (s.pinned ? ' pinned' : '') + (onBranch ? ' on-branch' : '') + (working(s) ? ' working' : '') + (attn ? ' ' + attn : ''));
-    a.href = '#/s/' + s.id; a.title = s.title + (s.branch ? '\nBranch: ' + s.branch : '') + (s.archived ? '\nArchived' : ''); a.dataset.id = s.id;
+    const a = el('a', 'session-item' + (s.id === state.current ? ' active' : '') + (s.pinned ? ' pinned' : '') + (onBranch ? ' on-branch' : '') + (working(s) ? ' working' : '') + (attn ? ' ' + attn : '') + (s.parentId ? ' session-child' : ''));
+    a.href = '#/s/' + s.id; a.title = s.title + (s.branch ? '\nBranch: ' + s.branch : '') + (s.archived ? '\nArchived' : '') + (s.parentId ? '\nStarted by Claude, nested under its parent session' : ''); a.dataset.id = s.id;
     if (selected.has(s.id)) a.classList.add('selected');
     if (s.archived) a.classList.add('is-archived');
     a.addEventListener('contextmenu', (e) => { e.preventDefault(); showCtxMenu(s, e.clientX, e.clientY, kind, group); });
@@ -1111,9 +1140,306 @@
     list.splice(i, 1); list.splice(j, 0, id); saveOrder(); renderSessions();
   }
 
+  // ---------- sessions: nested sessions, side chat, sidebar sections ----------
+  // A session Claude starts with start_session (lib/tools-sessions.mjs) is recorded server-side
+  // as a child of the one that started it (lib/sessions-net.mjs). The sidebar nests it under its
+  // parent wherever that parent lands in the current grouping; the parent's chat shows the call as
+  // a card, and the child's own chat opens with a "Started by Claude from …" header and task card,
+  // matching Desktop (cd-shots/web/eat-08b, eat-17b).
+  // Puts a child directly after its parent, in place, when both are in the same group. A parent
+  // in another folder (a worktree, say) still shows its child - just without a parent beside it.
+  function nestChildren(items) {
+    const byParent = new Map();
+    for (const s of items) if (s.parentId) { if (!byParent.has(s.parentId)) byParent.set(s.parentId, []); byParent.get(s.parentId).push(s); }
+    if (!byParent.size) return items;
+    const seen = new Set(), out = [];
+    for (const s of items) {
+      if (seen.has(s.id)) continue;
+      out.push(s); seen.add(s.id);
+      for (const kid of byParent.get(s.id) || []) if (!seen.has(kid.id)) { out.push(kid); seen.add(kid.id); }
+    }
+    return out;
+  }
+
+  // The parent-folder cache a session card's click target and status come from: title -> child id,
+  // refreshed each time a session is opened (a card only needs to resolve once per view).
+  let childMeta = { forSession: null, byTitle: new Map() };
+  async function loadChildMeta(sessionId) {
+    try {
+      const r = await api('/sessions/' + sessionId + '/children');
+      childMeta = { forSession: sessionId, byTitle: new Map((r.children || []).map((c) => [c.title, c.id])), parent: r.parent };
+      paintSessionCards();
+    } catch { childMeta = { forSession: sessionId, byTitle: new Map(), parent: null }; }
+  }
+  // Repaints every session card already drawn for this chat once childMeta (or the session list,
+  // for status dots) is fresh - a card is drawn before its child id or status is known.
+  function paintSessionCards() {
+    for (const node of thread.querySelectorAll('.session-card-btn')) {
+      const title = node.dataset.title; const id = childMeta.byTitle.get(title);
+      const row = id && state.sessions.find((x) => x.id === id);
+      node.dataset.childId = id || '';
+      const dot = node.querySelector('.dot');
+      dot.className = 'dot ' + (!row ? 'running' : row.needsInput ? 'needs-you' : working(row) ? 'running' : 'done');
+      dot.title = !row ? 'Starting…' : row.needsInput ? 'Needs your input' : working(row) ? 'Running' : 'Done';
+    }
+  }
+  function renderSessionTool(msg, index, block) {
+    if (toolNamed(block.name, 'start_session')) {
+      let node = msg.blocks.get(index);
+      if (!node) {
+        node = el('div', 'session-card'); node._toolId = block.id; msg.body.appendChild(node); msg.blocks.set(index, node); msg.group = null;
+        const b = el('button', 'session-card-btn'); b.type = 'button';
+        b.appendChild(el('span', 't', 'Session'));
+        b.appendChild(el('span', 'dot running'));
+        b.appendChild(el('span', 'chev', '›'));
+        b.addEventListener('click', () => { if (b.dataset.childId) location.hash = '#/s/' + b.dataset.childId; });
+        node.appendChild(b);
+      }
+      // The title streams in as its own input_json_delta (block_start fires with input: {}, same
+      // as any tool call) - keep the button's title and lookup key current on every call, not
+      // only when the card is first drawn, or a live start_session never learns its own title.
+      const title = block.input?.title; const b = node.querySelector('.session-card-btn');
+      if (title) { b.dataset.title = title; b.querySelector('.t').textContent = title; }
+      if (childMeta.forSession === state.current) paintSessionCards();
+      return true;
+    }
+    return false;
+  }
+  // The child's own chat opens with Desktop's "Started by Claude from <parent>" line, the Task
+  // card (title + the prompt it was given) and a collapsed Context row - net.linkFor's record,
+  // read back through GET /api/sessions/:id/children (the "parent" half of that response).
+  function paintParentHeader(info) {
+    const parent = info?.parent;
+    if (!parent) return;
+    // The task prompt is already in the Task card below; the plain first user bubble for it
+    // (the real turn the child's CLI was given) would just repeat that, where Desktop shows
+    // nothing until Claude's own first answer.
+    thread.querySelector('.msg.user')?.remove();
+    const header = el('div', 'parent-header');
+    const from = el('span', null, 'Started by Claude from ');
+    const link = el('a', 'link', parent.parentTitle || 'the parent session'); link.href = '#/s/' + parent.parentId;
+    header.appendChild(from); header.appendChild(link); header.appendChild(document.createTextNode(' ' + relTime(parent.startedAt) + ' ago'));
+    const card = el('div', 'task-card');
+    const head = el('div', 'task-card-head'); head.appendChild(el('span', 'label', 'Task')); head.appendChild(el('span', 't', parent.title || '')); card.appendChild(head);
+    card.appendChild(el('div', 'task-card-prompt', parent.prompt || ''));
+    const ctx = el('details', 'task-card-context'); ctx.appendChild(el('summary', null, 'Context'));
+    const lines = [];
+    if (parent.worktree) lines.push('Worktree: ' + parent.worktree.branch + ' (' + parent.worktree.path + ')');
+    ctx.appendChild(el('div', 'muted small', lines.join('\n') || 'No extra context was attached.'));
+    card.appendChild(ctx);
+    thread.insertBefore(header, thread.firstChild);
+    thread.insertBefore(card, header.nextSibling);
+  }
+  // A relayed answer from a child session folds behind a count, cleared once looked at - the
+  // counter itself lives server-side (lib/sessions-net.mjs's noteReceived) so it survives a reload.
+  function paintReceivedFold(count) {
+    thread.querySelectorAll('.received-fold').forEach((n) => n.remove());
+    if (!count) return;
+    const n = el('details', 'received-fold');
+    const s = el('summary', null, `Received ${count} message${count === 1 ? '' : 's'}`); n.appendChild(s);
+    n.addEventListener('toggle', () => { if (n.open && state.current) { api(`/sessions/${state.current}/received/clear`, { method: 'POST' }).catch(() => {}); } });
+    thread.appendChild(n); autoscroll();
+  }
+
+  // ---------- sidebar sections (server-side store: lib/sessions-net.mjs) ----------
+  // Additive, like Pinned already is here: a session in a section still shows in its normal
+  // Project/Status/Date group too, rather than being pulled out of it - one list, several lenses.
+  state.sections = [];
+  async function loadSections() { try { state.sections = (await api('/sidebar/sections')).sections || []; renderSessions(); } catch {} }
+  async function newSectionPrompt() {
+    const name = prompt('Name this section'); if (!name || !name.trim()) return;
+    try { await api('/sidebar/sections', { method: 'POST', body: JSON.stringify({ name: name.trim() }) }); await loadSections(); } catch (e) { alert(e.message); }
+  }
+  async function renameSectionPrompt(sec) {
+    const name = prompt('Rename section', sec.name); if (!name || !name.trim()) return;
+    try { await api(`/sidebar/sections/${sec.id}/rename`, { method: 'POST', body: JSON.stringify({ name: name.trim() }) }); await loadSections(); } catch (e) { alert(e.message); }
+  }
+  async function deleteSectionPrompt(sec) {
+    if (!confirm(`Delete the "${sec.name}" section? The sessions in it are not deleted - only the section.`)) return;
+    try { await api(`/sidebar/sections/${sec.id}`, { method: 'DELETE' }); await loadSections(); } catch (e) { alert(e.message); }
+  }
+  async function moveToSection(sessionId, sectionId) {
+    try {
+      if (sectionId) await api(`/sidebar/sections/${sectionId}/move`, { method: 'POST', body: JSON.stringify({ sessionId }) });
+      else await api('/sidebar/move-out', { method: 'POST', body: JSON.stringify({ sessionId }) });
+      await loadSections();
+    } catch (e) { alert(e.message); }
+  }
+  function showSectionMenu(sec, x, y) {
+    ctx.innerHTML = '';
+    const add = (label, hint, fn) => { const b = item(label, '', false, () => { ctx.classList.add('hidden'); fn(); }, { hint }); ctx.appendChild(b); };
+    ctx.appendChild(el('div', 'menu-title', sec.name));
+    add('Rename', '', () => renameSectionPrompt(sec));
+    add('Delete section', '', () => deleteSectionPrompt(sec), 'danger');
+    ctx.classList.remove('hidden');
+    if (isPhone()) { ctx.style.left = ctx.style.top = ''; return; }
+    const r = ctx.getBoundingClientRect();
+    ctx.style.left = Math.min(x, window.innerWidth - r.width - 8) + 'px'; ctx.style.top = Math.min(y, window.innerHeight - r.height - 8) + 'px';
+  }
+  function renderSectionGroups(list) {
+    for (const sec of state.sections) {
+      const rows = sec.sessionIds.map((id) => state.sessions.find((s) => s.id === id)).filter(Boolean);
+      // A section is deliberate, not a computed bucket - it stays even at zero so there is
+      // somewhere to move a session into; "show empty groups" is about Project/Status/Date only.
+      const g = el('details', 'project-group section-group'); g.open = !collapsed.has('sec:' + sec.id);
+      const sm = el('summary'); sm.innerHTML = CHEV_SVG; sm.appendChild(el('span', null, sec.name)); sm.appendChild(el('span', 'cnt', String(rows.length)));
+      const more = el('button', 'proj-act'); more.type = 'button'; more.title = 'Section options'; more.innerHTML = KEBAB_SVG;
+      more.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); const r = more.getBoundingClientRect(); showSectionMenu(sec, r.right, r.bottom + 4); });
+      sm.appendChild(more);
+      g.appendChild(sm);
+      for (const s of rows) g.appendChild(sessionRow(s, 'section', sec.id));
+      g.addEventListener('toggle', () => rememberCollapsed('sec:' + sec.id, !g.open));
+      list.appendChild(g);
+    }
+  }
+
+  // ---------- /btw: a side chat beside the session, one tab per question ----------
+  // Each tab is a real session underneath (lib/sessions-net.mjs's openSideChat, a forked,
+  // hidden session) - sent to and read back with the same /send and /messages routes any
+  // session uses, just never added to the main thread and never listed in the sidebar. No
+  // live SSE stream of its own: a short poll while it is busy is simpler and plenty for an
+  // aside, and nothing here competes with the main session's own stream for events.
+  const btwPanel = $('#btw-panel'), btwTabsEl = $('#btw-tabs'), btwStage = $('#btw-stage');
+  let btwOpen = false;
+  state.btw = { forSession: null, tabs: [], active: null }; // tabs: [{id, question, el, pollTimer}]
+  function openBtwPanel() {
+    if (changesOpen) closeChanges(); if (previewOpen) closePreview(); if (filesOpen) closeFiles(); if (terminalOpen) closeTerminal(); if (tasksOpen) closeTasks();
+    btwOpen = true; btwPanel.classList.remove('hidden'); app.classList.add('panel-open');
+  }
+  function closeBtwPanel() { btwOpen = false; btwPanel.classList.add('hidden'); app.classList.remove('panel-open'); }
+  function btwTabView(tab) {
+    const root = el('div', 'btw-tab-view hidden');
+    const head = el('div', 'btw-tab-head');
+    head.appendChild(el('div', 'btw-question', tab.question));
+    root.appendChild(head);
+    const msgs = el('div', 'btw-messages'); root.appendChild(msgs);
+    const box = el('div', 'btw-compose');
+    const ta = el('textarea', 'btw-input'); ta.placeholder = 'Ask a follow-up…'; ta.rows = 1;
+    const send = el('button', 'btn btn-ghost small', 'Send'); send.type = 'button';
+    const go = async () => { const v = ta.value.trim(); if (!v) return; ta.value = ''; send.disabled = true; try { await api(`/sessions/${tab.id}/send`, { method: 'POST', body: JSON.stringify({ text: v }) }); pollBtwTab(tab); } catch (e) { toast(e.message); } finally { send.disabled = false; } };
+    send.addEventListener('click', go);
+    ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); go(); } });
+    box.appendChild(ta); box.appendChild(send); root.appendChild(box);
+    tab.el = root; tab.msgsEl = msgs;
+    return root;
+  }
+  function paintBtwTabs() {
+    btwTabsEl.innerHTML = '';
+    for (const tab of state.btw.tabs) {
+      const b = el('div', 'pv-tab' + (tab.id === state.btw.active ? ' on' : ''));
+      b.setAttribute('role', 'tab'); b.setAttribute('aria-selected', String(tab.id === state.btw.active)); b.title = tab.question;
+      b.appendChild(el('span', 'pv-tab-name', tab.question));
+      const x = el('button', 'pv-tab-x'); x.type = 'button'; x.title = 'Close tab (discards it)'; x.setAttribute('aria-label', 'Close tab');
+      x.innerHTML = '<svg viewBox="0 0 20 20" width="11" height="11"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
+      x.addEventListener('click', (e) => { e.stopPropagation(); closeBtwTab(tab.id); });
+      b.appendChild(x);
+      b.addEventListener('click', () => showBtwTab(tab.id));
+      btwTabsEl.appendChild(b);
+    }
+  }
+  function showBtwTab(id) {
+    state.btw.active = id;
+    for (const t of state.btw.tabs) t.el.classList.toggle('hidden', t.id !== id);
+    paintBtwTabs();
+  }
+  async function paintBtwMessages(tab) {
+    let rows = [];
+    try { rows = await api(`/sessions/${tab.id}/messages`); } catch { return; }
+    tab.msgsEl.innerHTML = '';
+    // A fork's history is a full copy of the parent's, not a clean slate - only turns from the
+    // moment this side chat was opened (tab.startedAt, lib/sessions-net.mjs's own clock) are the
+    // side chat's own; everything older is the parent's conversation showing up again.
+    for (const m of rows) {
+      if (m.timestamp && Date.parse(m.timestamp) < tab.startedAt) continue;
+      const text = (m.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('\n');
+      if (!text) continue;
+      const row = el('div', 'btw-msg ' + (m.role === 'user' ? 'user' : 'assistant')); row.innerHTML = md(text);
+      tab.msgsEl.appendChild(row);
+    }
+    tab.msgsEl.scrollTop = tab.msgsEl.scrollHeight;
+  }
+  async function pollBtwTab(tab) {
+    clearTimeout(tab.pollTimer);
+    await paintBtwMessages(tab);
+    try {
+      const info = await api(`/sessions/${tab.id}`);
+      if (info.busy) { tab.pollTimer = setTimeout(() => pollBtwTab(tab), 700); return; }
+    } catch {}
+    await paintBtwMessages(tab); // the last word, once it has stopped being busy
+  }
+  async function askBtw(parentId, question) {
+    let id, startedAt; try { ({ id, startedAt } = await api(`/sessions/${parentId}/side-chats`, { method: 'POST', body: JSON.stringify({ text: question }) })); }
+    catch (e) { toast(e.message); return; }
+    if (state.btw.forSession !== parentId) { state.btw.tabs = []; state.btw.forSession = parentId; }
+    const tab = { id, question, startedAt: startedAt || 0, pollTimer: null };
+    state.btw.tabs.push(tab);
+    btwStage.appendChild(btwTabView(tab));
+    openBtwPanel();
+    showBtwTab(id);
+    pollBtwTab(tab);
+  }
+  async function closeBtwTab(id) {
+    const tab = state.btw.tabs.find((t) => t.id === id); if (!tab) return;
+    clearTimeout(tab.pollTimer);
+    try { await api(`/sessions/${state.btw.forSession}/side-chats/${id}`, { method: 'DELETE' }); } catch {}
+    tab.el.remove();
+    state.btw.tabs = state.btw.tabs.filter((t) => t.id !== id);
+    if (!state.btw.tabs.length) closeBtwPanel();
+    else showBtwTab(state.btw.tabs[state.btw.tabs.length - 1].id);
+  }
+  function resetBtwForSession(sessionId) {
+    for (const t of state.btw.tabs) clearTimeout(t.pollTimer);
+    state.btw = { forSession: sessionId, tabs: [], active: null };
+    btwStage.innerHTML = ''; closeBtwPanel();
+  }
+  $('#btw-close').addEventListener('click', closeBtwPanel);
+
+  // ---------- present_options / request_secret (Desktop's elicit) ----------
+  // Both wait on a click or a typed value the same way AskUserQuestion does, but as this app's
+  // own tools rather than a built-in the permission dialog already renders, so they draw their
+  // own small card in the thread and answer over POST /api/elicit/:reqId (lib/tools-sessions.mjs).
+  function answerElicitRequest(reqId, value) { return api(`/elicit/${reqId}`, { method: 'POST', body: JSON.stringify({ value }) }).catch(() => {}); }
+  function showOptionsCard(ev) {
+    const card = el('div', 'options-card');
+    card.appendChild(el('div', 'options-question', ev.question));
+    const row = el('div', 'options-row');
+    ev.options.forEach((o, i) => {
+      const b = el('button', 'btn btn-ghost small', o.label); b.type = 'button';
+      if (o.description) b.title = o.description;
+      b.addEventListener('click', () => {
+        for (const x of row.querySelectorAll('button')) x.disabled = true;
+        card.classList.add('answered'); b.classList.add('picked');
+        answerElicitRequest(ev.reqId, i);
+      });
+      row.appendChild(b);
+    });
+    card.appendChild(row);
+    thread.appendChild(card); autoscroll();
+  }
+  function showSecretCard(ev) {
+    const card = el('div', 'secret-card');
+    card.appendChild(el('div', 'secret-prompt', ev.prompt));
+    const row = el('div', 'secret-row');
+    const input = el('input', 'secret-field'); input.type = 'password'; input.placeholder = 'Paste or type it here';
+    const eye = el('button', 'icon-btn small', ''); eye.type = 'button'; eye.title = 'Show'; eye.innerHTML = EYE_SVG;
+    eye.addEventListener('click', () => { input.type = input.type === 'password' ? 'text' : 'password'; });
+    const go = el('button', 'btn btn-primary small', 'Send'); go.type = 'button';
+    const skip = el('button', 'btn btn-ghost small', 'Skip'); skip.type = 'button';
+    const done = (value) => { input.disabled = true; go.disabled = true; skip.disabled = true; eye.disabled = true; card.classList.add('answered'); answerElicitRequest(ev.reqId, value); };
+    go.addEventListener('click', () => done(input.value));
+    skip.addEventListener('click', () => done(null));
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); done(input.value); } });
+    row.appendChild(input); row.appendChild(eye); row.appendChild(go); row.appendChild(skip);
+    card.appendChild(row);
+    // Never logged, never sent anywhere but the answer itself: not attachContext, not stored
+    // in localStorage, no console.log on the way - the card forgets it the moment it is sent.
+    thread.appendChild(card); autoscroll(); input.focus();
+  }
+
   function renderSessions() {
     applyOrder();
     const list = $('#session-list'); const scrolled = list.scrollTop; list.innerHTML = '';
+    renderSectionGroups(list); // user sections (lib/sessions-net.mjs) sit above Pinned, like Desktop's own
     const pinned = byOrder(state.sessions.filter((s) => s.pinned), state.order.pinned, (s) => s.id);
     if (pinned.length) {
       const g = el('details', 'project-group'); g.open = !collapsed.has('__pinned');
@@ -1124,21 +1450,26 @@
     }
     const q = (state.search || '').trim().toLowerCase();
     const byProject = state.view.group === 'project';
+    const byNone = state.view.group === 'none';
     const manual = manualOrder();
     const groups = new Map();
     for (const s of state.sessions) {
       if (q && !(s.title + ' ' + s.project + ' ' + s.branch).toLowerCase().includes(q) && !hits.has(s.id)) continue;
-      const k = byProject ? groupKey(s) : state.view.group === 'date' ? dateBucket(s.lastModified) : stateBucket(s);
+      // "None" groups by nothing at all: one heading, Desktop's own "Recents" (Pinned is above).
+      const k = byNone ? 'Recents' : byProject ? groupKey(s) : state.view.group === 'date' ? dateBucket(s.lastModified) : stateBucket(s);
       if (!groups.has(k)) groups.set(k, []); groups.get(k).push(s);
     }
-    const newest = (k) => Math.max(...groups.get(k).map((s) => s.lastModified));
-    const keys = byProject ? byOrder([...groups.keys()], state.order.projects, (k) => k)
-      : state.view.group === 'state' ? STATES.filter((x) => groups.has(x))
+    const newest = (k) => Math.max(...(groups.get(k) || [{ lastModified: 0 }]).map((s) => s.lastModified));
+    const keys = byNone ? (groups.has('Recents') || state.view.showEmpty ? ['Recents'] : [])
+      : byProject ? byOrder([...groups.keys()], state.order.projects, (k) => k)
+      : state.view.group === 'state' ? (state.view.showEmpty ? STATES : STATES.filter((x) => groups.has(x)))
       : [...groups.keys()].sort((a, b) => newest(b) - newest(a));
     for (const k of keys) {
-      const items = state.view.sort === 'name' ? groups.get(k).slice().sort((a, b) => a.title.localeCompare(b.title))
+      if (!groups.has(k)) groups.set(k, []); // "Show empty groups": an empty Status bucket still gets its heading
+      let items = state.view.sort === 'name' ? groups.get(k).slice().sort((a, b) => a.title.localeCompare(b.title))
         : manual ? byOrder(groups.get(k), state.order.sessions[k] || [], (s) => s.id)
         : groups.get(k).slice().sort((a, b) => b.lastModified - a.lastModified);
+      items = nestChildren(items); // a session start_session made slots in right under its parent, indented
       const name = byProject ? (items[0].project || 'Other') : k;
       const memo = byProject ? name : state.view.group + ':' + name; // a date bucket and a project can share a name
       const g = el('details', 'project-group'); g.open = q ? true : !collapsed.has(memo);
@@ -1163,7 +1494,7 @@
           return b;
         };
         sm.appendChild(act('Search sessions', "<svg viewBox=\"0 0 20 20\" width=\"13\" height=\"13\"><circle cx=\"9\" cy=\"9\" r=\"5.5\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\"/><path d=\"M13.5 13.5L17 17\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\"/></svg>", () => $('#search-btn').click()));
-        sm.appendChild(act('Group, sort, filter', "<svg viewBox=\"0 0 20 20\" width=\"13\" height=\"13\"><path d=\"M3 5.5h14M6 10h8M8.5 14.5h3\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" fill=\"none\"/></svg>", (b) => { filterAnchor = b; $('#filter-btn').click(); }));
+        sm.appendChild(act('Group and sort', "<svg viewBox=\"0 0 20 20\" width=\"13\" height=\"13\"><path d=\"M3 5.5h14M6 10h8M8.5 14.5h3\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" fill=\"none\"/></svg>", (b) => { filterAnchor = b; $('#filter-btn').click(); }));
       }
       g.appendChild(sm);
       if (manual) {
@@ -1178,6 +1509,11 @@
     }
     if (!state.sessions.length) list.appendChild(el('div', 'muted small pad', 'No sessions yet.'));
     if (q && !groups.size) list.appendChild(el('div', 'muted small pad', searchingInside ? 'Nothing found in any transcript.' : 'No sessions match.'));
+    if (!q && state.sessions.length >= state.sessionsLimit) {
+      const more = el('button', 'link-btn small load-more', 'Load more'); more.type = 'button';
+      more.addEventListener('click', () => loadMoreSessions().catch(() => {}));
+      list.appendChild(more);
+    }
     list.scrollTop = scrolled; // rebuilt in place on every refresh and every pick: it must not jump to the top
     updatePinButton(); paintSelectBar();
   }
@@ -2319,6 +2655,7 @@
       b.appendChild(text ? el('div', 'prose thought-text', text) : el('div', 'muted', 'This part of the thinking is encrypted and not shown.'));
     } else if (block.type === 'tool_use') {
       if (renderConvTool(msg, index, block)) return;
+      if (renderSessionTool(msg, index, block)) return;
       if (!node) {
         node = stepEl('tool', block.name, ''); node._toolId = block.id; node._toolName = block.name;
         if (block.name === 'SendUserFile') msg.group = null; // Desktop's own: "Sent ›" is a line of its own
@@ -3358,7 +3695,7 @@
     clearInterval(tasksTimer); tasksTimer = null;
     if (running.length && tasksOpen) tasksTimer = setInterval(() => { for (const t of running) { const n = tpList.querySelector(`[data-task="${t.id}"] .tp-elapsed`); if (n) n.textContent = fmtDur(Date.now() - t.startedAt); } }, 1000);
   }
-  function openTasks() { if (changesOpen) closeChanges(); if (previewOpen) closePreview(); if (filesOpen) closeFiles(); if (terminalOpen) closeTerminal(); tasksOpen = true; tasksPanel.classList.remove('hidden'); app.classList.add('tasks-open'); paintTasks(); }
+  function openTasks() { if (changesOpen) closeChanges(); if (previewOpen) closePreview(); if (filesOpen) closeFiles(); if (terminalOpen) closeTerminal(); if (btwOpen) closeBtwPanel(); tasksOpen = true; tasksPanel.classList.remove('hidden'); app.classList.add('tasks-open'); paintTasks(); }
   function closeTasks() { tasksOpen = false; tasksPanel.classList.add('hidden'); app.classList.remove('tasks-open'); for (const [, o] of outputOpen) clearInterval(o.timer); outputOpen.clear(); paintTasks(); }
   $('#tasks-bar').addEventListener('click', () => tasksOpen ? closeTasks() : openTasks());
   $('#tp-close').addEventListener('click', closeTasks);
@@ -3919,6 +4256,7 @@
     if (tasksOpen) closeTasks();
     if (changesOpen) closeChanges();
     if (filesOpen) closeFiles();
+    if (btwOpen) closeBtwPanel();
     if (terminalOpen) closeTerminal();
     previewOpen = true; pvPanel.classList.remove('hidden', 'mini'); app.classList.add('panel-open');
     // The frames cannot send our token, so the server hands out a cookie of their own first.
@@ -4523,7 +4861,7 @@
   const defaultModeFor = (p) => RICH_KINDS.test(p) ? 'preview' : 'edit';
 
   function openFiles() {
-    if (tasksOpen) closeTasks(); if (previewOpen) closePreview(); if (changesOpen) closeChanges(); if (terminalOpen) closeTerminal();
+    if (tasksOpen) closeTasks(); if (previewOpen) closePreview(); if (changesOpen) closeChanges(); if (terminalOpen) closeTerminal(); if (btwOpen) closeBtwPanel();
     filesOpen = true; fxPanel.classList.remove('hidden'); app.classList.add('panel-open');
     // A new session's folder starts the tree over; the same session keeps its open tabs,
     // so switching to the Browser and back does not lose where you were.
@@ -5214,7 +5552,7 @@
   async function openTerminal() {
     if (!state.current) { toast('Start a conversation first.'); return; }
     if (mini?.kind === 'terminal') restoreMini();
-    if (tasksOpen) closeTasks(); if (previewOpen) closePreview(); if (filesOpen) closeFiles(); if (changesOpen) closeChanges();
+    if (tasksOpen) closeTasks(); if (previewOpen) closePreview(); if (filesOpen) closeFiles(); if (changesOpen) closeChanges(); if (btwOpen) closeBtwPanel();
     terminalOpen = true;
     termPanel.classList.remove('hidden', 'mini');
     app.classList.add('panel-open');
@@ -5529,7 +5867,7 @@
   // ---------- Changes: the files this folder has changed, and their diffs (Desktop's Changes pane) ----------
   const changesPanel = $('#changes-panel'), chList = $('#ch-list'), chDiff = $('#ch-diff');
   let changesOpen = false, changesData = null, changesFile = null;
-  function openChanges() { if (tasksOpen) closeTasks(); if (previewOpen) closePreview(); if (filesOpen) closeFiles(); if (terminalOpen) closeTerminal(); changesOpen = true; changesPanel.classList.remove('hidden'); app.classList.add('panel-open'); showChangesList(); loadChanges(); }
+  function openChanges() { if (tasksOpen) closeTasks(); if (previewOpen) closePreview(); if (filesOpen) closeFiles(); if (terminalOpen) closeTerminal(); if (btwOpen) closeBtwPanel(); changesOpen = true; changesPanel.classList.remove('hidden'); app.classList.add('panel-open'); showChangesList(); loadChanges(); }
   function closeChanges() { changesOpen = false; changesFile = null; changesPanel.classList.add('hidden'); app.classList.remove('panel-open'); }
   $('#ch-close').addEventListener('click', closeChanges);
   $('#ch-refresh').addEventListener('click', () => loadChanges());
@@ -5814,9 +6152,25 @@
 
         // Claude opened or used a terminal tab: the person sees it, same as if they had.
         case 'terminal_tab': onTerminalTabEvent(ev.tab); break;
+        // Claude's stop_terminal_tab (lib/tools-terminal.mjs): the tab is already gone server-side,
+        // so this just tidies up the client's own view of it (same cleanup as the tab's own X).
+        case 'terminal_tab_closed': { const tab = findTermTab(ev.tabId); if (tab) { try { tab.ws?.close(); } catch {} try { tab.xterm.dispose(); } catch {} tab.el.remove(); term.tabs = term.tabs.filter((t) => t !== tab); if (term.active === tab.id) { term.active = null; if (term.tabs.length) showTerminalTab(term.tabs[term.tabs.length - 1].id); else closeTerminal(); } else paintTermTabs(); } break; }
+        // show_pane / close_pane (lib/tools-sessions.mjs): "browser" has no opener in this build
+        // unless another package's work is merged in beside this one - typeof, not a direct call,
+        // so a name nobody has defined yet is silently a no-op instead of a ReferenceError.
+        case 'show_pane': (({ terminal: () => openTerminal(), changes: () => openChanges(), files: () => openFiles(), tasks: () => openTasks(), browser: () => { if (typeof openBrowserPane === 'function') openBrowserPane(); } })[ev.pane] || (() => {}))(); break;
+        case 'close_pane': (({ terminal: () => terminalOpen && closeTerminal(), changes: () => changesOpen && closeChanges(), files: () => filesOpen && closeFiles(), tasks: () => tasksOpen && closeTasks(), browser: () => { if (typeof closeBrowserPane === 'function') closeBrowserPane(); } })[ev.pane] || (() => {}))(); break;
+        // open_in_editor's fallback when VS Code is not on the session's own computer's PATH.
+        case 'open_external': openExternal(ev.url); break;
+        case 'options_request': showOptionsCard(ev); break;
+        case 'secret_request': showSecretCard(ev); break;
         case 'terminal_focus': showTerminalTab(ev.tabId); break;
         case 'browser_show': rvShow(ev.tab); break;
         case 'session_status': { const srow = state.sessions.find((x) => x.id === sessionId); if (srow) srow.status = { status: ev.status, note: ev.note }; renderSessions(); break; }
+        // start_session's own card (renderSessionTool) is drawn from the transcript's tool_use
+        // block already; this just refreshes the child id/status lookup once it exists.
+        case 'session_started': loadSessions().catch(() => {}); if (state.current === sessionId) loadChildMeta(sessionId); break;
+        case 'session_received': if (state.current === sessionId) paintReceivedFold(ev.count); break;
         case 'note': thread.appendChild(el('div', 'note' + (ev.level === 'warning' ? ' warning' : ''), ev.text)); statusPaint(); autoscroll(); break;
         // Stop took back messages typed mid-turn (or Remove took one out): its dashed bubble goes, on every device.
         case 'unqueued': for (const id of ev.ids || []) thread.querySelector('.msg.user.queued[data-prompt-id="' + CSS.escape(id) + '"]')?.remove(); restackQueue(); break;
@@ -6357,6 +6711,17 @@
       const row = schOutputStyles.find((s) => s.name.toLowerCase() === q) || schOutputStyles.find((s) => s.name.toLowerCase().includes(q));
       if (!row) return toast(`"${args.trim()}" isn't an available output style.`);
       await setOutputStyle(row.id);
+    },
+  });
+  // A side chat answers with this session's context (a fork of it) without adding the question
+  // or its answer to the main thread - for "by the way" tangents that do not belong in the record.
+  registerCommand('btw', {
+    description: 'Ask something off to the side, with this session\'s context, without adding it to the main thread', argumentHint: '<question>',
+    async run(args) {
+      const q = (args || '').trim();
+      if (!state.current) return toast('Start a conversation first.');
+      if (!q) return toast('Type a question after /btw.');
+      await askBtw(state.current, q);
     },
   });
   registerCommand('resume', { description: 'Find and resume a session', argumentHint: '', run: () => { const sb = $('#sidebar'); if (!sb.classList.contains('searching')) $('#search-btn').click(); else $('#search-input').focus(); app.classList.add('sidebar-open'); } });
@@ -7127,6 +7492,7 @@
     state.current = id; state.live = null; state.tasks = []; hiddenTasks.clear(); paintTasks(); if (changesOpen) closeChanges(); if (previewOpen) closePreview(); if (filesOpen) closeFiles(); if (terminalOpen) closeTerminal();
     paintPaneBtns(); paintRail(); restoreSplit();
     planTodos = null; planTasks.clear(); planFoldOpen = false; planStopped = false; planBoxEl?.remove(); planBoxEl = null; $('#plan-step-chip')?.classList.add('hidden'); paintPlanBox();
+    if (state.btw.forSession !== id) resetBtwForSession(id); // side chats are per-session, not carried to the next one opened
     findQuery = ''; findHits = []; findIndex = -1; findSeq++; findBar.classList.add('hidden');
     if (state.es) { state.es.close(); state.es = null; }
     app.classList.remove('sidebar-open'); app.classList.remove('new');
@@ -7162,6 +7528,8 @@
       await chaptersReady; if (seq !== openSeq) return;
       renderHistory(messages);
       paintHistoryTop();
+      loadChildMeta(id).then(() => paintParentHeader(childMeta));
+      api(`/sessions/${id}/received`).then((r) => paintReceivedFold(r.count)).catch(() => {});
       // The last turn never finished (the app or the PC restarted mid-work). Desktop resumes by
       // itself when that is safe and shows the manual banner only when it is not
       // (info.interrupted.safe, computed server-side - server.mjs's safeToAutoResume).
@@ -7203,6 +7571,7 @@
     findQuery = ''; findHits = []; findIndex = -1; findSeq++; findBar.classList.add('hidden');
     state.current = null; state.live = null; state.tasks = []; hiddenTasks.clear(); paintTasks(); if (changesOpen) closeChanges(); if (filesOpen) closeFiles(); if (terminalOpen) closeTerminal(); stopPrWatch(); $("#sb-pr-state").classList.add("hidden");
     paintPaneBtns(); paintRail(); closeSplit();
+    resetBtwForSession(null);
     if (state.es) { state.es.close(); state.es = null; }
     app.classList.remove('sidebar-open');
     thread.innerHTML = ''; empty.classList.add('show'); app.classList.add('new');
@@ -7280,7 +7649,8 @@
     // Opening the app is exactly when "is there a new one?" should be answered afresh:
     // a merge publishes in about eight minutes, and a stale answer reads as "nothing new".
     api('/version').then((v) => { if (!v.update?.checkedAt || Date.now() - v.update.checkedAt > 120000) return api('/update/check', { method: 'POST', body: JSON.stringify({}) }); }).then(() => checkForUpdate()).catch(() => {});
-    await Promise.all([loadSessions(), loadProjects(), loadAwake(), loadModels(), loadConvSettings(), loadEnvironments()]);
+    await loadSidebarPrefsFromServer();
+    await Promise.all([loadSessions(), loadProjects(), loadAwake(), loadModels(), loadConvSettings(), loadEnvironments(), loadSections()]);
     if (!embedded && localStorage.getItem('cr.rail') === '1') openRail(); // remembered across restarts, like every other pane
     route();
     // First time on this device: ask which account to use (local or token).

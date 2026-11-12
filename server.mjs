@@ -23,6 +23,8 @@ import { listSessions, getSessionMessages, getSessionInfo, renameSession, forkSe
 import { runs, pendingPermissions, isLive, isBusy, startRun, answerPermission, bus, contextBySession, lastLimits, ensureLive } from './lib/runs.mjs';
 import { historyPage, historyImage, searchSession } from './lib/history.mjs';
 import { readConvSettings, writeConvSettings } from './lib/conv-settings.mjs';
+import * as net from './lib/sessions-net.mjs';
+import { answerElicit } from './lib/tools-sessions.mjs';
 import * as runsMod from './lib/runs.mjs';
 import * as limitQueue from './lib/limit-queue.mjs';
 import * as rewindStore from './lib/rewind.mjs';
@@ -429,6 +431,10 @@ const shape = (s, pinned) => ({
   context: contextBySession.get(s.sessionId) || null,
   // Set by Claude's own SetSessionStatus tool (lib/tools-conversation.mjs), shown as a sidebar badge.
   status: readConvSettings().status[s.sessionId] || null,
+  // A nested session (start_session) nests under its parent in the sidebar; "received" is the
+  // "Received N messages" fold a parent shows once a child's answers land (lib/sessions-net.mjs).
+  parentId: net.linkFor(s.sessionId)?.parentId || null,
+  received: net.noteReceived(s.sessionId, 0),
 });
 
 // ---------- composer: "/" commands, "@" file mentions, "!" shell commands ----------
@@ -509,6 +515,59 @@ app.post('/api/sessions/:id/archive', async (req, res, next) => {
     res.json({ ok: true, archived });
   } catch (e) { next(e); }
 });
+// ---------- sessions ----------
+// A nested session's final answer each turn is handed back into the session that started it -
+// through the same fold/start path the composer uses (lib/sessions-net.mjs's sendMessage), so a
+// parent resting between turns gets fed properly and one another window has since moved past is
+// never written into. `turn_done` only carries the first 200 chars; that is plenty for a relay line.
+bus.on('turn_done', ({ sessionId, text, isError }) => {
+  const link = net.linkFor(sessionId);
+  if (!link || link.dismissed || isError) return;
+  net.sendMessage(link.parentId, `[from "${link.title || 'nested session'}"] ${text}`).then(() => {
+    net.noteReceived(link.parentId, 1);
+    const parentRun = runs.get(link.parentId);
+    if (parentRun) parentRun.push({ t: 'session_received', childId: sessionId, count: net.noteReceived(link.parentId, 0) });
+  }).catch(() => {}); // the parent may itself be gone (deleted, trashed) - nothing to deliver into
+});
+
+app.get('/api/sessions/:id/children', (req, res) => {
+  res.json({ children: net.childrenOf(req.params.id).filter((c) => !c.dismissed), parent: net.linkFor(req.params.id) });
+});
+app.post('/api/sessions/:id/children/:childId/dismiss', (req, res) => res.json({ ok: net.dismiss(req.params.childId) }));
+app.get('/api/sessions/:id/received', (req, res) => res.json({ count: net.noteReceived(req.params.id, 0) }));
+app.post('/api/sessions/:id/received/clear', (req, res) => { net.clearReceived(req.params.id); res.json({ ok: true }); });
+
+// The sidebar's own sections (independent of Claude Code's folders/projects) and its "Group and
+// sort" menu state - one small store so the phone and the desktop agree (lib/sessions-net.mjs).
+app.get('/api/sidebar/sections', (req, res) => res.json({ sections: net.listSections() }));
+app.post('/api/sidebar/sections', (req, res) => res.json(net.createSection(String(req.body?.name || '').slice(0, 80))));
+app.post('/api/sidebar/sections/:id/rename', (req, res) => res.json({ ok: net.renameSection(req.params.id, String(req.body?.name || '').slice(0, 80)) }));
+app.delete('/api/sidebar/sections/:id', (req, res) => res.json({ ok: net.deleteSection(req.params.id) }));
+app.post('/api/sidebar/sections/:id/move', (req, res) => res.json({ ok: net.moveToSection(String(req.body?.sessionId || ''), req.params.id) }));
+app.post('/api/sidebar/move-out', (req, res) => res.json({ ok: net.moveToSection(String(req.body?.sessionId || ''), null) }));
+app.get('/api/sidebar/prefs', (req, res) => res.json(net.getSidebarPrefs()));
+app.post('/api/sidebar/prefs', (req, res) => res.json(net.setSidebarPrefs(req.body || {})));
+
+// /btw: a side chat forked from this session (hidden - never in /api/sessions), one per question,
+// answering with this session's context without the main thread ever seeing it.
+app.get('/api/sessions/:id/side-chats', (req, res) => res.json({ tabs: net.sideChatsOf(req.params.id) }));
+app.post('/api/sessions/:id/side-chats', async (req, res, next) => {
+  try {
+    const text = String(req.body?.text || '').trim();
+    if (!text) return res.status(400).json({ error: 'Empty question' });
+    res.json(await net.openSideChat(req.params.id, text));
+  } catch (e) { next(e); }
+});
+app.delete('/api/sessions/:id/side-chats/:sideId', async (req, res, next) => {
+  try { res.json({ ok: await net.closeSideChat(req.params.sideId) }); } catch (e) { next(e); }
+});
+
+// present_options / request_secret (lib/tools-sessions.mjs): the person's click or typed value
+// comes back over this one route regardless of which tool is waiting on it.
+app.post('/api/elicit/:reqId', (req, res) => {
+  res.json({ ok: answerElicit(req.params.reqId, req.body?.value ?? null) });
+});
+
 // ---------- deleting a session puts it aside, it does not destroy it ----------
 // Sessions are the only thing here that cannot be made again, and deleting several
 // at once is one confirm away. So the transcript is moved to a trash folder and can
@@ -1456,7 +1515,7 @@ app.get('/api/sessions', async (req, res, next) => {
     const offset = Number(req.query.offset) || 0;
     const pinned = new Set(readPrefs().pinned);
     const showArchived = req.query.archived === '1';
-    res.json((await listSessions({ limit, offset })).filter((s) => showArchived || s.tag !== 'archived').map((s) => shape(s, pinned)));
+    res.json((await listSessions({ limit, offset })).filter((s) => (showArchived || s.tag !== 'archived') && !net.isSideChat(s.sessionId)).map((s) => shape(s, pinned)));
   } catch (e) { next(e); }
 });
 
