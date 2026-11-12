@@ -1532,3 +1532,6 @@ html.embed .main { border-inline-start: 0; }
 .options-card.answered button:not(.picked), .secret-card.answered button, .secret-card.answered input { opacity: .5; }
 .secret-row { display: flex; align-items: center; gap: 6px; }
 .secret-field { flex: 1; min-width: 0; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--line-2); background: var(--bg-000); color: var(--ink); font: inherit; font-size: 13px; }
+
+/* ---------- v75: the plan box's step icons are Desktop's circles, not the older checklist's squares ---------- */
+.plan-box .todo-check { width: 15px; height: 15px; border: 0; border-radius: 50%; background: none; display: grid; place-items: center; }

@@ -3991,7 +3991,6 @@
   function paintRailBtn() {
     const b = $('#pane-rail-btn'); if (!b) return;
     b.classList.toggle('on', railOpen);
-    b.title = b.textContent = ''; // icon-only button: the title is what a screen reader and a hover get
     const label = railOpen ? 'Hide session rail' : 'Show session rail';
     b.title = label; b.setAttribute('aria-label', label);
   }
@@ -4133,7 +4132,7 @@
     cards.push(await railCard('servers', async (c) => {
       await loadPorts();
       if (seq !== railSeq) return;
-      const shown = pvPorts.filter((p) => p.serves);
+      const shown = pvPorts.filter((p) => p.dev); // dev servers, as Desktop's card shows - not every web port on the machine
       if (!shown.length) { c.appendChild(el('div', 'muted small', 'Nothing running.')); return; }
       for (const p of shown) {
         const row = el('div', 'rail-row');
