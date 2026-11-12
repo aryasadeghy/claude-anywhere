@@ -664,6 +664,7 @@
       place(); return;
     }
     add('Open', '', () => { location.hash = '#/s/' + s.id; });
+    if (!embedded && s.id !== state.current) add('Open in split view', '', () => openSplit(s.id));
     add('Select', '', () => { selectMode = true; pick(s.id); }); // the way in on the phone: taps then pick rows
     ctx.appendChild(el('div', 'menu-sep'));
     const gk = group || groupKey(s); const lk = kind === 'pinned' ? 'pinned' : 'session';
@@ -733,6 +734,8 @@
     for (const evn of ['touchend', 'touchmove', 'touchcancel']) a.addEventListener(evn, () => clearTimeout(pressTimer), { passive: true });
     a.addEventListener('click', (e) => {
       if (pressed) { e.preventDefault(); e.stopPropagation(); pressed = false; return; }
+      // Alt+click opens it beside whatever is already open, the same shortcut Desktop uses.
+      if (e.altKey && !embedded && s.id !== state.current) { e.preventDefault(); e.stopPropagation(); openSplit(s.id); return; }
       // Shift / Ctrl / Cmd (or select mode on the phone) picks the row instead of opening
       // it; left alone, the browser would open the link in a new window or tab.
       if (e.shiftKey || e.ctrlKey || e.metaKey || selectMode) { e.preventDefault(); e.stopPropagation(); pick(s.id, { range: e.shiftKey, toggle: e.ctrlKey || e.metaKey || selectMode }); return; }
@@ -1318,8 +1321,7 @@
     pop.classList.toggle('hidden', stops.length < 2);
     if (stops.length < 2) return;
     const at = stopOf(state.model);
-    $('#effort-label').textContent = EFFORT_NAMES[at] || at;
-    pop.classList.toggle('ultra', at === 'ultracode');
+    pop.classList.toggle('ultra', at === 'ultracode'); // the level itself is #ef-level, inside the slider head
     pop.title = 'Effort: ' + (EFFORT_NAMES[at] || at) + (EFFORT_HINT[at] ? ' — ' + EFFORT_HINT[at] : '');
   }
 
@@ -1456,6 +1458,8 @@
     m.appendChild(item('Files', 'Look through this session\'s folder', false, () => { m.classList.add('hidden'); openFiles(); }));
     m.appendChild(item('Browser', 'Dev servers and the project\'s pages and PDFs, here and on your phone', false, () => { m.classList.add('hidden'); openPreview(); }));
     m.appendChild(item('Terminal', 'PowerShell or your shell, right here', false, () => { m.classList.add('hidden'); toggleTerminal(); }, { hint: 'Ctrl+`' }));
+    // The rail itself is desktop-width only, but its cards (as a sheet) reach the phone from here.
+    m.appendChild(item('Session rail', '', railOpen, () => { m.classList.add('hidden'); toggleRail(); }));
     // Session chapters: MarkChapter, or a message pinned from its own menu.
     m.appendChild(item('Chapters', chapters.length ? String(chapters.length) : 'None yet', false, (e) => { e.stopPropagation(); renderChaptersMenu(m); }));
     m.appendChild(item('Transcript view', TRANSCRIPT_VIEWS.find((v) => v[0] === state.transcriptView)?.[1] || 'Normal', false, (e) => { e.stopPropagation(); renderTranscriptMenu(m); }));
@@ -3217,7 +3221,308 @@
     openImage(im.currentSrc || im.src, im.alt || '');
   });
 
-  // ---------- Browser: dev servers and the project's own pages, in tabs ----------
+  // ---------- layout: session rail, panes, split view ----------
+  // An iframe of the same page, embedded for a split session: no sidebar or outer chrome,
+  // just the conversation - set before anything below paints, so there is no flash of it.
+  const embedded = new URLSearchParams(location.search).get('embed') === '1';
+  if (embedded) document.documentElement.classList.add('embed');
+
+  // ---- the top-right pane buttons: rail, terminal, changes, browser, files; "more" is the
+  // existing ⋮ session menu. Desktop widths only - a phone reaches these from that menu.
+  const paneBtns = $('#pane-btns');
+  function paintPaneBtns() { paneBtns.classList.toggle('hidden', !state.current); }
+  $('#pane-terminal-btn').addEventListener('click', () => toggleTerminal());
+  $('#pane-changes-btn').addEventListener('click', () => (changesOpen ? closeChanges() : openChanges()));
+  $('#pane-browser-btn').addEventListener('click', () => (previewOpen ? closePreview() : openPreview()));
+  $('#pane-files-btn').addEventListener('click', () => (filesOpen ? closeFiles() : openFiles()));
+
+  // ---- minimize: Terminal and Browser shrink to a small live view instead of closing. It is
+  // the real pane element, just moved and shrunk - not a second copy of its content - so the
+  // terminal keeps running and the browser tab keeps loading while it is out of the way.
+  const miniHost = $('#mini-host');
+  let mini = null; // { panel, kind, wrap }
+  function minIcon(d) { return `<svg viewBox="0 0 20 20" width="13" height="13"><path d="${d}" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`; }
+  function minimizePane(panel, kind) {
+    if (mini) restoreMini();
+    const wrap = el('div', 'mini-shell');
+    const bar = el('div', 'mini-bar');
+    bar.appendChild(el('span', 'mini-title', kind === 'terminal' ? 'Terminal' : 'Browser'));
+    bar.appendChild(el('span', 'sb-spacer'));
+    const expand = el('button', 'icon-btn small', ''); expand.type = 'button'; expand.title = 'Expand'; expand.innerHTML = minIcon('M5 5h4M5 5v4M15 15h-4M15 15v-4');
+    const close = el('button', 'icon-btn small', ''); close.type = 'button'; close.title = 'Close'; close.innerHTML = minIcon('M5 5l10 10M15 5L5 15');
+    bar.appendChild(expand); bar.appendChild(close);
+    wrap.appendChild(bar);
+    panel.classList.add('mini');
+    wrap.appendChild(panel); // reparents the live pane, nothing in it restarts
+    const resize = el('div', 'mini-resize'); wrap.appendChild(resize);
+    mini = { panel, kind, wrap };
+    dockMini();
+    expand.addEventListener('click', () => restoreMini());
+    close.addEventListener('click', () => { const k = kind; restoreMini(); k === 'terminal' ? closeTerminal() : closePreview(); });
+    // Drag the bar (floating only - docked in the rail it is a normal flex child); resize
+    // from the corner either way, since the rail's slot still has a height to pick.
+    let drag = null;
+    bar.addEventListener('pointerdown', (e) => {
+      if (railOpen || e.target.closest('button')) return;
+      drag = { x: e.clientX, y: e.clientY, l: wrap.offsetLeft, t: wrap.offsetTop };
+      bar.setPointerCapture(e.pointerId);
+    });
+    bar.addEventListener('pointermove', (e) => { if (!drag) return; wrap.style.left = Math.max(4, drag.l + e.clientX - drag.x) + 'px'; wrap.style.top = Math.max(4, drag.t + e.clientY - drag.y) + 'px'; wrap.style.right = 'auto'; wrap.style.bottom = 'auto'; });
+    const endDrag = () => { if (drag) { drag = null; saveMiniRect(); } };
+    bar.addEventListener('pointerup', endDrag); bar.addEventListener('pointercancel', endDrag);
+    let rez = null;
+    resize.addEventListener('pointerdown', (e) => { rez = { x: e.clientX, y: e.clientY, w: wrap.offsetWidth, h: wrap.offsetHeight }; resize.setPointerCapture(e.pointerId); e.stopPropagation(); });
+    resize.addEventListener('pointermove', (e) => { if (!rez) return; wrap.style.width = Math.max(220, rez.w + e.clientX - rez.x) + 'px'; wrap.style.height = Math.max(140, rez.h + e.clientY - rez.y) + 'px'; });
+    const endRez = () => { if (rez) { rez = null; saveMiniRect(); } };
+    resize.addEventListener('pointerup', endRez); resize.addEventListener('pointercancel', endRez);
+    restoreMiniRect();
+  }
+  // Where the mini shell lives: the rail's dock while it is open (a normal flex slot, no
+  // drag), a floating box in the corner of the chat otherwise. Switching the rail moves it
+  // live, which is the point of docking at all - it should not need a re-minimize.
+  function dockMini() {
+    if (!mini) return;
+    const { wrap } = mini;
+    wrap.classList.toggle('docked', railOpen);
+    wrap.classList.toggle('floating', !railOpen);
+    (railOpen ? railDock : miniHost).appendChild(wrap);
+    railDock.classList.toggle('hidden', !railOpen || !mini);
+    if (!railOpen) restoreMiniRect();
+  }
+  function relocateMini() { dockMini(); }
+  function saveMiniRect() {
+    if (!mini || railOpen) return;
+    try { localStorage.setItem('cr.mini.rect', JSON.stringify({ left: mini.wrap.style.left, top: mini.wrap.style.top, width: mini.wrap.style.width, height: mini.wrap.style.height })); } catch {}
+  }
+  function restoreMiniRect() {
+    if (!mini) return;
+    let r; try { r = JSON.parse(localStorage.getItem('cr.mini.rect') || 'null'); } catch { r = null; }
+    if (r) Object.assign(mini.wrap.style, r);
+  }
+  function restoreMini() {
+    if (!mini) return;
+    const { panel, kind, wrap } = mini;
+    panel.classList.remove('mini');
+    app.insertBefore(panel, $('#win-controls'));
+    wrap.remove();
+    railDock.classList.add('hidden'); railDock.innerHTML = '';
+    mini = null;
+    if (kind === 'terminal') doubleRaf(resizeActiveTerm);
+  }
+
+  // ---- the session rail ----
+  const railEl = $('#rail'), railCards = $('#rail-cards'), railDock = $('#rail-dock');
+  let railOpen = false, railTimer = null;
+  const RAIL_CARDS = ['environment', 'context', 'connectors', 'outputs', 'changes', 'servers', 'tasks'];
+  const RAIL_TITLES = { environment: 'Environment', context: 'Context', connectors: 'Connectors', outputs: 'Outputs', changes: 'Changes', servers: 'Servers', tasks: 'Background tasks' };
+  function railHiddenSet() { try { return new Set(JSON.parse(localStorage.getItem('cr.rail.hidden') || '[]')); } catch { return new Set(); } }
+  function paintRailBtn() {
+    const b = $('#pane-rail-btn'); if (!b) return;
+    b.classList.toggle('on', railOpen);
+    b.title = b.textContent = ''; // icon-only button: the title is what a screen reader and a hover get
+    const label = railOpen ? 'Hide session rail' : 'Show session rail';
+    b.title = label; b.setAttribute('aria-label', label);
+  }
+  function openRail() {
+    railOpen = true; try { localStorage.setItem('cr.rail', '1'); } catch {}
+    railEl.classList.remove('hidden'); paintRailBtn(); dockMini();
+    paintRail(); clearInterval(railTimer); railTimer = setInterval(paintRail, 4000);
+  }
+  function closeRail() {
+    railOpen = false; try { localStorage.removeItem('cr.rail'); } catch {}
+    railEl.classList.add('hidden'); paintRailBtn(); dockMini();
+    clearInterval(railTimer); railTimer = null;
+  }
+  function toggleRail() { railOpen ? closeRail() : openRail(); }
+  $('#rail-close').addEventListener('click', closeRail);
+  $('#pane-rail-btn').addEventListener('click', toggleRail);
+
+  function showRailCardMenu(x, y) {
+    const m = $('#rail-card-menu'); m.innerHTML = '';
+    const hidden = railHiddenSet();
+    for (const id of RAIL_CARDS) {
+      m.appendChild(item(RAIL_TITLES[id], '', !hidden.has(id), () => {
+        const h = railHiddenSet();
+        if (h.has(id)) h.delete(id); else h.add(id);
+        try { localStorage.setItem('cr.rail.hidden', JSON.stringify([...h])); } catch {}
+        m.classList.add('hidden'); paintRail();
+      }));
+    }
+    m.classList.remove('hidden');
+    if (!window.matchMedia('(max-width: 860px)').matches) {
+      const r = m.getBoundingClientRect();
+      m.style.left = Math.min(x, window.innerWidth - r.width - 8) + 'px'; m.style.top = Math.min(y, window.innerHeight - r.height - 8) + 'px';
+    } else { m.style.left = m.style.top = ''; }
+  }
+  document.addEventListener('click', (e) => { if (!$('#rail-card-menu').contains(e.target)) $('#rail-card-menu').classList.add('hidden'); });
+
+  // One card: a header (right-click or long-press to choose which cards show) and a body the
+  // caller fills in. Returns null when the card is hidden, before doing any of its own work.
+  async function railCard(id, fill) {
+    if (railHiddenSet().has(id)) return null;
+    const card = el('div', 'rail-card');
+    const head = el('div', 'rail-card-head');
+    head.appendChild(el('span', 'rail-card-title', RAIL_TITLES[id]));
+    card.appendChild(head);
+    head.addEventListener('contextmenu', (e) => { e.preventDefault(); showRailCardMenu(e.clientX, e.clientY); });
+    let pressTimer = null;
+    head.addEventListener('touchstart', (e) => { const t = e.touches[0]; pressTimer = setTimeout(() => { showRailCardMenu(t.clientX, t.clientY); if (navigator.vibrate) navigator.vibrate(10); }, 450); }, { passive: true });
+    for (const evn of ['touchend', 'touchmove', 'touchcancel']) head.addEventListener(evn, () => clearTimeout(pressTimer), { passive: true });
+    const body = el('div', 'rail-card-body');
+    card.appendChild(body);
+    try { await fill(body, head); } catch (e) { body.appendChild(el('div', 'muted small', e.message || 'Could not load.')); }
+    return card;
+  }
+
+  let railSeq = 0;
+  async function paintRail() {
+    if (!railOpen) return;
+    const seq = ++railSeq;
+    if (!state.current) { railCards.innerHTML = '<div class="muted small pad">Open a session to see its rail.</div>'; return; }
+    const cards = [];
+    cards.push(await railCard('environment', async (c) => {
+      const [me, git] = await Promise.all([api('/me').catch(() => null), api(`/sessions/${state.current}/git`).catch(() => null)]);
+      if (seq !== railSeq) return;
+      c.appendChild(el('div', 'rail-line', me?.host || 'This computer'));
+      c.appendChild(el('div', 'rail-line muted small', state.cwd ? state.cwd.split(/[\\/]/).pop() + ' · ' + state.cwd : 'No folder'));
+      if (git?.git) c.appendChild(el('div', 'rail-line muted small', (git.worktree ? 'Worktree · ' : 'Branch · ') + git.branch));
+      if (me) c.appendChild(el('div', 'rail-line muted small', me.listensEverywhere ? `Reachable on your network${me.addresses?.length ? ' (' + me.addresses.length + ' address' + (me.addresses.length === 1 ? '' : 'es') + ')' : ''}` : 'Only this computer'));
+    }));
+    cards.push(await railCard('context', async (c, head) => {
+      let data = null; try { data = await api(`/sessions/${state.current}/context`); } catch {}
+      if (seq !== railSeq) return;
+      const pct = data?.maxTokens ? Math.round((100 * data.totalTokens) / data.maxTokens) : null;
+      head.appendChild(el('span', 'rail-card-extra muted', pct == null ? '' : pct + '%'));
+      const bar = el('div', 'rail-bar'); const fill = el('i'); fill.style.width = (pct || 0) + '%'; bar.appendChild(fill); c.appendChild(bar);
+      if (data?.categories?.length) {
+        const dd = el('details', 'rail-detail'); dd.appendChild(el('summary', '', 'Breakdown'));
+        for (const cat of data.categories) {
+          const row = el('div', 'rail-row');
+          row.appendChild(el('span', '', cat.name)); row.appendChild(el('span', 'muted', cat.tokens.toLocaleString()));
+          dd.appendChild(row);
+        }
+        c.appendChild(dd);
+      } else if (data?.summaryOnly) c.appendChild(el('div', 'muted small', 'The full breakdown needs a live session.'));
+    }));
+    cards.push(await railCard('connectors', async (c, head) => {
+      let r = null; try { r = await api(`/connectors?cwd=${encodeURIComponent(state.cwd || '')}&sessionId=${state.current}`); } catch {}
+      if (seq !== railSeq) return;
+      const list = r?.connectors || [];
+      const connected = list.filter((x) => (x.status ? x.status === 'connected' : x.enabled)).length;
+      head.appendChild(el('span', 'rail-card-extra muted', connected + ' connected'));
+      const dd = el('details', 'rail-detail'); dd.appendChild(el('summary', '', list.length + ' connector' + (list.length === 1 ? '' : 's')));
+      for (const x of list) {
+        const row = el('div', 'rail-row');
+        row.appendChild(el('span', '', x.name));
+        row.appendChild(el('span', 'muted small', STATUS_WORD[x.status] || (x.enabled ? 'Connected' : 'Off')));
+        if (x.status && x.status !== 'connected' && !x.builtin) {
+          const rb = el('button', 'link-btn small', 'Reconnect'); rb.type = 'button';
+          rb.addEventListener('click', async (e) => { e.stopPropagation(); rb.disabled = true; try { await api(`/sessions/${state.current}/mcp/${encodeURIComponent(x.name)}/reconnect`, { method: 'POST' }); } catch (err) { toast(err.message); } paintRail(); });
+          row.appendChild(rb);
+        } else if (!x.builtin) {
+          row.appendChild(toggleEl(x.enabled, async (on) => { try { await api(`/connectors/${encodeURIComponent(x.name)}`, { method: 'POST', body: JSON.stringify({ enabled: on, sessionId: state.current }) }); } catch (err) { toast(err.message); } }));
+        }
+        dd.appendChild(row);
+      }
+      c.appendChild(dd);
+    }));
+    cards.push(await railCard('outputs', async (c, head) => {
+      let r = null; try { r = await api(`/sessions/${state.current}/outputs`); } catch {}
+      if (seq !== railSeq) return;
+      const list = r?.outputs || [];
+      head.appendChild(el('span', 'rail-card-extra muted', String(list.length)));
+      if (!list.length) { c.appendChild(el('div', 'muted small', 'Nothing yet.')); return; }
+      for (const o of list.slice(0, 8)) {
+        const row = el('button', 'rail-row rail-link'); row.type = 'button';
+        row.appendChild(el('span', '', o.path.split(/[\\/]/).pop()));
+        row.appendChild(el('span', 'muted small', o.via));
+        row.addEventListener('click', () => openPreviewTab(o.path, o.path.split(/[\\/]/).pop()));
+        c.appendChild(row);
+      }
+    }));
+    cards.push(await railCard('changes', async (c) => {
+      const git = await api(`/sessions/${state.current}/git`).catch(() => null);
+      if (seq !== railSeq) return;
+      if (git?.git) {
+        const add = git.sessionAdded ?? git.added, del = git.sessionRemoved ?? git.removed;
+        const row = el('button', 'rail-row rail-link'); row.type = 'button';
+        row.appendChild(el('span', 'add', '+' + Number(add || 0).toLocaleString())); row.appendChild(el('span', 'del', '−' + Number(del || 0).toLocaleString()));
+        row.addEventListener('click', openChanges);
+        c.appendChild(row);
+      } else c.appendChild(el('div', 'muted small', 'No git folder.'));
+      const chip = $('#sb-pr-state');
+      if (chip && !chip.classList.contains('hidden')) {
+        const b = el('button', chip.className.replace('hidden', '').trim() + ' rail-pr-btn'); b.type = 'button';
+        b.innerHTML = chip.innerHTML; b.title = chip.title;
+        b.addEventListener('click', (e) => { e.stopPropagation(); openRailPrMenu(b); });
+        c.appendChild(b);
+      }
+    }));
+    cards.push(await railCard('servers', async (c) => {
+      await loadPorts();
+      if (seq !== railSeq) return;
+      const shown = pvPorts.filter((p) => p.serves);
+      if (!shown.length) { c.appendChild(el('div', 'muted small', 'Nothing running.')); return; }
+      for (const p of shown) {
+        const row = el('div', 'rail-row');
+        row.appendChild(el('span', '', 'localhost:' + p.port));
+        const open = el('button', 'link-btn small', 'Open'); open.type = 'button';
+        open.addEventListener('click', async () => { await openPreview(); go(pv.active || addTab(), { kind: 'server', port: p.port, path: '/' }); });
+        row.appendChild(open);
+        c.appendChild(row);
+      }
+    }));
+    cards.push(await railCard('tasks', async (c, head) => {
+      const running = state.tasks.filter((t) => t.status === 'running');
+      head.appendChild(el('span', 'rail-card-extra muted', String(running.length)));
+      const row = el('button', 'rail-row rail-link', running.length ? running.length + ' task' + (running.length === 1 ? '' : 's') + ' running' : 'None running');
+      row.type = 'button';
+      row.addEventListener('click', () => { if (window.openTasksPane) window.openTasksPane(); else $('#tasks-bar')?.click(); });
+      c.appendChild(row);
+    }));
+    if (seq !== railSeq) return;
+    railCards.innerHTML = ''; for (const card of cards) if (card) railCards.appendChild(card);
+  }
+  // The rail's Changes card reuses the existing PR menu logic (renderPrMenu, below), just
+  // drawn into a popover of its own so it is not fighting the session bar's for position.
+  function openRailPrMenu(btn) {
+    const m = $('#rail-pr-menu'); renderPrMenu(m);
+    const r = btn.getBoundingClientRect();
+    m.style.position = 'fixed'; m.style.bottom = 'auto'; m.style.insetInlineStart = 'auto';
+    m.classList.remove('hidden');
+    const mr = m.getBoundingClientRect();
+    m.style.left = Math.min(r.left, window.innerWidth - mr.width - 8) + 'px';
+    m.style.top = Math.min(r.bottom + 6, window.innerHeight - mr.height - 8) + 'px';
+    const close = (e) => { if (!m.contains(e.target)) { m.classList.add('hidden'); document.removeEventListener('click', close); } };
+    setTimeout(() => document.addEventListener('click', close));
+  }
+
+  // ---- split view: a second session beside the current one, as an embedded copy of the
+  // page itself (same origin, same token in localStorage) rather than a second render path. ----
+  const splitPane = $('#split-pane'), splitFrame = $('#split-frame');
+  function splitKey() { return 'cr.split.' + (state.current || ''); }
+  function openSplit(id) {
+    if (embedded || !state.current || id === state.current) return;
+    splitFrame.src = location.origin + '/?embed=1#/s/' + id;
+    $('#split-title').textContent = state.sessions.find((x) => x.id === id)?.title || 'Session';
+    splitPane.classList.remove('hidden'); app.classList.add('split-open'); focusSplit('right');
+    try { localStorage.setItem(splitKey(), id); } catch {}
+  }
+  function closeSplit() {
+    splitPane.classList.add('hidden'); app.classList.remove('split-open', 'split-focus-left');
+    splitFrame.src = ''; try { localStorage.removeItem(splitKey()); } catch {}
+  }
+  function focusSplit(side) { app.classList.toggle('split-focus-left', side === 'left'); }
+  $('#split-close').addEventListener('click', closeSplit);
+  $('.main')?.addEventListener('click', () => { if (app.classList.contains('split-open')) focusSplit('right'); });
+  splitPane.addEventListener('click', () => focusSplit('left'));
+  // Restores the side open the last time this session was: Desktop remembers split view too.
+  function restoreSplit() {
+    if (embedded) return;
+    let id = null; try { id = localStorage.getItem(splitKey()); } catch {}
+    if (id && state.sessions.some((x) => x.id === id)) openSplit(id); else closeSplit();
+  }
+
   // Desktop's Browser pane: a tab per page, each keeping its place while another is
   // looked at. A dev server is shown from a port of our own, at its root, so its router
   // sees the paths it was built for and its sign-in sticks; a page or a PDF Claude wrote
@@ -3275,11 +3580,12 @@
   function note(text) { pvNote.textContent = text; pvNote.classList.remove('hidden'); clearTimeout(noteTimer); noteTimer = setTimeout(() => pvNote.classList.add('hidden'), 6000); }
 
   async function openPreview({ auto = true } = {}) {
+    if (mini?.kind === 'preview') restoreMini();
     if (tasksOpen) closeTasks();
     if (changesOpen) closeChanges();
     if (filesOpen) closeFiles();
     if (terminalOpen) closeTerminal();
-    previewOpen = true; pvPanel.classList.remove('hidden'); app.classList.add('panel-open');
+    previewOpen = true; pvPanel.classList.remove('hidden', 'mini'); app.classList.add('panel-open');
     // The frames cannot send our token, so the server hands out a cookie of their own first.
     try { await grant(); } catch (e) { note(e.message); }
     if (pv.cwd === (state.cwd || '') && pv.tabs.length) return activate(pv.active || pv.tabs[0]);
@@ -3309,11 +3615,13 @@
   }
   function pvFollow() { if (previewOpen && pv.cwd !== (state.cwd || '')) showProject(); }
   function closePreview() {
+    if (mini?.kind === 'preview') restoreMini();
     previewOpen = false; pvPanel.classList.add('hidden'); app.classList.remove('panel-open');
     // Closed, a page stops: no hot-reload socket or timers running behind the chat.
     for (const t of pv.tabs) { t.frame?.remove(); t.frame = null; }
   }
   $('#pv-close').addEventListener('click', closePreview);
+  $('#pv-min').addEventListener('click', () => (mini?.kind === 'preview' ? restoreMini() : minimizePane(pvPanel, 'preview')));
 
   // A tab opens next to the one in front, like a browser's.
   function addTab() {
@@ -4186,8 +4494,8 @@
   // not a <script> in the page, so every other load is none the heavier for a pane most
   // visits never open. Served from node_modules by the server (vendor/xterm, vendor/xterm-fit);
   // no build step, no CDN.
-  const termPanel = $('#terminal-panel'), termTabsEl = $('#term-tabs'), termStage = $('#term-stage'), termPill = $('#term-pill');
-  let terminalOpen = false, terminalMinimized = false;
+  const termPanel = $('#terminal-panel'), termTabsEl = $('#term-tabs'), termStage = $('#term-stage');
+  let terminalOpen = false;
   const term = { cwd: '', tabs: [], active: null }; // tabs: { id, title, alive, running, crashed, el, banner, xterm, fit, ws }
   const findTermTab = (id) => term.tabs.find((t) => t.id === id);
   let xtermMod = null;
@@ -4267,7 +4575,7 @@
   // The panel's own drag-resize changes a CSS variable, not the viewport, so a window
   // 'resize' event never fires for it - a ResizeObserver on the stage catches both that
   // and an ordinary window resize in one place.
-  const termResizeObserver = new ResizeObserver(() => { if (terminalOpen && !terminalMinimized) resizeActiveTerm(); });
+  const termResizeObserver = new ResizeObserver(() => { if (terminalOpen) resizeActiveTerm(); }); // fires for the mini box too, so the live view still fits it
   termResizeObserver.observe(termStage);
   function showTerminalTab(id) {
     const tab = findTermTab(id);
@@ -4292,7 +4600,6 @@
       b.addEventListener('click', () => showTerminalTab(tab.id));
       termTabsEl.appendChild(b);
     }
-    termPill.querySelector('.term-pill-dot')?.classList.toggle('running', term.tabs.some((t) => t.running));
   }
   async function newTermTab(cwd) {
     let info;
@@ -4331,25 +4638,19 @@
   }
   async function openTerminal() {
     if (!state.current) { toast('Start a conversation first.'); return; }
+    if (mini?.kind === 'terminal') restoreMini();
     if (tasksOpen) closeTasks(); if (previewOpen) closePreview(); if (filesOpen) closeFiles(); if (changesOpen) closeChanges();
-    terminalOpen = true; terminalMinimized = false;
-    termPanel.classList.remove('hidden', 'minimized'); termPill.classList.add('hidden');
+    terminalOpen = true;
+    termPanel.classList.remove('hidden', 'mini');
     app.classList.add('panel-open');
     if (term.cwd !== (state.cwd || '') || !term.tabs.length) await loadTermTabs();
     else doubleRaf(resizeActiveTerm);
   }
-  function closeTerminal() { terminalOpen = false; termPanel.classList.add('hidden'); termPill.classList.add('hidden'); app.classList.remove('panel-open'); }
-  function minimizeTerminal(on) {
-    terminalMinimized = on;
-    termPanel.classList.toggle('minimized', on);
-    termPill.classList.toggle('hidden', !on);
-    if (!on) doubleRaf(resizeActiveTerm);
-  }
-  async function toggleTerminal() { terminalOpen && !terminalMinimized ? closeTerminal() : await openTerminal(); }
+  function closeTerminal() { if (mini?.kind === 'terminal') restoreMini(); terminalOpen = false; termPanel.classList.add('hidden'); app.classList.remove('panel-open'); }
+  async function toggleTerminal() { terminalOpen && mini?.kind !== 'terminal' ? closeTerminal() : await openTerminal(); }
   $('#term-new').addEventListener('click', () => newTermTab());
   $('#term-close').addEventListener('click', closeTerminal);
-  $('#term-min').addEventListener('click', () => minimizeTerminal(!terminalMinimized));
-  termPill.addEventListener('click', () => minimizeTerminal(false));
+  $('#term-min').addEventListener('click', () => (mini?.kind === 'terminal' ? restoreMini() : minimizePane(termPanel, 'terminal')));
   // Right-click on the pane itself: Copy, Paste, Attach selection as context - the same
   // menu element the sidebar and Worktrees use, built for this instead.
   function showTermCtxMenu(tab, x, y) {
@@ -6177,6 +6478,7 @@
   async function openSession(id, { jumpTo } = {}) {
     const seq = ++openSeq;
     state.current = id; state.live = null; state.tasks = []; hiddenTasks.clear(); paintTasks(); if (changesOpen) closeChanges(); if (previewOpen) closePreview(); if (filesOpen) closeFiles(); if (terminalOpen) closeTerminal();
+    paintPaneBtns(); paintRail(); restoreSplit();
     planTodos = null; planTasks.clear(); planBoxClosedByUser = false; paintPlanBox();
     findQuery = ''; findHits = []; findIndex = -1; findSeq++; findBar.classList.add('hidden');
     if (state.es) { state.es.close(); state.es = null; }
@@ -6253,6 +6555,7 @@
     planTodos = null; planTasks.clear(); planBoxClosedByUser = false; paintPlanBox();
     findQuery = ''; findHits = []; findIndex = -1; findSeq++; findBar.classList.add('hidden');
     state.current = null; state.live = null; state.tasks = []; hiddenTasks.clear(); paintTasks(); if (changesOpen) closeChanges(); if (filesOpen) closeFiles(); if (terminalOpen) closeTerminal(); stopPrWatch(); $("#sb-pr-state").classList.add("hidden");
+    paintPaneBtns(); paintRail(); closeSplit();
     if (state.es) { state.es.close(); state.es = null; }
     app.classList.remove('sidebar-open');
     thread.innerHTML = ''; empty.classList.add('show'); app.classList.add('new');
@@ -6331,6 +6634,7 @@
     // a merge publishes in about eight minutes, and a stale answer reads as "nothing new".
     api('/version').then((v) => { if (!v.update?.checkedAt || Date.now() - v.update.checkedAt > 120000) return api('/update/check', { method: 'POST', body: JSON.stringify({}) }); }).then(() => checkForUpdate()).catch(() => {});
     await Promise.all([loadSessions(), loadProjects(), loadAwake(), loadModels(), loadConvSettings()]);
+    if (!embedded && localStorage.getItem('cr.rail') === '1') openRail(); // remembered across restarts, like every other pane
     route();
     // First time on this device: ask which account to use (local or token).
     let chosen = false; try { chosen = !!localStorage.getItem('cr.accountChosen'); } catch {}
