@@ -247,8 +247,13 @@ export async function startFakeApi({ delay = 15 } = {}) {
     const hi = msgs.findLastIndex((m) => m.role === 'user' && /\[browse:/.test(userText(m)));
     const browse = hi >= 0 ? /\[browse:([^\]\s]+)\]/.exec(userText(msgs[hi]))[1] : null;
     const BROWSE = [['preview_navigate', { url: browse }], ['preview_screenshot', { scale: 0.5 }], ['preview_click', { selector: '#btn' }]];
+    // [artifact]: create_artifact (an html page), then update_artifact (a find/replace edit), then a word.
+    const ai = msgs.findLastIndex((m) => m.role === 'user' && /\[artifact\]/.test(userText(m)));
+    const artStep = ai >= 0 ? msgs.slice(ai).filter((m) => m.role === 'assistant' && Array.isArray(m.content)).flatMap((m) => m.content).filter((b) => b.type === 'tool_use' && /_artifact$/.test(b.name)).length : -1;
+    const ARTIFACT = [['create_artifact', { title: 'Hello page', type: 'html', content: `<!doctype html><html><body><h1 id="hello">Hello artifact</h1><button id="b" onclick="document.getElementById('hello').textContent='Clicked'">Go</button></body></html>` }], ['update_artifact', { id: 'hello-page', find: 'Hello artifact', replace: 'Hello again', note: 'Greeting changed' }]];
+    const artOn = ai >= 0 && msgs.length - 1 - ai === 2 * artStep;
     const browseStep = browse ? msgs.slice(hi).filter((m) => m.role === 'assistant' && Array.isArray(m.content)).flatMap((m) => m.content).filter((b) => b.type === 'tool_use' && /preview_/.test(b.name)).length : -1;
-    const words = browse ? (browseStep >= BROWSE.length ? 'Clicked the button.' : null) : afterTool ? (askedBefore ? `Noted: ${toolText.replace(/\s+/g, ' ').slice(0, 160)}` : wroteBefore ? 'Done writing it.' : 'Started it in the background.')
+    const words = browse ? (browseStep >= BROWSE.length ? 'Clicked the button.' : null) : artOn ? (artStep >= ARTIFACT.length ? 'Made the page.' : null) : afterTool ? (askedBefore ? `Noted: ${toolText.replace(/\s+/g, ' ').slice(0, 160)}` : wroteBefore ? 'Done writing it.' : 'Started it in the background.')
       : /\[background\]/.test(said) || asking || writeMatch || opensTerminal || toolTag ? null
       : /\[math\]/.test(said) ? 'The area under the curve is $\\int_0^1 x\\,dx = \\frac{1}{2}$ and the price is $5 or $10, not a range.\n\n$$E = mc^2$$'
       : /\[secret\]/.test(said) ? 'Found it in .env: ANTHROPIC_API_KEY=sk-ant-api03-fakeFAKEfakeFAKEfakeFAKEfakeFAKEfakeFAKE and a GitHub token ghp_FAKEfakeFAKEfakeFAKEfakeFAKEfake1234.'
@@ -296,7 +301,7 @@ export async function startFakeApi({ delay = 15 } = {}) {
         pane: ['mcp__claude-anywhere__show_pane', { pane: 'terminal' }],
       };
       const [tagName, tagInput] = TOOL_TAGS[toolTag] || [];
-      const [browseName, browseInput] = browse ? BROWSE[browseStep] : [];
+      const [browseName, browseInput] = browse ? BROWSE[browseStep] : artOn && artStep < ARTIFACT.length ? ARTIFACT[artStep] : [];
       const name = browseName ? 'mcp__claude-anywhere__' + browseName : asking ? 'AskUserQuestion' : writeMatch ? 'Write' : opensTerminal ? 'mcp__claude-anywhere__open_terminal_tab' : tagName || 'Bash';
       const input = JSON.stringify(browseInput ? browseInput : asking ? { questions: [{ question: 'Which colour should the button be?', header: 'Colour', options: [{ label: 'Red', description: 'Warm' }, { label: 'Blue', description: 'Calm' }], multiSelect: false }] } : writeMatch ? { file_path: writeMatch[1].trim(), content: writeMatch[2] } : opensTerminal ? {} : tagInput || { command: 'sleep 20', description: 'Render the long video', run_in_background: true });
       send('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'toolu_fake_' + requests.length, name, input: {} } });

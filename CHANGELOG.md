@@ -7,6 +7,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Artifacts.** Claude can make a page, a React component, an SVG, a document or a diagram with
+  create_artifact and change it with update_artifact; instead of an HTML file and a screenshot you get a
+  card in the chat and an Artifacts panel beside it, with a title menu to switch between the session's
+  artifacts, every version, Copy, Download, Open in a new tab, a read-only share link
+  (`/a/<token>`, no login, "Stop sharing" revokes it) and Delete. Pages are drawn sandboxed, never on
+  the app's own origin.
+
 ## [0.13.0] — 2026-11-12
 
 ### Added

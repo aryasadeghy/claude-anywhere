@@ -24,6 +24,7 @@ import { runs, pendingPermissions, isLive, isBusy, startRun, answerPermission, b
 import { historyPage, historyImage, searchSession } from './lib/history.mjs';
 import { readConvSettings, writeConvSettings } from './lib/conv-settings.mjs';
 import * as net from './lib/sessions-net.mjs';
+import * as artifacts from './lib/artifacts.mjs';
 import { answerElicit } from './lib/tools-sessions.mjs';
 import * as runsMod from './lib/runs.mjs';
 import * as limitQueue from './lib/limit-queue.mjs';
@@ -2143,6 +2144,36 @@ app.get('/api/rebuild/log', (_req, res) => {
   const running = !!text.trim() && !done && Date.now() - at < 120000;
   res.json({ text, at, done, running, failed: done && /build FAILED/.test(text), liveRuns: liveCount() });
 });
+
+// ---------- artifacts ----------
+// What Claude made with create_artifact (lib/artifacts.mjs). The panel reads them through /api; the
+// two page routes below sit outside /api on purpose - a share link has no login, and a ticket is
+// how "Open" reaches a browser tab that cannot send our token. Both answer a sandboxed page only.
+artifacts.configure(path.join(DATA_DIR, 'artifacts'));
+const artTickets = new Map(); // one-minute, single-use address for "Open" -> { sid, id, v, exp }
+const sendArtifactPage = (res, m) => { for (const [k, v] of Object.entries(artifacts.PAGE_HEADERS)) res.setHeader(k, v); res.type('html').send(artifacts.renderPage(m.type, m.content, m.title)); };
+const artifactGone = (res) => res.status(404).type('html').send('<!doctype html><meta charset="utf-8"><title>Not found</title><body style="font:15px system-ui;padding:40px;color:#444">This artifact is not shared, or is no longer.</body>');
+app.get('/a/t/:ticket', (req, res) => {
+  const t = artTickets.get(req.params.ticket); artTickets.delete(req.params.ticket);
+  const m = t && t.exp > Date.now() ? artifacts.get(t.sid, t.id, t.v) : null;
+  m ? sendArtifactPage(res, m) : artifactGone(res);
+});
+app.get('/a/:token', (req, res) => { const m = artifacts.byShare(req.params.token); m ? sendArtifactPage(res, m) : artifactGone(res); });
+const artFail = (res, e) => res.status(/^bad /.test(e.message) ? 400 : 500).json({ error: e.message });
+app.get('/api/sessions/:id/artifacts', (req, res) => { try { res.json({ artifacts: artifacts.list(req.params.id) }); } catch (e) { artFail(res, e); } });
+app.get('/api/sessions/:id/artifacts/:aid', (req, res) => { try { const a = artifacts.get(req.params.id, req.params.aid, req.query.v); a ? res.json(a) : res.status(404).json({ error: 'No such artifact' }); } catch (e) { artFail(res, e); } });
+app.get('/api/sessions/:id/artifacts/:aid/page', (req, res) => { try { const a = artifacts.get(req.params.id, req.params.aid, req.query.v); if (!a) return res.status(404).end(); res.type('html').send(artifacts.renderPage(a.type, a.content, a.title)); } catch (e) { artFail(res, e); } });
+app.post('/api/sessions/:id/artifacts/:aid/share', (req, res) => { try { const t = artifacts.share(req.params.id, req.params.aid); t ? res.json({ token: t, path: '/a/' + t }) : res.status(404).json({ error: 'No such artifact' }); } catch (e) { artFail(res, e); } });
+app.delete('/api/sessions/:id/artifacts/:aid/share', (req, res) => { try { res.json({ ok: artifacts.unshare(req.params.id, req.params.aid) }); } catch (e) { artFail(res, e); } });
+app.post('/api/sessions/:id/artifacts/:aid/ticket', (req, res) => {
+  try {
+    const a = artifacts.get(req.params.id, req.params.aid, req.body?.v); if (!a) return res.status(404).json({ error: 'No such artifact' });
+    for (const [k, t] of artTickets) if (t.exp < Date.now()) artTickets.delete(k);
+    const k = randomBytes(18).toString('base64url'); artTickets.set(k, { sid: req.params.id, id: req.params.aid, v: a.shown, exp: Date.now() + 60000 });
+    res.json({ path: '/a/t/' + k });
+  } catch (e) { artFail(res, e); }
+});
+app.delete('/api/sessions/:id/artifacts/:aid', (req, res) => { try { res.json({ ok: artifacts.remove(req.params.id, req.params.aid) }); } catch (e) { artFail(res, e); } });
 
 app.get('/api/runs', (_req, res) => {
   res.json([...runs.values()].filter((r) => r.busy()).map((r) => ({ sessionId: r.sessionId, startedAt: r.startedAt, waiting: [...pendingPermissions.values()].some((p) => p.run === r) })));

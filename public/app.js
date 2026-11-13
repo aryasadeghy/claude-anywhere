@@ -1302,7 +1302,7 @@
   const btwPanel = $('#btw-panel'), btwTabsEl = $('#btw-tabs'), btwStage = $('#btw-stage');
   let btwOpen = false;
   state.btw = { forSession: null, tabs: [], active: null }; // tabs: [{id, question, el, pollTimer}]
-  function openBtwPanel() {
+  function openBtwPanel() { closeArtifacts();
     if (changesOpen) closeChanges(); if (previewOpen) closePreview(); if (filesOpen) closeFiles(); if (terminalOpen) closeTerminal(); if (tasksOpen) closeTasks();
     btwOpen = true; btwPanel.classList.remove('hidden'); app.classList.add('panel-open');
   }
@@ -2001,6 +2001,7 @@
     m.appendChild(item('Fork', '', false, async () => { m.classList.add('hidden'); try { const r = await api(`/sessions/${state.current}/fork`, { method: 'POST', body: JSON.stringify({}) }); await loadSessions(); location.hash = '#/s/' + r.sessionId; } catch (e) { alert(e.message); } }, { hint: 'F' }));
     m.appendChild(item('Changes', '', false, () => { m.classList.add('hidden'); openChanges(); }));
     m.appendChild(item('Files', 'Look through this session\'s folder', false, () => { m.classList.add('hidden'); openFiles(); }));
+    m.appendChild(item('Artifacts', 'Pages and documents Claude made, with their versions', artOpen, () => { m.classList.add('hidden'); openArtifacts(); }));
     m.appendChild(item('Browser', 'Dev servers and the project\'s pages and PDFs, here and on your phone', false, () => { m.classList.add('hidden'); openPreview(); }));
     m.appendChild(item('Terminal', 'PowerShell or your shell, right here', false, () => { m.classList.add('hidden'); toggleTerminal(); }, { hint: 'Ctrl+`' }));
     // The rail itself is desktop-width only, but its cards (as a sheet) reach the phone from here.
@@ -2655,6 +2656,7 @@
       b.appendChild(text ? el('div', 'prose thought-text', text) : el('div', 'muted', 'This part of the thinking is encrypted and not shown.'));
     } else if (block.type === 'tool_use') {
       if (renderConvTool(msg, index, block)) return;
+      if (renderArtifactTool(msg, index, block)) return;
       if (renderSessionTool(msg, index, block)) return;
       if (!node) {
         node = stepEl('tool', block.name, ''); node._toolId = block.id; node._toolName = block.name;
@@ -3695,7 +3697,7 @@
     clearInterval(tasksTimer); tasksTimer = null;
     if (running.length && tasksOpen) tasksTimer = setInterval(() => { for (const t of running) { const n = tpList.querySelector(`[data-task="${t.id}"] .tp-elapsed`); if (n) n.textContent = fmtDur(Date.now() - t.startedAt); } }, 1000);
   }
-  function openTasks() { if (changesOpen) closeChanges(); if (previewOpen) closePreview(); if (filesOpen) closeFiles(); if (terminalOpen) closeTerminal(); if (btwOpen) closeBtwPanel(); tasksOpen = true; tasksPanel.classList.remove('hidden'); app.classList.add('tasks-open'); paintTasks(); }
+  function openTasks() { closeArtifacts(); if (changesOpen) closeChanges(); if (previewOpen) closePreview(); if (filesOpen) closeFiles(); if (terminalOpen) closeTerminal(); if (btwOpen) closeBtwPanel(); tasksOpen = true; tasksPanel.classList.remove('hidden'); app.classList.add('tasks-open'); paintTasks(); }
   function closeTasks() { tasksOpen = false; tasksPanel.classList.add('hidden'); app.classList.remove('tasks-open'); for (const [, o] of outputOpen) clearInterval(o.timer); outputOpen.clear(); paintTasks(); }
   $('#tasks-bar').addEventListener('click', () => tasksOpen ? closeTasks() : openTasks());
   $('#tp-close').addEventListener('click', closeTasks);
@@ -3892,6 +3894,126 @@
     e.preventDefault();
     openImage(im.currentSrc || im.src, im.alt || '');
   });
+
+  // ---------- artifacts ----------
+  // What Claude makes with create_artifact / update_artifact (lib/tools-artifacts.mjs): a card in the
+  // chat, and a panel beside it. The page is drawn by the server (lib/artifacts.mjs) and put in an
+  // iframe WITHOUT allow-same-origin - it is code Claude wrote, and this origin holds the token.
+  var artOpen = false; // var: the other panes' open functions call closeArtifacts before this line has run
+  const artPanel = $('#artifacts-panel'), artFrame = $('#art-frame'), artEmpty = $('#art-empty');
+  const art = { sid: null, list: [], id: null, data: null, seq: 0 };
+  const ART_TYPES = { html: 'HTML', react: 'React', svg: 'SVG', markdown: 'Markdown', mermaid: 'Diagram', code: 'Code' };
+  const ART_EXT = { html: 'html', react: 'jsx', svg: 'svg', markdown: 'md', mermaid: 'mmd', code: 'txt' };
+  const artPath = (id, rest = '') => `/sessions/${art.sid}/artifacts/${id}${rest}`;
+  function closeArtifacts() { if (!artOpen) return; artOpen = false; artPanel.classList.add('hidden'); app.classList.remove('panel-open'); artFrame.removeAttribute('srcdoc'); $('#art-menu').classList.add('hidden'); $('#art-switch').classList.add('hidden'); }
+  async function openArtifacts(id) {
+    if (!state.current) { toast('Start a conversation first.'); return; }
+    if (tasksOpen) closeTasks(); if (previewOpen) closePreview(); if (filesOpen) closeFiles(); if (changesOpen) closeChanges(); if (terminalOpen) closeTerminal(); if (btwOpen) closeBtwPanel();
+    artOpen = true; artPanel.classList.remove('hidden'); app.classList.add('panel-open');
+    if (art.sid !== state.current) Object.assign(art, { sid: state.current, list: [], id: null, data: null });
+    await artRefresh(id);
+  }
+  // Reload the list and show `id` (or what was showing, or the newest). `ver` pins an older version.
+  async function artRefresh(id, ver) {
+    const sid = art.sid, n = ++art.seq;
+    try {
+      const r = await api(`/sessions/${sid}/artifacts`); if (n !== art.seq || sid !== art.sid) return;
+      art.list = r.artifacts;
+      art.id = id && art.list.some((a) => a.id === id) ? id : art.list.some((a) => a.id === art.id) ? art.id : art.list[0]?.id || null;
+      if (!art.id) { art.data = null; artPaint(); return; }
+      const [data, page] = await Promise.all([api(artPath(art.id, ver ? '?v=' + ver : '')), fetch('/api' + artPath(art.id, '/page' + (ver ? '?v=' + ver : '')), { headers: { Authorization: 'Bearer ' + state.token } }).then((x) => x.text())]);
+      if (n !== art.seq || sid !== art.sid) return;
+      art.data = data; artPaint(); artFrame.srcdoc = page;
+    } catch (e) { toast(e.message); }
+  }
+  function artPaint() {
+    const d = art.data;
+    artEmpty.classList.toggle('hidden', !!d); artFrame.classList.toggle('hidden', !d);
+    $('#art-title').textContent = d ? d.title : 'Artifacts';
+    $('#art-bar').classList.toggle('hidden', !d);
+    if (!d) return;
+    $('#art-ver').textContent = `Version ${d.shown} of ${d.version}`;
+    $('#art-prev').disabled = d.shown <= 1; $('#art-next').disabled = d.shown >= d.version;
+    const note = d.versions[d.shown - 1];
+    $('#art-updated').textContent = (d.shown === d.version ? 'Updated ' : 'Saved ') + ago(note.at);
+    $('#art-updated').title = new Date(note.at).toLocaleString() + (note.note ? ' · ' + note.note : '');
+    $('#art-share-badge').classList.toggle('hidden', !d.shared);
+  }
+  $('#pane-artifacts-btn').addEventListener('click', () => (artOpen ? closeArtifacts() : openArtifacts()));
+  $('#art-close').addEventListener('click', closeArtifacts);
+  $('#art-prev').addEventListener('click', () => artRefresh(art.id, art.data.shown - 1));
+  $('#art-next').addEventListener('click', () => artRefresh(art.id, art.data.shown + 1 >= art.data.version ? 0 : art.data.shown + 1));
+  // The title is the switcher: every artifact of this session, newest first.
+  $('#art-title-btn').addEventListener('click', (e) => {
+    e.stopPropagation(); const m = $('#art-switch'); const open = m.classList.contains('hidden');
+    document.querySelectorAll('.menu').forEach((x) => x.classList.add('hidden'));
+    if (!open) return;
+    m.innerHTML = '';
+    for (const a of art.list) m.appendChild(item(a.title, `${ART_TYPES[a.type] || a.type} · v${a.version}`, a.id === art.id, () => { m.classList.add('hidden'); artRefresh(a.id); }));
+    if (!art.list.length) m.appendChild(el('div', 'menu-empty muted small', 'Nothing made in this session yet.'));
+    m.classList.remove('hidden');
+  });
+  $('#art-copy').addEventListener('click', async () => { if (art.data) copyText(art.data.content, 'Copied the source'); });
+  $('#art-dl').addEventListener('click', () => {
+    const d = art.data; if (!d) return;
+    const a = el('a'); a.href = URL.createObjectURL(new Blob([d.content], { type: 'text/plain' }));
+    a.download = d.id + '.' + (ART_EXT[d.type] || 'txt'); document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  });
+  $('#art-menu-btn').addEventListener('click', (e) => {
+    e.stopPropagation(); const m = $('#art-menu'); const open = m.classList.contains('hidden');
+    document.querySelectorAll('.menu').forEach((x) => x.classList.add('hidden'));
+    if (!open || !art.data) return;
+    const d = art.data; m.innerHTML = '';
+    m.appendChild(item('Open in a new tab', 'Just the page, sandboxed', false, async () => {
+      m.classList.add('hidden');
+      try { const r = await api(artPath(d.id, '/ticket'), { method: 'POST', body: JSON.stringify({ v: d.shown }) }); openExternal(location.origin + r.path); } catch (x) { toast(x.message); }
+    }));
+    m.appendChild(item('Copy link', d.shared ? 'Anyone with the link can view it' : 'Makes a read-only link anyone can open', false, async () => {
+      m.classList.add('hidden');
+      try { const r = await api(artPath(d.id, '/share'), { method: 'POST' }); await copyText(location.origin + r.path, 'Link copied'); d.shared = true; artPaint(); } catch (x) { toast(x.message); }
+    }));
+    if (d.shared) m.appendChild(item('Stop sharing', 'The link stops working', false, async () => {
+      m.classList.add('hidden');
+      try { await api(artPath(d.id, '/share'), { method: 'DELETE' }); d.shared = false; artPaint(); toast('Sharing stopped.'); } catch (x) { toast(x.message); }
+    }));
+    m.appendChild(item('Delete', 'All versions', false, async () => {
+      m.classList.add('hidden');
+      if (!confirm(`Delete "${d.title}" and all ${d.version} version${d.version === 1 ? '' : 's'}?${d.shared ? ' Its share link stops working.' : ''}`)) return;
+      try { await api(artPath(d.id), { method: 'DELETE' }); await artRefresh(); } catch (x) { toast(x.message); }
+    }));
+    m.classList.remove('hidden');
+  });
+  document.addEventListener('click', (e) => { for (const id of ['#art-menu', '#art-switch']) { const m = $(id); if (!m.contains(e.target)) m.classList.add('hidden'); } });
+  // The server says an artifact was made or changed: a new one opens the panel, a change follows
+  // along while the latest version is the one showing (an older one the person went back to stays put).
+  function onArtifactEvent(ev) {
+    if (ev.sessionId !== state.current) return;
+    if (art.sid !== ev.sessionId) Object.assign(art, { sid: ev.sessionId, list: [], id: null, data: null });
+    if (ev.kind === 'created' && !artOpen) return openArtifacts(ev.artifact.id);
+    if (!artOpen) return;
+    const following = art.id === ev.artifact.id && art.data && art.data.shown === art.data.version;
+    artRefresh(ev.kind === 'created' || following ? ev.artifact.id : art.id, !following && art.id === ev.artifact.id ? art.data?.shown : 0);
+  }
+  // The chat card. A block carries the artifact's id (update) or its title/id (create), which is
+  // enough to find it again after a reload without the tool's own result.
+  function renderArtifactTool(msg, index, block) {
+    const made = toolNamed(block.name, 'create_artifact'), changed = toolNamed(block.name, 'update_artifact');
+    if (!made && !changed) return false;
+    const inp = block.input && typeof block.input === 'object' ? block.input : {};
+    const id = changed ? String(inp.id || '') : String(inp.id || inp.title || '').toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 50);
+    let node = msg.blocks.get(index);
+    if (!node) { node = el('div', 'artifact-card'); node._toolId = block.id; msg.body.appendChild(node); msg.blocks.set(index, node); msg.group = null; }
+    node.innerHTML = '';
+    const known = art.list.find((a) => a.id === id);
+    const ic = el('span', 'artifact-card-icon'); ic.innerHTML = '<svg viewBox="0 0 20 20" width="18" height="18"><path d="M10 2.8l6.2 3.5v7.4L10 17.2l-6.2-3.5V6.3z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M3.8 6.3L10 9.8l6.2-3.5M10 9.8v7.4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>';
+    const txt = el('span', 'artifact-card-text');
+    txt.appendChild(el('span', 'artifact-card-title', String(inp.title || known?.title || id || 'Artifact')));
+    txt.appendChild(el('span', 'artifact-card-sub', (made ? 'Created' : 'Updated') + (made && ART_TYPES[inp.type] ? ' · ' + ART_TYPES[inp.type] : known ? ' · ' + (ART_TYPES[known.type] || known.type)  : '')));
+    const open = el('button', 'btn btn-ghost artifact-card-open', 'Open'); open.type = 'button';
+    open.addEventListener('click', () => openArtifacts(id));
+    node.appendChild(ic); node.appendChild(txt); node.appendChild(open);
+    return true;
+  }
 
   // ---------- layout: session rail, panes, split view ----------
   // An iframe of the same page, embedded for a split session: no sidebar or outer chrome,
@@ -4250,7 +4372,7 @@
   let noteTimer = null;
   function note(text) { pvNote.textContent = text; pvNote.classList.remove('hidden'); clearTimeout(noteTimer); noteTimer = setTimeout(() => pvNote.classList.add('hidden'), 6000); }
 
-  async function openPreview({ auto = true } = {}) {
+  async function openPreview({ auto = true } = {}) { closeArtifacts();
     if (mini?.kind === 'preview') restoreMini();
     if (tasksOpen) closeTasks();
     if (changesOpen) closeChanges();
@@ -4859,7 +4981,7 @@
   const activeTab = () => fxOpen.find((t) => t.path === fxActivePath);
   const defaultModeFor = (p) => RICH_KINDS.test(p) ? 'preview' : 'edit';
 
-  function openFiles() {
+  function openFiles() { closeArtifacts();
     if (tasksOpen) closeTasks(); if (previewOpen) closePreview(); if (changesOpen) closeChanges(); if (terminalOpen) closeTerminal(); if (btwOpen) closeBtwPanel();
     filesOpen = true; fxPanel.classList.remove('hidden'); app.classList.add('panel-open');
     // A new session's folder starts the tree over; the same session keeps its open tabs,
@@ -5548,7 +5670,7 @@
     paintTermTabs();
     showTerminalTab(term.tabs[0].id);
   }
-  async function openTerminal() {
+  async function openTerminal() { closeArtifacts();
     if (!state.current) { toast('Start a conversation first.'); return; }
     if (mini?.kind === 'terminal') restoreMini();
     if (tasksOpen) closeTasks(); if (previewOpen) closePreview(); if (filesOpen) closeFiles(); if (changesOpen) closeChanges(); if (btwOpen) closeBtwPanel();
@@ -5866,7 +5988,7 @@
   // ---------- Changes: the files this folder has changed, and their diffs (Desktop's Changes pane) ----------
   const changesPanel = $('#changes-panel'), chList = $('#ch-list'), chDiff = $('#ch-diff');
   let changesOpen = false, changesData = null, changesFile = null;
-  function openChanges() { if (tasksOpen) closeTasks(); if (previewOpen) closePreview(); if (filesOpen) closeFiles(); if (terminalOpen) closeTerminal(); if (btwOpen) closeBtwPanel(); changesOpen = true; changesPanel.classList.remove('hidden'); app.classList.add('panel-open'); showChangesList(); loadChanges(); }
+  function openChanges() { closeArtifacts(); if (tasksOpen) closeTasks(); if (previewOpen) closePreview(); if (filesOpen) closeFiles(); if (terminalOpen) closeTerminal(); if (btwOpen) closeBtwPanel(); changesOpen = true; changesPanel.classList.remove('hidden'); app.classList.add('panel-open'); showChangesList(); loadChanges(); }
   function closeChanges() { changesOpen = false; changesFile = null; changesPanel.classList.add('hidden'); app.classList.remove('panel-open'); }
   $('#ch-close').addEventListener('click', closeChanges);
   $('#ch-refresh').addEventListener('click', () => loadChanges());
@@ -6157,6 +6279,7 @@
         // show_pane / close_pane (lib/tools-sessions.mjs): "browser" has no opener in this build
         // unless another package's work is merged in beside this one - typeof, not a direct call,
         // so a name nobody has defined yet is silently a no-op instead of a ReferenceError.
+        case 'artifact': onArtifactEvent(ev); break;
         case 'show_pane': (({ terminal: () => openTerminal(), changes: () => openChanges(), files: () => openFiles(), tasks: () => openTasks(), browser: () => { if (typeof openBrowserPane === 'function') openBrowserPane(); } })[ev.pane] || (() => {}))(); break;
         case 'close_pane': (({ terminal: () => terminalOpen && closeTerminal(), changes: () => changesOpen && closeChanges(), files: () => filesOpen && closeFiles(), tasks: () => tasksOpen && closeTasks(), browser: () => { if (typeof closeBrowserPane === 'function') closeBrowserPane(); } })[ev.pane] || (() => {}))(); break;
         // open_in_editor's fallback when VS Code is not on the session's own computer's PATH.
@@ -7388,6 +7511,7 @@
     out.push({ name: 'Deleted sessions', group: 'View', run: () => openTrash() });
     if (hasSession()) out.push(
       { name: 'Changes', group: 'Session', run: () => (changesOpen ? closeChanges() : openChanges()) },
+      { name: 'Artifacts', group: 'Session', run: () => (artOpen ? closeArtifacts() : openArtifacts()) },
       { name: 'Files', group: 'Session', run: () => (filesOpen ? closeFiles() : openFiles()) },
       { name: 'Browser', group: 'Session', hint: 'Ctrl+Shift+B', run: () => (previewOpen ? closePreview() : openPreview()) },
       { name: 'Terminal', group: 'Session', hint: 'Ctrl+`', run: () => toggleTerminal() },
@@ -7488,7 +7612,7 @@
   let openSeq = 0;
   async function openSession(id, { jumpTo } = {}) {
     const seq = ++openSeq;
-    state.current = id; state.live = null; state.tasks = []; hiddenTasks.clear(); paintTasks(); if (changesOpen) closeChanges(); if (previewOpen) closePreview(); if (filesOpen) closeFiles(); if (terminalOpen) closeTerminal();
+    state.current = id; state.live = null; state.tasks = []; hiddenTasks.clear(); paintTasks(); closeArtifacts(); if (changesOpen) closeChanges(); if (previewOpen) closePreview(); if (filesOpen) closeFiles(); if (terminalOpen) closeTerminal();
     paintPaneBtns(); paintRail(); restoreSplit();
     planTodos = null; planTasks.clear(); planFoldOpen = false; planStopped = false; planBoxEl?.remove(); planBoxEl = null; $('#plan-step-chip')?.classList.add('hidden'); paintPlanBox();
     if (state.btw.forSession !== id) resetBtwForSession(id); // side chats are per-session, not carried to the next one opened
