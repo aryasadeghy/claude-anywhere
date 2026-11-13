@@ -32,7 +32,8 @@ async function main() {
   async function open(type, opts) {
     const browser = await type.launch({ headless: true, ...(type === chromium && channel ? { channel } : {}) });
     const ctx = await browser.newContext({ colorScheme: 'dark', ...opts });
-    await ctx.addInitScript((token) => { localStorage.setItem('cr.accountChosen', '1'); localStorage.setItem('cr.token', token); }, app.token);
+    // try: the script also runs in the Artifacts pane's sandboxed frame, which has no storage by design
+    await ctx.addInitScript((token) => { try { localStorage.setItem('cr.accountChosen', '1'); localStorage.setItem('cr.token', token); } catch {} }, app.token);
     const page = await ctx.newPage();
     const errors = []; page.on('pageerror', (e) => errors.push(e.message));
     await page.goto(app.base + '/#/s/' + sid);
