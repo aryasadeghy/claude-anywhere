@@ -1305,7 +1305,7 @@ routines.init(DATA_DIR, {
   onDue: async (routine) => {
     if (!fs.existsSync(routine.folder)) throw new Error('Folder no longer exists: ' + routine.folder);
     const newId = randomUUID();
-    const { ready } = startRun({ newId, cwd: routine.folder, prompt: routine.prompt, model: routine.model, permissionMode: routine.permissionMode, disabledMcp: readPrefs().disabledMcp || [] });
+    const { ready } = startRun({ newId, cwd: routine.folder, prompt: routine.prompt, model: routine.model, permissionMode: routine.permissionMode, disabledMcp: readPrefs().disabledMcp || [], app: { routine: routine.name } });
     const sessionId = await ready;
     return { sessionId };
   },
