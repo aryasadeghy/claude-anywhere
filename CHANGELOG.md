@@ -24,6 +24,17 @@ All notable changes to this project are documented here. The format follows
   artifacts, every version, Copy, Download, Open in a new tab, a read-only share link
   (`/a/<token>`, no login, "Stop sharing" revokes it) and Delete. Pages are drawn sandboxed, never on
   the app's own origin.
+- **Claude knows it is inside claude-anywhere.** Every run (new, continued, a nested session, a /btw
+  side chat, a scheduled task) appends the app's own instructions to Claude Code's system prompt, the
+  way Claude Desktop does for its Code tab: short progress updates and a full final answer, the plan
+  box, the recap card and when a question there ends the turn, artifacts instead of an HTML file and
+  a screenshot, the Browser pane to check web work, SendUserFile for finished files, when work
+  deserves its own session, scheduled tasks, links to files, terminal tabs and sessions, and the
+  app's own controls instead of `/config`. Only the app's tools that are on are named.
+- **The live line says what Claude is doing.** While Claude works, the line under the conversation
+  shows Claude Code's own one-line label for the work in hand ("Listed project files") with the
+  timer, and a finished group of tool calls is titled with those labels ("Listed project files,
+  waited for the build"). A `[title](#terminal/<id>)` link in a message opens that terminal tab.
 
 ## [0.13.0] — 2026-11-12
 

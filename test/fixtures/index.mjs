@@ -214,6 +214,9 @@ export function makeLongSession(configDir, cwd, { id = 'eeeeeeee-1111-2222-3333-
 // what gives file checkpointing (and so rewind) something genuine to have tracked.
 // "[browse:<url>]" walks the Browser tools: preview_navigate, preview_screenshot, preview_click #btn.
 // "[terminal]" opens a terminal tab (the app's own open_terminal_tab, which runs without asking).
+// "[summary]" runs two rounds of Bash (`ls`, then `sleep 5`) and answers Claude Code's own small
+// request for each round's one-line label (CLAUDE_CODE_EMIT_TOOL_USE_SUMMARIES, lib/runs.mjs); any
+// other turn's label request gets an empty answer, which Claude Code drops, so no other suite sees one.
 // `requests` lists what the CLI asked for, `bodies` what it sent.
 export async function startFakeApi({ delay = 15 } = {}) {
   const requests = [], bodies = [];
@@ -229,6 +232,19 @@ export async function startFakeApi({ delay = 15 } = {}) {
     // The literal last message is sometimes a trailing role:"system" aside (environment info,
     // sent once) rather than the human's own turn or its tool result - search back for the last
     // one Claude or the person actually wrote.
+    // Claude Code's request for a round's label: its system prompt asks for one, its user prompt quotes the round's tool calls.
+    if (JSON.stringify(j.system || '').includes('short summary label')) {
+      const ask = JSON.stringify(j.messages || '');
+      const label = ask.includes('Wait for the build') ? 'Waited for the build' : ask.includes('List project files') ? 'Listed project files' : '';
+      const content = label ? [{ type: 'text', text: label }] : [];
+      if (!j.stream) { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ id: 'msg_s' + requests.length, type: 'message', role: 'assistant', model: j.model, content, stop_reason: 'end_turn', stop_sequence: null, usage: { input_tokens: 12, output_tokens: 4 } })); }
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+      const ev = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      ev('message_start', { type: 'message_start', message: { id: 'msg_s' + requests.length, type: 'message', role: 'assistant', model: j.model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 12, output_tokens: 1 } } });
+      if (label) { ev('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }); ev('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: label } }); ev('content_block_stop', { type: 'content_block_stop', index: 0 }); }
+      ev('message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 4 } }); ev('message_stop', { type: 'message_stop' });
+      return res.end();
+    }
     const last = [...(j.messages || [])].reverse().find((m) => m.role === 'user') || (j.messages || []).at(-1) || {};
     const afterTool = Array.isArray(last.content) && last.content.some((b) => b.type === 'tool_result');
     const said = userText(last);
@@ -252,11 +268,18 @@ export async function startFakeApi({ delay = 15 } = {}) {
     const artStep = ai >= 0 ? msgs.slice(ai).filter((m) => m.role === 'assistant' && Array.isArray(m.content)).flatMap((m) => m.content).filter((b) => b.type === 'tool_use' && /_artifact$/.test(b.name)).length : -1;
     const ARTIFACT = [['create_artifact', { title: 'Hello page', type: 'html', content: `<!doctype html><html><body><h1 id="hello">Hello artifact</h1><button id="b" onclick="document.getElementById('hello').textContent='Clicked'">Go</button></body></html>` }], ['update_artifact', { id: 'hello-page', find: 'Hello artifact', replace: 'Hello again', note: 'Greeting changed' }]];
     const artOn = ai >= 0 && msgs.length - 1 - ai === 2 * artStep;
+    // [summary]: `ls`, then `sleep 5`, then a word - two rounds, each with its own label.
+    const si = msgs.findLastIndex((m) => m.role === 'user' && /\[summary\]/.test(userText(m)));
+    const sumStep = si >= 0 ? msgs.slice(si).filter((m) => m.role === 'assistant' && Array.isArray(m.content)).flatMap((m) => m.content).filter((b) => b.type === 'tool_use').length : -1;
+    const SUMMARY = [['Bash', { command: 'ls', description: 'List project files' }], ['Bash', { command: 'sleep 5', description: 'Wait for the build' }]];
+    const sumOn = si >= 0 && msgs.length - 1 - si === 2 * sumStep;
     const browseStep = browse ? msgs.slice(hi).filter((m) => m.role === 'assistant' && Array.isArray(m.content)).flatMap((m) => m.content).filter((b) => b.type === 'tool_use' && /preview_/.test(b.name)).length : -1;
-    const words = browse ? (browseStep >= BROWSE.length ? 'Clicked the button.' : null) : artOn ? (artStep >= ARTIFACT.length ? 'Made the page.' : null) : afterTool ? (askedBefore ? `Noted: ${toolText.replace(/\s+/g, ' ').slice(0, 160)}` : wroteBefore ? 'Done writing it.' : 'Started it in the background.')
+    const words = sumOn ? (sumStep >= SUMMARY.length ? 'Both are done: the files are listed and the build finished.' : null) : browse ? (browseStep >= BROWSE.length ? 'Clicked the button.' : null) : artOn ? (artStep >= ARTIFACT.length ? 'Made the page.' : null) : afterTool ? (askedBefore ? `Noted: ${toolText.replace(/\s+/g, ' ').slice(0, 160)}` : wroteBefore ? 'Done writing it.' : 'Started it in the background.')
       : /\[background\]/.test(said) || asking || writeMatch || opensTerminal || toolTag ? null
       : /\[math\]/.test(said) ? 'The area under the curve is $\\int_0^1 x\\,dx = \\frac{1}{2}$ and the price is $5 or $10, not a range.\n\n$$E = mc^2$$'
       : /\[secret\]/.test(said) ? 'Found it in .env: ANTHROPIC_API_KEY=sk-ant-api03-fakeFAKEfakeFAKEfakeFAKEfakeFAKEfakeFAKE and a GitHub token ghp_FAKEfakeFAKEfakeFAKEfakeFAKEfake1234.'
+      // [link:<session id>]: the links lib/app-prompt.mjs asks for - a terminal tab (one that is gone) and a session.
+      : /\[link:[\w-]+\]/.test(said) ? `Open [the server tab](#terminal/t-gone) or [the other chat](#/s/${/\[link:([\w-]+)\]/.exec(said)[1]}).`
       : /\[code\]/.test(said) ? 'Here:\n\n```js\nfunction add(a, b) {\n  return a + b;\n}\n```\n'
       // A data: URI (isWebUrl) renders directly, unlike a bare path, which the app reads from
       // the session's own folder through /api/file - this tag needs no project file on disk.
@@ -302,8 +325,9 @@ export async function startFakeApi({ delay = 15 } = {}) {
       };
       const [tagName, tagInput] = TOOL_TAGS[toolTag] || [];
       const [browseName, browseInput] = browse ? BROWSE[browseStep] : artOn && artStep < ARTIFACT.length ? ARTIFACT[artStep] : [];
-      const name = browseName ? 'mcp__claude-anywhere__' + browseName : asking ? 'AskUserQuestion' : writeMatch ? 'Write' : opensTerminal ? 'mcp__claude-anywhere__open_terminal_tab' : tagName || 'Bash';
-      const input = JSON.stringify(browseInput ? browseInput : asking ? { questions: [{ question: 'Which colour should the button be?', header: 'Colour', options: [{ label: 'Red', description: 'Warm' }, { label: 'Blue', description: 'Calm' }], multiSelect: false }] } : writeMatch ? { file_path: writeMatch[1].trim(), content: writeMatch[2] } : opensTerminal ? {} : tagInput || { command: 'sleep 20', description: 'Render the long video', run_in_background: true });
+      const [sumName, sumInput] = sumOn && sumStep < SUMMARY.length ? SUMMARY[sumStep] : [];
+      const name = sumName ? sumName : browseName ? 'mcp__claude-anywhere__' + browseName : asking ? 'AskUserQuestion' : writeMatch ? 'Write' : opensTerminal ? 'mcp__claude-anywhere__open_terminal_tab' : tagName || 'Bash';
+      const input = JSON.stringify(sumInput ? sumInput : browseInput ? browseInput : asking ? { questions: [{ question: 'Which colour should the button be?', header: 'Colour', options: [{ label: 'Red', description: 'Warm' }, { label: 'Blue', description: 'Calm' }], multiSelect: false }] } : writeMatch ? { file_path: writeMatch[1].trim(), content: writeMatch[2] } : opensTerminal ? {} : tagInput || { command: 'sleep 20', description: 'Render the long video', run_in_background: true });
       send('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'toolu_fake_' + requests.length, name, input: {} } });
       send('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: input } });
       send('content_block_stop', { type: 'content_block_stop', index: 0 });

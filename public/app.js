@@ -63,6 +63,10 @@
     // rather than embedding it in the middle of a sentence.
     link({ href, title, tokens }) {
       const inner = this.parser.parseInline(tokens);
+      // lib/app-prompt.mjs asks Claude to link what it points at: a terminal tab, another session.
+      const tab = /^#terminal\/([\w-]+)$/.exec(href || '');
+      if (tab) return `<a href="#" class="term-link" data-tab="${escapeAttr(tab[1])}">${inner}</a>`;
+      if (/^#\/s\/[\w-]+$/.test(href || '')) return `<a href="${escapeAttr(href)}">${inner}</a>`;
       if (!isWebUrl(href)) return `<a href="#" class="file-link" data-path="${escapeAttr(href)}"${title ? ` title="${escapeAttr(title)}"` : ''}>${inner}</a>`;
       return `<a href="${escapeAttr(href)}"${title ? ` title="${escapeAttr(title)}"` : ''} target="_blank" rel="noopener">${inner}</a>`;
     },
@@ -3314,14 +3318,14 @@
 
   // ---------- live status line (the Desktop "✱ Thinking… 12s · 1.2k tokens" row) ----------
   const VERBS = ['Thinking', 'Pondering', 'Considering', 'Working', 'Reasoning', 'Composing', 'Sketching', 'Puzzling', 'Brewing', 'Cooking', 'Musing', 'Mulling'];
-  const status = { el: null, verb: VERBS[0], tool: null, toolSince: 0, startedAt: 0, tokens: 0, waiting: false, timer: null, verbTimer: null };
+  const status = { el: null, verb: VERBS[0], summary: '', summaryGroup: null, tool: null, toolSince: 0, startedAt: 0, tokens: 0, waiting: false, timer: null, verbTimer: null };
   function statusStart() {
     if (!status.el) {
       status.el = el('div', 'status-line');
       status.el.innerHTML = '<span class="spark spin">✱</span><span class="shimmer"></span><span class="status-meta"></span>';
     }
     thread.appendChild(status.el);
-    status.startedAt = status.startedAt || Date.now(); status.tokens = 0; status.tool = null; status.waiting = false;
+    status.startedAt = status.startedAt || Date.now(); status.tokens = 0; status.tool = null; status.waiting = false; status.summary = ''; status.summaryGroup = null;
     status.verb = VERBS[Math.floor(Math.random() * VERBS.length)];
     clearInterval(status.timer); status.timer = setInterval(statusPaint, 1000);
     clearInterval(status.verbTimer); status.verbTimer = setInterval(() => { if (!status.tool && !status.waiting) { status.verb = VERBS[Math.floor(Math.random() * VERBS.length)]; statusPaint(); } }, 6000);
@@ -3332,6 +3336,8 @@
     const secs = Math.max(0, Math.round((Date.now() - status.startedAt) / 1000));
     let text = status.verb + '…';
     if (status.waiting) text = 'Waiting for your approval';
+    // Desktop's live line: Claude Code's one-line label for the work in hand, while its group is still the open one.
+    else if (status.summary && status.summaryGroup && status.summaryGroup === state.live?.group) text = status.summary;
     else if (status.tool) text = (status.tool === 'Bash' || status.tool === 'PowerShell' ? 'Running ' : status.tool === 'Read' || status.tool === 'Grep' || status.tool === 'Glob' ? 'Reading with ' : status.tool === 'Agent' ? 'Running agent ' : 'Using ') + status.tool + '…';
     status.el.querySelector('.shimmer').textContent = text;
     const tok = status.tokens >= 1000 ? (status.tokens / 1000).toFixed(1) + 'k' : String(status.tokens);
@@ -5611,6 +5617,14 @@
   // and an ordinary window resize in one place.
   const termResizeObserver = new ResizeObserver(() => { if (terminalOpen) resizeActiveTerm(); }); // fires for the mini box too, so the live view still fits it
   termResizeObserver.observe(termStage);
+  // A [title](#terminal/<id>) link in a message (lib/app-prompt.mjs): open the pane at that tab.
+  document.addEventListener('click', async (e) => {
+    const a = e.target.closest?.('a.term-link'); if (!a) return;
+    e.preventDefault();
+    const id = a.dataset.tab;
+    if (!terminalOpen || mini?.kind === 'terminal' || !findTermTab(id)) await openTerminal();
+    if (findTermTab(id)) showTerminalTab(id); else toast('That terminal tab is closed.');
+  });
   function showTerminalTab(id) {
     const tab = findTermTab(id);
     if (!tab) return;
@@ -6262,8 +6276,13 @@
         case 'limits': usage.limits = ev; paintUsage(); break;
         case 'tool_progress': status.tool = ev.tool; if (!status.toolSince) status.toolSince = Date.now() - (ev.elapsed || 0) * 1000; statusPaint(); break;
         case 'usage': if (ev.outputTokens) { status.tokens = ev.outputTokens; statusPaint(); } break;
-        case 'tool_summary': { // the CLI's own wording ("Ran 3 commands") for the open group
-          const g = state.live?.group; if (g && ev.summary) { g._fromCli = true; setGroupSummary(g, ev.summary); const d = groupDiff(g._names, g._inputs); if (d.add || d.del) { const st = el('span', 'group-diff'); st.innerHTML = `<span class="add">+${d.add.toLocaleString()}</span> <span class="del">−${d.del.toLocaleString()}</span>`; g.querySelector('summary').appendChild(st); } }
+        case 'tool_summary': { // Claude Code's own label for a round of tool calls ("Read the budget file"): its group's title, and the live line
+          // It comes a moment after its round, so it is matched to the round's own tools, not whichever group is open by then;
+          // a group of several rounds reads as all of them, as Desktop's "Ran a command, created trip-plan.md".
+          const node = (ev.toolUseIds || []).map((id) => state.live?.tools?.get(id)).find(Boolean);
+          const g = node?.closest('details.tool-group') || state.live?.group;
+          if (g && ev.summary) { status.summary = ev.summary; status.summaryGroup = g; statusPaint(); }
+          if (g && ev.summary && !(g._summaries ||= []).includes(ev.summary)) { g._summaries.push(ev.summary); g._fromCli = true; setGroupSummary(g, g._summaries.map((x, i) => (i && !/^.[A-Z]/.test(x) ? x[0].toLowerCase() + x.slice(1) : x)).join(', ')); const d = groupDiff(g._names, g._inputs); if (d.add || d.del) { const st = el('span', 'group-diff'); st.innerHTML = `<span class="add">+${d.add.toLocaleString()}</span> <span class="del">−${d.del.toLocaleString()}</span>`; g.querySelector('summary').appendChild(st); } }
           break;
         }
         case 'tasks': state.tasks = ev.tasks || []; paintTasks(); break;
