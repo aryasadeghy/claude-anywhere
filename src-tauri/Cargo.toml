@@ -1,6 +1,6 @@
 [package]
 name = "claude-anywhere"
-version = "0.13.0"
+version = "0.14.0"
 description = "Claude Code on this PC, from any device: a Claude-styled window over the Agent SDK"
 edition = "2021"
 

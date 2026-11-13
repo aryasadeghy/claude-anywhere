@@ -7,6 +7,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-11-13
+
 ### Added
 
 - **Artifacts.** Claude can make a page, a React component, an SVG, a document or a diagram with
@@ -685,7 +687,8 @@ settings across.
   from a browser, with live streaming, permission prompts and a new-session
   flow.
 
-[Unreleased]: https://github.com/aryasadeghy/claude-anywhere/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/aryasadeghy/claude-anywhere/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/aryasadeghy/claude-anywhere/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/aryasadeghy/claude-anywhere/compare/v0.12.1...v0.13.0
 [0.12.1]: https://github.com/aryasadeghy/claude-anywhere/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/aryasadeghy/claude-anywhere/compare/v0.11.0...v0.12.0
