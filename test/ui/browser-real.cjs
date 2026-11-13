@@ -75,7 +75,7 @@ async function main() {
   }
   const view = (page) => page.$('#pv-stage .rv:not(.hidden)');
   const box = async (page) => (await view(page)).boundingBox();
-  const live = (page) => until(async () => !!(await page.$('#pv-stage .rv.live:not(.hidden)')));
+  const live = (page, ms) => until(async () => !!(await page.$('#pv-stage .rv.live:not(.hidden)')), ms);
   const goTo = async (page, addr) => { await page.fill('#pv-addr', addr); await page.press('#pv-addr', 'Enter'); };
 
   // ---------- desktop ----------
@@ -85,7 +85,8 @@ async function main() {
     await page.waitForSelector('#preview-panel.rv-on:not(.hidden)');
     check('the pane knows it has a real browser behind it', true);
     await goTo(page, 'localhost:' + port);
-    check('a local page opens in the pane and its picture arrives', await live(page));
+    // The first frame waits for Chrome's cold start, which on a CI runner can take longer than 15 s.
+    check('a local page opens in the pane and its picture arrives', await live(page, 60000));
     const b = await box(page);
     check('the page is laid out at the pane\'s size', await until(() => lastW() === 'w=' + Math.round(b.width)), lastW() + ' vs ' + b.width);
     check('the tab takes the page\'s title', await until(async () => (await page.$eval('#pv-tabs .pv-tab.on', (t) => t.textContent)).includes('Test page')));
