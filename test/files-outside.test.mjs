@@ -49,3 +49,13 @@ test('...and refused without a session, or in a session that never named it', as
 test('...and a file next to it that no session names stays refused', async () => {
   assert.equal((await get(other, SID)).status, 403);
 });
+
+// The Browser pane asks for a file by its path alone, with no session to check: a mockup Claude
+// sent from the Desktop showed in the chat and the pane answered "outside the project folders".
+test('the Browser pane opens a file a session showed, and only that one', async () => {
+  const grant = await (await fetch(app.base + '/api/preview/grant', { headers: { authorization: 'Bearer ' + app.token } })).json();
+  const pane = (p) => fetch(app.base + '/files/' + grant.key + '/' + p.replace(/\\/g, '/').split('/').filter(Boolean).map(encodeURIComponent).join('/'));
+  assert.equal((await get(picture, SID)).status, 200); // the chat showed it
+  assert.equal((await pane(picture)).status, 200);
+  assert.equal((await pane(other)).status, 403);
+});

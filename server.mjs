@@ -31,7 +31,7 @@ import * as limitQueue from './lib/limit-queue.mjs';
 import * as rewindStore from './lib/rewind.mjs';
 const execFileP = promisify(execFile);
 import { tailSession, isWorkingElsewhere, WORKING_WINDOW_MS, sessionFile } from './lib/tail.mjs';
-import { transcriptMentions } from './lib/mentioned.mjs';
+import { transcriptMentions, initShown, markShown, wasShown } from './lib/mentioned.mjs';
 import { cliProcessFor } from './lib/cli-sessions.mjs';
 import { parsePreviewUrl, portFromReferer, proxyRequest, proxyUpgrade, listLocalPorts, proxyAtRoot, upgradeAtRoot, listenOn, injectBridge } from './lib/preview.mjs';
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -292,7 +292,7 @@ async function serveProjectFile(req, res, urlPath, sandboxed) {
   if (/^\/[A-Za-z]:[\\/]/.test(p)) p = p.slice(1);
   if (!path.isAbsolute(p)) return res.status(400).type('text').send('Not a file path.');
   p = path.normalize(p);
-  if (!(await insideProjectRoots(p))) return res.status(403).type('text').send('That file is outside the project folders.');
+  if (!(await insideProjectRoots(p)) && !wasShown(p)) return res.status(403).type('text').send('That file is outside the project folders.');
   let st;
   try { st = fs.statSync(p); } catch { return res.status(404).type('text').send('There is no such file on this computer.'); }
   if (st.isDirectory()) {
@@ -318,6 +318,7 @@ app.use('/files/', (req, res) => {
 
 // ---------- small preferences file: pinned sessions (shared by every device) ----------
 const DATA_DIR = envOf('DATA_DIR') || path.join(here, 'data');
+initShown(DATA_DIR); // files a session sent, which the Browser pane may open wherever they live
 access.init(DATA_DIR, process.env.REMOTE_PASSWORD);
 const PREFS_PATH = path.join(DATA_DIR, 'prefs.json');
 function readPrefs() {
@@ -1905,7 +1906,7 @@ app.get('/api/file', async (req, res) => {
     // A file outside every session's folder is still this session's to show when its transcript
     // names it (lib/mentioned.mjs): a picture saved to Downloads, a file sent from the Desktop.
     const sid = /^[0-9a-f-]{36}$/i.test(String(req.query.sid || '')) ? String(req.query.sid) : '';
-    const allowed = (await insideProjectRoots(p)) || (await insideProjectRoots(p, true)) || (sid && sessionFile(sid) && transcriptMentions(sessionFile(sid), p));
+    const allowed = (await insideProjectRoots(p)) || (await insideProjectRoots(p, true)) || (sid && sessionFile(sid) && transcriptMentions(sessionFile(sid), p) && (markShown(p), true));
     if (!allowed) return res.status(403).json({ error: 'Outside the project folders' });
     // Pictures, video and sound play inline. Anything else - a file Claude sent, the
     // Download button in the Files panel - is handed over as a download only: served

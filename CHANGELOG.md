@@ -7,6 +7,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **A file Claude sent opens in the Browser pane too.** A mockup saved on the Desktop showed in the chat,
+  and the Browser pane answered "That file is outside the project folders": the pane asks for a file
+  by its path alone and cannot check the chat it came from. The app now remembers the files a session
+  sent or showed, and the pane opens those exact files, on any device.
+
 ## [0.14.0] — 2026-11-13
 
 ### Added
