@@ -60,7 +60,7 @@ jobs:
           - part: turns and the box
             suites: realtime queue controls composer queue-controls layout routines
           - part: files, terminal, conversation
-            suites: files files-pane terminal conversation git sessions sessions-tools
+            suites: files files-pane terminal conversation git sessions sessions-tools artifacts
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

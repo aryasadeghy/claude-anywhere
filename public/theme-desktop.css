@@ -1535,3 +1535,26 @@ html.embed .main { border-inline-start: 0; }
 
 /* ---------- v75: the plan box's step icons are Desktop's circles, not the older checklist's squares ---------- */
 .plan-box .todo-check { width: 15px; height: 15px; border: 0; border-radius: 50%; background: none; display: grid; place-items: center; }
+
+/* ---------- v76: artifacts, the pages and documents Claude makes, beside the chat ---------- */
+@media (min-width: 861px) { .artifacts-panel { width: 520px; } }
+.artifacts-panel .tp-head { position: relative; }
+.art-title-btn { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 60%; padding: 4px 8px; margin-inline-start: -8px; border: 0; border-radius: 8px; background: none; color: var(--ink); cursor: pointer; font: inherit; }
+.art-title-btn:hover { background: var(--bg-2); }
+.art-title-btn .tp-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#art-switch { inset-inline-start: 12px; inset-inline-end: auto; top: calc(100% - 6px); max-height: 50vh; overflow: auto; min-width: 240px; }
+.art-share-badge { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--bg-2); color: var(--ink-3); }
+.art-bar { display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-bottom: 1px solid var(--line); flex: none; }
+.art-ver { font-size: 12.5px; white-space: nowrap; }
+.art-updated { margin-inline-start: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.art-btn { padding: 4px 10px; font-size: 12.5px; }
+.art-bar .icon-btn:disabled { opacity: .35; cursor: default; }
+.art-stage { position: relative; flex: 1; min-height: 0; background: #fff; }
+.art-frame { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #fff; }
+.art-empty { padding: 28px 22px; background: var(--bg-000); height: 100%; box-sizing: border-box; line-height: 1.6; }
+.artifact-card { display: flex; align-items: center; gap: 12px; margin-top: 10px; padding: 10px 12px; border: 1px solid var(--line-2); border-radius: 12px; background: var(--bg-2); max-width: 460px; }
+.artifact-card-icon { display: grid; place-items: center; width: 34px; height: 34px; flex: none; border-radius: 9px; background: var(--bg-000); color: var(--accent); }
+.artifact-card-text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.artifact-card-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.artifact-card-sub { font-size: 12.5px; color: var(--ink-3); }
+.artifact-card-open { flex: none; }
