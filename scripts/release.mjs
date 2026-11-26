@@ -25,6 +25,17 @@ if (run('git', 'status', '--porcelain')) {
   process.exit(1);
 }
 
+// A release whose commit landed but whose tag was refused (0.14.2: the tag's push came back
+// "remote rejected ... (failed)" after the commit was already on main) left main saying the new
+// version with no tag, and every later run stopped below at "nothing to change". When the files
+// already say this version and the changelog already has its section, the tag is all that is missing.
+const at = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
+if (JSON.parse(at('package.json')).version === version && at('CHANGELOG.md').includes(`## [${version}]`)) {
+  run('git', 'tag', '-a', `v${version}`, '-m', `v${version}`);
+  console.log(`already ${version}: tagged v${version} on the current commit`);
+  process.exit(0);
+}
+
 const edit = (rel, fn) => {
   const p = path.join(root, rel);
   const before = fs.readFileSync(p, 'utf8');
