@@ -225,7 +225,7 @@ export async function startFakeApi({ delay = 15 } = {}) {
     let body = ''; for await (const c of req) body += c;
     const url = new URL(req.url, 'http://x');
     let j = {}; try { j = JSON.parse(body || '{}'); } catch {}
-    requests.push({ method: req.method, path: url.pathname, stream: !!j.stream, at: Date.now() });
+    requests.push({ method: req.method, path: url.pathname, stream: !!j.stream, at: Date.now(), auth: req.headers.authorization ? 'bearer' : req.headers['x-api-key'] ? 'apikey' : '' });
     if (url.pathname.endsWith('/v1/messages')) bodies.push(j);
     if (url.pathname.endsWith('/count_tokens')) { res.writeHead(200, { 'content-type': 'application/json' }); return res.end('{"input_tokens":12}'); }
     if (req.method !== 'POST' || !url.pathname.endsWith('/v1/messages')) { res.writeHead(404, { 'content-type': 'application/json' }); return res.end('{"type":"error","error":{"type":"not_found_error","message":"not here"}}'); }

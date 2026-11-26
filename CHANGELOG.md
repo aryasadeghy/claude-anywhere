@@ -7,6 +7,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **Switching account takes effect in the open chat too.** A chat keeps its Claude Code running for
+  ten minutes after each answer, with the login it started on: after a token was revoked, that chat
+  kept answering "OAuth token revoked" while new chats worked, and switching back did not help. A
+  switch now ends every resting process, a turn under way ends its process when it finishes, and a
+  refused login is never reused - the next message starts afresh on the account chosen now.
+
 ## [0.14.1] — 2026-11-13
 
 ### Fixed
