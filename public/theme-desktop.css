@@ -1558,3 +1558,25 @@ html.embed .main { border-inline-start: 0; }
 .artifact-card-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .artifact-card-sub { font-size: 12.5px; color: var(--ink-3); }
 .artifact-card-open { flex: none; }
+
+/* ---------- v82: this PC's screen - remote desktop and the Android emulator, in one pane ---------- */
+.sd-panel { width: var(--screen-w, 640px); }
+@media (max-width: 860px) { .sd-panel { width: auto; } }
+.sd-head { gap: 6px; flex-wrap: nowrap; }
+.sd-source { min-width: 0; max-width: 220px; flex: 0 1 auto; padding: 3px 8px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--bg-000); color: inherit; font: inherit; font-size: 12.5px; }
+.sd-live { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: color-mix(in srgb, #22c55e 18%, transparent); color: #16a34a; white-space: nowrap; }
+#sd-touch.on, #pane-screen-btn.on { color: var(--accent); }
+.sd-stage { position: relative; flex: 1; min-height: 0; background: #111; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.sd-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
+.sd-stage:not(.live) .sd-img { visibility: hidden; }
+.sd-stage.live { cursor: default; }
+.sd-card { position: absolute; inset: 0; overflow: auto; padding: 28px 24px; background: var(--bg-000); line-height: 1.6; box-sizing: border-box; }
+.sd-card-title { font-weight: 600; font-size: 15px; margin-bottom: 6px; }
+.sd-card-body { margin: 0 0 14px; color: var(--ink-2); max-width: 46ch; white-space: pre-line; }
+.sd-card-actions { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; max-width: 320px; }
+.sd-pw, #sd-set-pw { width: 100%; box-sizing: border-box; padding: 7px 10px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--bg-000); color: inherit; font: inherit; }
+#sd-set-pw { margin-top: 8px; max-width: 360px; }
+.sd-settings { margin-top: 18px; }
+.sd-settings .set-row { padding-inline: 0; }
+.sd-cad .menu-label { opacity: .6; }
+.permission.computer-access .perm-summary { white-space: pre-line; font-family: inherit; }

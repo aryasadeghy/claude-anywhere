@@ -213,6 +213,7 @@ export function makeLongSession(configDir, cwd, { id = 'eeeeeeee-1111-2222-3333-
 // "[write:<path>] <content>" with a real Write tool call - the CLI executes it for real, which is
 // what gives file checkpointing (and so rewind) something genuine to have tracked.
 // "[browse:<url>]" walks the Browser tools: preview_navigate, preview_screenshot, preview_click #btn.
+// "[computer:<x>,<y>]" is computer use: screenshot, then left_click at (x, y) of it; the last word quotes the click's result.
 // "[terminal]" opens a terminal tab (the app's own open_terminal_tab, which runs without asking).
 // "[summary]" runs two rounds of Bash (`ls`, then `sleep 5`) and answers Claude Code's own small
 // request for each round's one-line label (CLAUDE_CODE_EMIT_TOOL_USE_SUMMARIES, lib/runs.mjs); any
@@ -274,7 +275,12 @@ export async function startFakeApi({ delay = 15 } = {}) {
     const SUMMARY = [['Bash', { command: 'ls', description: 'List project files' }], ['Bash', { command: 'sleep 5', description: 'Wait for the build' }]];
     const sumOn = si >= 0 && msgs.length - 1 - si === 2 * sumStep;
     const browseStep = browse ? msgs.slice(hi).filter((m) => m.role === 'assistant' && Array.isArray(m.content)).flatMap((m) => m.content).filter((b) => b.type === 'tool_use' && /preview_/.test(b.name)).length : -1;
-    const words = sumOn ? (sumStep >= SUMMARY.length ? 'Both are done: the files are listed and the build finished.' : null) : browse ? (browseStep >= BROWSE.length ? 'Clicked the button.' : null) : artOn ? (artStep >= ARTIFACT.length ? 'Made the page.' : null) : afterTool ? (askedBefore ? `Noted: ${toolText.replace(/\s+/g, ' ').slice(0, 160)}` : wroteBefore ? 'Done writing it.' : 'Started it in the background.')
+    // [computer:<x>,<y>]: computer use - a screenshot, then a left_click at that point of it, then a word.
+    const ci = msgs.findLastIndex((m) => m.role === 'user' && /\[computer:\d+,\d+\]/.test(userText(m)));
+    const comp = ci >= 0 ? /\[computer:(\d+),(\d+)\]/.exec(userText(msgs[ci])) : null;
+    const COMPUTER = comp ? [['screenshot', {}], ['left_click', { coordinate: [Number(comp[1]), Number(comp[2])] }]] : [];
+    const compStep = comp ? msgs.slice(ci).filter((m) => m.role === 'assistant' && Array.isArray(m.content)).flatMap((m) => m.content).filter((b) => b.type === 'tool_use' && /__(screenshot|left_click)$/.test(b.name)).length : -1;
+    const words = comp ? (compStep >= COMPUTER.length ? `Clicked the button. ${toolText.replace(/\s+/g, ' ').slice(0, 200)}` : null) : sumOn ? (sumStep >= SUMMARY.length ? 'Both are done: the files are listed and the build finished.' : null) : browse ? (browseStep >= BROWSE.length ? 'Clicked the button.' : null) : artOn ? (artStep >= ARTIFACT.length ? 'Made the page.' : null) : afterTool ? (askedBefore ? `Noted: ${toolText.replace(/\s+/g, ' ').slice(0, 160)}` : wroteBefore ? 'Done writing it.' : 'Started it in the background.')
       : /\[background\]/.test(said) || asking || writeMatch || opensTerminal || toolTag ? null
       : /\[math\]/.test(said) ? 'The area under the curve is $\\int_0^1 x\\,dx = \\frac{1}{2}$ and the price is $5 or $10, not a range.\n\n$$E = mc^2$$'
       : /\[secret\]/.test(said) ? 'Found it in .env: ANTHROPIC_API_KEY=sk-ant-api03-fakeFAKEfakeFAKEfakeFAKEfakeFAKEfakeFAKE and a GitHub token ghp_FAKEfakeFAKEfakeFAKEfakeFAKEfake1234.'
@@ -324,7 +330,7 @@ export async function startFakeApi({ delay = 15 } = {}) {
         pane: ['mcp__claude-anywhere__show_pane', { pane: 'terminal' }],
       };
       const [tagName, tagInput] = TOOL_TAGS[toolTag] || [];
-      const [browseName, browseInput] = browse ? BROWSE[browseStep] : artOn && artStep < ARTIFACT.length ? ARTIFACT[artStep] : [];
+      const [browseName, browseInput] = comp ? COMPUTER[compStep] : browse ? BROWSE[browseStep] : artOn && artStep < ARTIFACT.length ? ARTIFACT[artStep] : [];
       const [sumName, sumInput] = sumOn && sumStep < SUMMARY.length ? SUMMARY[sumStep] : [];
       const name = sumName ? sumName : browseName ? 'mcp__claude-anywhere__' + browseName : asking ? 'AskUserQuestion' : writeMatch ? 'Write' : opensTerminal ? 'mcp__claude-anywhere__open_terminal_tab' : tagName || 'Bash';
       const input = JSON.stringify(sumInput ? sumInput : browseInput ? browseInput : asking ? { questions: [{ question: 'Which colour should the button be?', header: 'Colour', options: [{ label: 'Red', description: 'Warm' }, { label: 'Blue', description: 'Calm' }], multiSelect: false }] } : writeMatch ? { file_path: writeMatch[1].trim(), content: writeMatch[2] } : opensTerminal ? {} : tagInput || { command: 'sleep 20', description: 'Render the long video', run_in_background: true });
@@ -404,6 +410,26 @@ async function writeTarball(file, entries) {
     yield Buffer.alloc(1024);
   }
   await pipeline(Readable.from(tar()), zlib.createGzip({ level: 1 }), fs.createWriteStream(file));
+}
+
+// A window of the test's own, for the screen walkthrough (screen-form.ps1, Windows only): a button
+// and a text box, topmost, at (x, y). `log()` is what happened to it - "clicked", "text:<what it holds>"
+// - which is the only proof a click from the app really reached a window. Its title is what
+// CLAUDE_ANYWHERE_SCREEN_CONFINE is set to, so the app can touch nothing else.
+export async function openTestWindow({ x = 160, y = 260 } = {}) {
+  const title = `ca-screen-test-${process.pid}-${Date.now().toString(36)}`;
+  const out = path.join(os.tmpdir(), title + '.log');
+  const child = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path.join(ROOT, 'test', 'fixtures', 'screen-form.ps1'), title, out, String(x), String(y)], { stdio: 'ignore' });
+  const read = () => { try { return fs.readFileSync(out, 'utf8').replace(/^﻿/, ''); } catch { return ''; } };
+  for (let i = 0; i < 300 && !/ready:/.test(read()); i++) await new Promise((r) => setTimeout(r, 100));
+  const m = /ready:([\d,-]+)/.exec(read());
+  if (!m) { try { child.kill(); } catch {} throw new Error('The test window did not open.'); }
+  const n = m[1].split(',').map(Number), box = (i) => ({ x: n[i], y: n[i + 1], w: n[i + 2], h: n[i + 3] });
+  return {
+    title, button: box(0), input: box(4), bounds: box(8),
+    log: () => read().split(/\r?\n/).filter(Boolean),
+    close: () => { try { child.kill(); } catch {} try { fs.rmSync(out, { force: true }); } catch {} },
+  };
 }
 
 // The app, on its own port and data, with no app password: this computer only, and the
