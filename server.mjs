@@ -45,6 +45,7 @@ import * as routines from './lib/routines.mjs';
 import * as outputStyles from './lib/output-styles.mjs';
 import * as environments from './lib/environments.mjs';
 import * as update from './lib/update.mjs';
+import { createUpdater } from './lib/updater.mjs';
 import * as models from './lib/models.mjs';
 import * as commandsMod from './lib/commands.mjs';
 import * as filesearch from './lib/filesearch.mjs';
@@ -2042,51 +2043,38 @@ app.post('/api/update/check', async (_req, res) => {
 // file; this is the other half, the one you cannot do by tapping Download.
 const UPDATE_LOG = path.join(DATA_DIR, 'update.log');
 const stampLine = (m) => '[' + new Date().toTimeString().slice(0, 8) + '] ' + m + '\n';
-let installing = false;
-app.post('/api/update/install', async (_req, res) => {
-  if (installing) return res.status(409).json({ error: 'Already installing.' });
-  const u = update.status({ repo: REPO, version: appVersion, platform: process.platform });
-  if (!u?.newer) return res.status(400).json({ error: 'There is nothing newer to install on this computer.' });
-  if (process.platform !== 'win32') return res.status(400).json({ error: 'Installing from here is a Windows thing for now. On this computer, open ' + (u.download?.name || 'the release') + ' yourself.' });
-  const script = path.join(here, 'scripts', 'update.ps1');
-  if (!fs.existsSync(script)) return res.status(400).json({ error: 'scripts/update.ps1 is missing' });
-  if (!u.download?.url) return res.status(400).json({ error: 'That release has no installer for this computer.' });
-  if (liveCount()) return res.status(409).json({ error: 'Claude is working. The app has to close to be replaced, so finish the turn first.' });
-
-  installing = true;
+// ---------- updates: download in the background, relaunch from the title bar ----------
+// The download happens as soon as a release is announced (lib/updater.mjs), so by the time
+// anyone presses "Relaunch to update" the installer is already here. This is only the two
+// ways the process gets replaced.
+const launchInstaller = (file) => {
   fs.mkdirSync(DATA_DIR, { recursive: true });
-  const mb = (n) => (n >= 10485760 ? Math.round(n / 1048576) + ' MB' : (n / 1048576).toFixed(1) + ' MB');
-  fs.writeFileSync(UPDATE_LOG, stampLine('downloading ' + u.download.name + ' (' + mb(u.download.size) + ')'));
-  res.json({ ok: true, log: UPDATE_LOG, asset: u.download.name });
-
-  // The download is here rather than in the script so its progress can be reported,
-  // and so a half-written installer is never run.
-  const target = path.join(os.tmpdir(), u.download.name);
-  try {
-    const r = await fetch(u.download.url, { redirect: 'follow', headers: { 'User-Agent': 'claude-anywhere' } });
-    if (!r.ok) throw new Error('GitHub answered ' + r.status);
-    const total = Number(r.headers.get('content-length')) || u.download.size || 0;
-    let got = 0, lastSaid = 0;
-    const out = fs.createWriteStream(target);
-    for await (const chunk of r.body) {
-      out.write(chunk);
-      got += chunk.length;
-      const pct = total ? Math.round((got / total) * 100) : 0;
-      if (pct >= lastSaid + 10) { lastSaid = pct; fs.appendFileSync(UPDATE_LOG, stampLine(pct + '%')); }
-    }
-    out.end();
-    await new Promise((done, fail) => { out.on('finish', done); out.on('error', fail); });
-    fs.appendFileSync(UPDATE_LOG, stampLine('downloaded; closing the window to install'));
-    // Same two Windows traps as the rebuild: a detached PowerShell with no console
-    // exits at once, and an attached one dies with whatever started it.
-    const q = (v) => "'" + String(v).replace(/'/g, "''") + "'";
-    const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Installer', target, '-Exe', envOf('APP_EXE') || '', '-Log', UPDATE_LOG];
-    const launcher = `Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList ${args.map(q).join(',')}`;
-    spawn('powershell.exe', ['-NoProfile', '-Command', launcher], { stdio: 'ignore', windowsHide: true }).unref();
-  } catch (e) {
-    fs.appendFileSync(UPDATE_LOG, stampLine('could not download it: ' + (e.message || e)) + stampLine('done'));
-    installing = false;
-  }
+  fs.writeFileSync(UPDATE_LOG, stampLine('downloaded; closing the window to install'));
+  // Same two Windows traps as the rebuild: a detached PowerShell with no console
+  // exits at once, and an attached one dies with whatever started it.
+  const q = (v) => "'" + String(v).replace(/'/g, "''") + "'";
+  const script = path.join(here, 'scripts', 'update.ps1');
+  const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Installer', file, '-Exe', envOf('APP_EXE') || '', '-Log', UPDATE_LOG, '-Ready', path.join(DATA_DIR, 'updates', 'ready.json')];
+  const launcher = `Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList ${args.map(q).join(',')}`;
+  // Tests point CLAUDE_ANYWHERE_UPDATE_DRY_RUN at nothing: the button must be provable without replacing the app that is running it.
+  if (process.env.CLAUDE_ANYWHERE_UPDATE_DRY_RUN) { fs.appendFileSync(UPDATE_LOG, stampLine('dry run: would start ' + path.basename(file)) + stampLine('done')); return; }
+  spawn('powershell.exe', ['-NoProfile', '-Command', launcher], { stdio: 'ignore', windowsHide: true }).unref();
+};
+const updater = createUpdater({
+  dataDir: DATA_DIR, dir: here,
+  status: () => update.status({ repo: REPO, version: appVersion, platform: process.platform }),
+  busy: liveCount,
+  canInstall: (process.platform === 'win32' && fs.existsSync(path.join(here, 'scripts', 'update.ps1'))) || !!process.env.CLAUDE_ANYWHERE_UPDATE_DRY_RUN,
+  launchInstaller,
+  restartServer: () => { if (!envOf('PARENT_PID')) return false; restartNow(); return true; },
+});
+setTimeout(() => updater.sync().catch(() => {}), 4000);
+setInterval(() => updater.sync().catch(() => {}), 60000).unref();
+app.get('/api/update/state', (_req, res) => { updater.sync().catch(() => {}); res.json(updater.state()); });
+app.post('/api/update/install', async (req, res) => {
+  const when = ['idle', 'cancel'].includes(req.body?.when) ? req.body.when : 'now';
+  try { res.json(await updater.request(when, !!req.body?.force)); }
+  catch (e) { res.status(e.status || 500).json({ error: e.message, busy: e.busy || 0 }); }
 });
 app.get('/api/update/install/log', (_req, res) => {
   let text = '', at = 0;

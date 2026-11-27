@@ -5,7 +5,9 @@
 #
 # The download already happened — the server streams it, so progress can be reported —
 # and this only has to close, install and reopen.
-param([string]$Installer = "", [string]$Exe = "", [string]$Log = "")
+# -NoRelaunch is install-on-quit: the person closed the app, so it stays closed.
+# -Ready names the server's note about the downloaded file, which goes with the installer.
+param([string]$Installer = "", [string]$Exe = "", [string]$Log = "", [switch]$NoRelaunch, [string]$Ready = "")
 $ErrorActionPreference = "Continue"
 if (-not $Log) { $Log = Join-Path $env:TEMP "claude-anywhere-update.log" }
 function Say($m) { $line = "[{0}] {1}" -f (Get-Date -Format "HH:mm:ss"), $m; Add-Content -Path $Log -Value $line -Encoding utf8 }
@@ -61,7 +63,9 @@ $waited = 0
 while ((Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path -like '*setup*.exe' }) -and $waited -lt 60) { Start-Sleep -Milliseconds 500; $waited++ }
 Start-Sleep -Seconds 2
 
-if ($target -and (Test-Path $target)) {
+if ($NoRelaunch) {
+  Say "installed; leaving the app closed, as it was quit"
+} elseif ($target -and (Test-Path $target)) {
   $nowVersion = (Get-Item $target).VersionInfo.FileVersion
   if ($replaced) { Say "installed $nowVersion (was $wasVersion)" } else { Say "the binary did not change; starting what is there ($nowVersion)" }
   Say "starting the app"
@@ -83,4 +87,5 @@ if ($target -and (Test-Path $target)) {
   Say "the app is not where it was; open it from the Start menu"
 }
 try { Remove-Item $Installer -Force -ErrorAction SilentlyContinue } catch {}
+if ($Ready) { try { Remove-Item $Ready -Force -ErrorAction SilentlyContinue } catch {} }
 Say "done"

@@ -7,6 +7,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Relaunch to update, in the title bar, on every device.** A newer release is downloaded in the
+  background (resumable, size-checked, never run half-written) and a persistent button replaces the
+  dismissible banner. Its popover shows both versions and the notes, and offers Relaunch now
+  (Relaunch Claude? / Relaunch anyway when chats are working) or Relaunch when Claude is done, which
+  waits for no chat to be busy and can be cancelled.
+- **Quitting the app installs a downloaded update** (Windows).
+- **A server running from a git checkout updates too**: fast-forward to the release tag on main,
+  `npm install` when dependencies moved, restart; refused with a reason when off main, dirty or diverged.
+
 ## [0.14.3] — 2026-11-27
 
 ### Fixed

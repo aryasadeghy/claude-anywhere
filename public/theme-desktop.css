@@ -1558,3 +1558,23 @@ html.embed .main { border-inline-start: 0; }
 .artifact-card-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .artifact-card-sub { font-size: 12.5px; color: var(--ink-3); }
 .artifact-card-open { flex: none; }
+
+/* ---------- v80: Relaunch to update, in the title bar ---------- */
+.update-btn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 11px; margin-inline-end: 6px; border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); border-radius: 999px; background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); font: inherit; font-size: 12.5px; font-weight: 600; white-space: nowrap; cursor: pointer; flex: none; }
+.update-btn:hover { background: color-mix(in srgb, var(--accent) 20%, transparent); }
+.update-btn.busy { color: var(--ink-3); border-color: var(--line-2); background: var(--bg-2); font-weight: 500; }
+.update-btn .ub-short { display: none; }
+@media (max-width: 700px) { .update-btn { padding: 0 9px; margin-inline-end: 2px; } .update-btn .ub-long { display: none; } .update-btn .ub-short { display: inline; } }
+.update-pop { position: fixed; z-index: 60; width: 340px; max-width: calc(100vw - 20px); padding: 14px 16px; border: 1px solid var(--line-2); border-radius: 14px; background: var(--bg-000); box-shadow: 0 10px 34px rgba(0, 0, 0, .22); font-size: 13.5px; line-height: 1.5; }
+.update-pop h4 { margin: 0 0 2px; font-size: 14px; }
+.update-pop .up-sub { color: var(--ink-3); margin-bottom: 10px; }
+.update-pop ul { margin: 8px 0; padding-inline-start: 18px; color: var(--ink-2, var(--ink)); }
+.update-pop li { margin: 2px 0; }
+.update-pop .up-bar { height: 5px; border-radius: 999px; background: var(--bg-2); overflow: hidden; margin: 8px 0 4px; }
+.update-pop .up-bar > i { display: block; height: 100%; background: var(--accent); transition: width .3s; }
+.update-pop .up-warn { margin: 8px 0; padding: 8px 10px; border-radius: 8px; background: var(--bg-2); color: var(--ink-2, var(--ink)); }
+.update-pop .up-actions { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+.update-pop .up-actions button { padding: 7px 12px; border-radius: 9px; border: 1px solid var(--line-2); background: var(--bg-2); color: var(--ink); font: inherit; cursor: pointer; text-align: center; }
+.update-pop .up-actions button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.update-pop .up-actions button:disabled { opacity: .5; cursor: default; }
+.update-pop .up-link { display: inline-block; margin-top: 2px; padding: 0; border: 0; background: none; color: var(--accent); font: inherit; cursor: pointer; }

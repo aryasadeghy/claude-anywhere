@@ -2175,23 +2175,6 @@
     return false;
   }
 
-  // Ask that computer to install it on itself — the half you cannot do by tapping
-  // Download, because the file belongs on a machine you are not sitting at.
-  async function installThere(hostName, btn) {
-    const log = $('#app-log'); log.classList.remove('hidden'); log.classList.remove('old');
-    log.textContent = 'Asking ' + hostName + ' to install it…';
-    if (btn) { btn.disabled = true; btn.textContent = 'Installing…'; }
-    try { await api('/update/install', { method: 'POST', body: JSON.stringify({}) }); }
-    catch (e) { log.textContent = e.message; if (btn) { btn.disabled = false; btn.textContent = 'Update ' + hostName; } return; }
-    // The window it is replacing may be this one; the log survives either way.
-    const poll = setInterval(async () => {
-      let j; try { j = await api('/update/install/log'); } catch { log.textContent += '\n(that computer is restarting…)'; return; }
-      log.textContent = j.text || 'Starting…';
-      log.scrollTop = log.scrollHeight;
-      if (j.done) { clearInterval(poll); if (btn) { btn.disabled = false; btn.textContent = 'Update ' + hostName; } setTimeout(() => location.reload(), 4000); }
-    }, 2000);
-  }
-
   // What this build is, and whether GitHub has a newer one. A released app has no
   // checkout to ask, so the version and the commit come from the shell that was built.
   function paintUpdate(v, checking) {
@@ -2207,12 +2190,12 @@
       const here = onThisComputer();
       // That computer: it can fetch and install its own file, which is the only way to
       // update a machine you are not sitting at.
-      if (u.newer && v.platform === 'win32') {
-        const name = v.host || 'that computer';
+      if (u.newer && updateAvailable()) {
+        // The same state as the title bar's button: this panel only points at it.
         const b = el('button', 'link-btn small strong'); b.type = 'button';
-        b.textContent = 'Update ' + name;
-        b.title = name + ' downloads it, closes the window, installs, and opens it again';
-        b.addEventListener('click', () => installThere(name, b));
+        b.textContent = updateButtonLabel(true);
+        b.title = (v.host || 'That computer') + ' downloads it in the background, then closes the window, installs, and opens it again';
+        b.addEventListener('click', () => { ctModal.classList.add('hidden'); openUpdatePop(); });
         box.appendChild(b);
       } else if (u.newer && u.download) {
         const b = el('button', 'link-btn small' + (here ? ' strong' : '')); b.type = 'button';
@@ -2336,27 +2319,21 @@
     const deviceOld = deviceApp && newerThanMine(u.latest, deviceApp.version);
     // A published release wins over the two development ones: a release is the app
     // everybody has, the others only mean this checkout is ahead of what is running.
-    const key = u.newer || deviceOld ? 'rel:' + u.latest : (v.shellStale && v.devBuild !== false ? 'shell:' + v.shellChanged.join(',') : '') + (v.stale ? 'srv:' + v.changed.join(',') : '');
+    const key = deviceOld ? 'rel:' + u.latest : (v.shellStale && v.devBuild !== false ? 'shell:' + v.shellChanged.join(',') : '') + (v.stale ? 'srv:' + v.changed.join(',') : '');
     if (!key || key === updateSnoozed) { bar.classList.add('hidden'); return; }
     bar.classList.remove('hidden');
     $('#ub-action').disabled = false; // the restart branch below disables it, and the banner outlives that reason
-    if (u.newer || deviceOld) {
+    if (deviceOld) {
       const mine = devicePlatform();
       const forMe = mine && u.downloads?.[mine];
       const here = onThisComputer();
       $('#ub-text').textContent = 'Claude Anywhere ' + u.latest + ' is available';
       $('#ub-detail').textContent = [
         deviceApp ? 'this app is ' + deviceApp.version : u.current && 'you have ' + u.current,
-        u.newer && !here && (v.host || 'that computer') + ' runs ' + (u.current || '?'),
         u.publishedAt && 'published ' + ago(u.publishedAt),
       ].filter(Boolean).join(' · ');
-      // The app in your hands comes first when it is the old one; otherwise the offer is
-      // to update the computer you are driving, which you cannot do by downloading here.
-      if (u.newer && v.platform === 'win32') {
-        const name = v.host || 'that computer';
-        $('#ub-action').textContent = 'Update ' + name;
-        $('#ub-action').onclick = () => { bar.classList.add('hidden'); openConnectors(); paintVersion(); installThere(name, null); };
-      } else if (deviceOld && forMe) {
+      // Only the app in your hands is old here; this computer's own update is the title bar's button.
+      if (forMe) {
         $('#ub-action').textContent = 'Download';
         $('#ub-action').onclick = () => openExternal(forMe.url);
       } else {
@@ -2379,6 +2356,126 @@
     $('#ub-close').onclick = () => { updateSnoozed = key; bar.classList.add('hidden'); };
   }
   setInterval(checkForUpdate, 30000); setTimeout(checkForUpdate, 3000);
+
+  // ---------- updates: "Relaunch to update" in the title bar ----------
+  // The server downloads a newer release by itself (lib/updater.mjs); this shows where that
+  // stands and is the one place that installs it. Not dismissible: Desktop's isn't, and
+  // three banners people closed is how a PC ended up a month behind.
+  let upd = null, updTimer = null, updConfirm = false, updPopOpen = false;
+  const updateAvailable = () => !!upd?.available;
+  const pct = (d) => (d?.total ? Math.min(99, Math.floor((d.got / d.total) * 100)) : 0);
+  const chats = (n) => n + (n === 1 ? ' chat' : ' chats');
+  function updateButtonLabel(plain) {
+    if (!upd?.available) return 'Relaunch to update';
+    if (upd.download?.state === 'downloading') return 'Downloading update… ' + pct(upd.download) + '%';
+    if (upd.waiting) return 'Waiting for ' + chats(upd.busy || 0) + '…';
+    return plain || upd.ready || upd.mode === 'installer' ? 'Relaunch to update' : 'Update available';
+  }
+  function paintUpdateBtn() {
+    const b = $('#update-btn');
+    b.classList.toggle('hidden', !upd?.available);
+    if (!upd?.available) return;
+    const downloading = upd.download?.state === 'downloading';
+    b.classList.toggle('busy', downloading || upd.waiting);
+    b.querySelector('.ub-long').textContent = updateButtonLabel();
+    b.querySelector('.ub-short').textContent = downloading ? pct(upd.download) + '%' : 'Update';
+    b.title = 'Update available to v' + upd.latest + '. You are currently on v' + upd.current + '.';
+  }
+  async function refreshUpdate() {
+    clearTimeout(updTimer);
+    try { upd = await api('/update/state'); } catch { /* the server may be restarting; keep what we know */ }
+    paintUpdateBtn();
+    if (updPopOpen) paintUpdatePop();
+    // Quick while something is moving, slow otherwise.
+    const moving = upd?.available && (upd.waiting || upd.download?.state === 'downloading' || (upd.action?.kind && !upd.action.done));
+    updTimer = setTimeout(refreshUpdate, moving || updPopOpen ? 1500 : 20000);
+  }
+  function closeUpdatePop() { updPopOpen = false; updConfirm = false; const p = $('#update-pop'); if (p) p.remove(); }
+  function openUpdatePop() {
+    if (!upd?.available) return;
+    if (updPopOpen) return closeUpdatePop();
+    updPopOpen = true; updConfirm = false;
+    const pop = el('div', 'update-pop'); pop.id = 'update-pop'; pop.setAttribute('role', 'dialog');
+    document.body.appendChild(pop);
+    paintUpdatePop();
+    setTimeout(() => document.addEventListener('pointerdown', outsideUpdatePop, true), 0);
+    refreshUpdate();
+  }
+  function outsideUpdatePop(e) {
+    const p = $('#update-pop');
+    if (!p) return document.removeEventListener('pointerdown', outsideUpdatePop, true);
+    if (p.contains(e.target) || $('#update-btn').contains(e.target)) return;
+    document.removeEventListener('pointerdown', outsideUpdatePop, true); closeUpdatePop();
+  }
+  function placeUpdatePop(pop) {
+    const r = $('#update-btn').getBoundingClientRect();
+    const w = Math.min(340, innerWidth - 20);
+    pop.style.top = Math.round(r.bottom + 8) + 'px';
+    pop.style.left = Math.max(10, Math.min(innerWidth - w - 10, r.right - w)) + 'px';
+  }
+  function paintUpdatePop() {
+    const pop = $('#update-pop'); if (!pop) return;
+    if (!upd?.available) return closeUpdatePop();
+    pop.innerHTML = '';
+    const act = upd.action || {};
+    const d = upd.download || {};
+    const running = act.kind && !act.done && !act.error;
+    const confirming = updConfirm && !upd.waiting && !running;
+    pop.appendChild(el('h4', '', confirming ? 'Relaunch Claude?' : 'Update available to v' + upd.latest + '.'));
+    pop.appendChild(el('div', 'up-sub', 'You are currently on v' + upd.current + '.'));
+    if (d.state === 'downloading') {
+      const bar = el('div', 'up-bar'); const i = el('i'); i.style.width = pct(d) + '%'; bar.appendChild(i); pop.appendChild(bar);
+      pop.appendChild(el('div', 'up-sub', 'Downloading in the background · ' + (d.total ? (d.got / 1048576).toFixed(1) + ' of ' + (d.total / 1048576).toFixed(1) + ' MB' : pct(d) + '%')));
+    } else if (d.state === 'error') pop.appendChild(el('div', 'up-warn', 'The download stopped: ' + d.error + ' It tries again in a few minutes.'));
+    if (upd.notes?.length) { const ul = el('ul'); upd.notes.forEach((n) => ul.appendChild(el('li', '', n))); pop.appendChild(ul); }
+    if (upd.url) { const l = el('button', 'up-link', 'Release notes'); l.type = 'button'; l.addEventListener('click', () => openExternal(upd.url)); pop.appendChild(l); }
+    if (upd.blocked) pop.appendChild(el('div', 'up-warn', upd.blocked));
+    if (act.error) pop.appendChild(el('div', 'up-warn', act.error));
+    else if (act.text && (running || act.done)) pop.appendChild(el('div', 'up-warn', act.text));
+    if (upd.waiting) pop.appendChild(el('div', 'up-warn', 'Waiting for ' + chats(upd.busy || 0) + ' to finish. It relaunches the moment nothing is working.'));
+    if (confirming) pop.appendChild(el('div', 'up-warn', (upd.busy === 1 ? '1 chat is' : (upd.busy || 'Some') + ' chats are') + ' still working. Relaunching stops ' + (upd.busy === 1 ? 'it' : 'them') + '.'));
+    const actions = el('div', 'up-actions'); pop.appendChild(actions);
+    const btn = (label, cls, fn, off) => { const b = el('button', cls, label); b.type = 'button'; b.disabled = !!off; b.addEventListener('click', fn); actions.appendChild(b); };
+    if (running) { /* nothing to press while it happens */ }
+    else if (upd.waiting) btn('Cancel', '', () => sendUpdate('cancel'));
+    else if (confirming) {
+      btn('Relaunch anyway', 'primary', () => sendUpdate('now', true));
+      btn('Cancel', '', () => { updConfirm = false; paintUpdatePop(); });
+    } else {
+      const off = !upd.ready;
+      btn('Relaunch now', 'primary', () => { if (upd.busy) { updConfirm = true; paintUpdatePop(); } else sendUpdate('now'); }, off);
+      btn('Relaunch when Claude is done', '', () => sendUpdate('idle'), off);
+    }
+    placeUpdatePop(pop);
+  }
+  async function sendUpdate(when, force) {
+    try {
+      upd = await api('/update/install', { method: 'POST', body: JSON.stringify({ when, force: !!force }) });
+    } catch (e) {
+      if (/Claude is working/.test(e.message)) { updConfirm = true; await refreshUpdate(); return; }
+      upd = { ...upd, action: { kind: 'x', text: '', error: e.message, done: true } };
+    }
+    updConfirm = false;
+    paintUpdateBtn(); paintUpdatePop();
+    if (when === 'now' && upd.action?.kind && !upd.action.error) followRelaunch();
+  }
+  // The window or the server goes away and comes back as the new version; follow it and reload.
+  let relaunchPoll = null;
+  function followRelaunch() {
+    if (relaunchPoll) return;
+    const t0 = lastVersion?.serverStartedAt;
+    let n = 0;
+    relaunchPoll = setInterval(async () => {
+      if (++n > 120) { clearInterval(relaunchPoll); relaunchPoll = null; return; }
+      try {
+        const r = await fetch('/api/version', { headers: { Authorization: 'Bearer ' + state.token }, cache: 'no-store' });
+        if (r.ok) { const v = await r.json(); if (t0 && v.serverStartedAt !== t0) { clearInterval(relaunchPoll); location.reload(); } }
+      } catch {}
+    }, 2000);
+  }
+  $('#update-btn').addEventListener('click', openUpdatePop);
+  window.addEventListener('resize', () => { const p = $('#update-pop'); if (p) placeUpdatePop(p); });
+  setTimeout(refreshUpdate, 2500);
   // Desktop keeps connectors in the composer's + menu; so do we, and the header stays clean.
   menuFor('#attach-btn', '#attach-menu', (m) => {
     m.innerHTML = '';
