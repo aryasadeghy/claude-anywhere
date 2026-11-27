@@ -245,6 +245,22 @@ export async function startFakeApi({ delay = 15 } = {}) {
       ev('message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 4 } }); ev('message_stop', { type: 'message_stop' });
       return res.end();
     }
+    // The aside (lib/aside.mjs): its system prompt says so. A quick reply to the message, and a word on [aside-fail] that is no reply at all.
+    if (JSON.stringify(j.system || '').includes('an aside: a short reply in your voice')) {
+      const ask = JSON.stringify(j.messages || '');
+      const text = ask.includes('[aside-fail]') ? '' : ask.includes('[aside-slow]') ? await new Promise((r) => setTimeout(() => r('Late.'), 12000)) : 'Still working on it - I will fold that in at my next step.';
+      if (!text) { res.writeHead(500, { 'content-type': 'application/json' }); return res.end('{"type":"error","error":{"type":"api_error","message":"no aside"}}'); }
+      if (!j.stream) { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ id: 'msg_a' + requests.length, type: 'message', role: 'assistant', model: j.model, content: [{ type: 'text', text }], stop_reason: 'end_turn', stop_sequence: null, usage: { input_tokens: 12, output_tokens: 12 } })); }
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+      const ev = (event, data) => res.write(`event: ${event}
+data: ${JSON.stringify(data)}
+
+`);
+      ev('message_start', { type: 'message_start', message: { id: 'msg_a' + requests.length, type: 'message', role: 'assistant', model: j.model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 12, output_tokens: 1 } } });
+      ev('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }); ev('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } }); ev('content_block_stop', { type: 'content_block_stop', index: 0 });
+      ev('message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 12 } }); ev('message_stop', { type: 'message_stop' });
+      return res.end();
+    }
     const last = [...(j.messages || [])].reverse().find((m) => m.role === 'user') || (j.messages || []).at(-1) || {};
     const afterTool = Array.isArray(last.content) && last.content.some((b) => b.type === 'tool_result');
     const said = userText(last);

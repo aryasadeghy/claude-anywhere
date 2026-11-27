@@ -665,6 +665,7 @@
         <div class="set-nav-title">Settings</div>
         <button class="set-tab" type="button" data-pane="general">General</button>
         <button class="set-tab" type="button" data-pane="account">Account</button>
+        <button class="set-tab" type="button" data-pane="notifications">Notifications</button>
         <button class="set-tab" type="button" data-pane="remote">Remote access</button>
         <button class="set-tab" type="button" data-pane="computers">Computers</button>
         <button class="set-tab" type="button" data-pane="connectors">Connectors</button>
@@ -714,6 +715,10 @@
             <div id="set-show-recap"></div>
           </div>
           <div class="set-row">
+            <div class="set-info"><div class="set-name">Quick replies while Claude works</div><div class="set-desc">When you send a message while Claude is working, a small model answers it at once in a line or two, and Claude reads your message at its next step.</div></div>
+            <div id="set-aside"></div>
+          </div>
+          <div class="set-row">
             <div class="set-info"><div class="set-name">Default output style</div><div class="set-desc">What a new session starts with, unless it says otherwise.</div></div>
             <select id="set-output-style"></select>
           </div>
@@ -721,6 +726,23 @@
             <div class="set-info"><div class="set-name">Saved environments</div><div class="set-desc">Folders with their own worktree preference and variables, saved from a session's menu.</div></div>
           </div>
           <div id="set-environments" class="ct-list"></div>
+        </section>
+
+        <section class="set-pane" data-pane="notifications">
+          <h3 class="set-title">Notifications</h3>
+          <div class="set-row">
+            <div class="set-info"><div class="set-name" id="nf-name">Notifications</div><div class="set-desc" id="nf-desc"></div></div>
+            <div id="nf-toggle"></div>
+          </div>
+          <div class="set-row hidden" id="nf-test-row">
+            <div class="set-info"><div class="set-name">Send a test notification</div><div class="set-desc" id="nf-test-result">See what a finished task looks like on this device.</div></div>
+            <button id="nf-test" class="btn btn-ghost" type="button">Send</button>
+          </div>
+          <p id="nf-error" class="modal-hint error" hidden></p>
+          <div class="set-row env-list-row">
+            <div class="set-info"><div class="set-name">Devices that get notifications</div><div class="set-desc">You are told when a task finishes or needs you, on every device here except the one you are looking at.</div></div>
+          </div>
+          <div id="nf-devices" class="ct-list"></div>
         </section>
 
         <section class="set-pane" data-pane="account">

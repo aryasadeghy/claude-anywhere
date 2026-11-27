@@ -1594,3 +1594,29 @@ html.embed .main { border-inline-start: 0; }
 .chrome-line.todo.acct .chrome-dot, .chrome-why { color: var(--danger); }
 .chrome-line:has(+ .chrome-why) .chrome-dot { background: var(--danger); }
 .menu-item.chrome-blocked .desc { color: var(--danger); }
+
+/* ---------- v81: notifications, the aside, keyboard shortcuts, Stop on the Servers card ---------- */
+.aside { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; padding: 8px 12px; border-inline-start: 2px solid var(--accent); border-radius: 0 10px 10px 0; background: var(--bg-2); font-size: 13.5px; line-height: 1.5; color: var(--ink); }
+.aside-label { font-size: 11px; font-weight: 600; letter-spacing: .02em; text-transform: uppercase; color: var(--ink-3); }
+.msg.user.queued .aside { border-inline-start-style: dashed; }
+#shortcuts-modal { z-index: 110; }
+.sc-card { max-width: 560px; display: flex; flex-direction: column; max-height: min(80vh, 640px); overflow: hidden; padding: 16px 18px; }
+.sc-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.sc-head .set-title { margin: 0; }
+#sc-search { width: 100%; box-sizing: border-box; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--line-2); background: var(--bg-000); color: var(--ink); font: inherit; }
+#sc-count { min-height: 18px; margin: 4px 2px 2px; }
+.sc-list { overflow: auto; margin: 0 -6px; padding: 0 6px 4px; }
+.sc-group-name { margin: 14px 0 4px; font-size: 12px; font-weight: 600; color: var(--ink-3); text-transform: uppercase; letter-spacing: .03em; }
+.sc-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 13.5px; }
+.sc-row:last-child { border-bottom: 0; }
+.sc-keys { display: inline-flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 4px 3px; flex: none; max-width: 45%; }
+.sc-keys kbd { min-width: 22px; padding: 2px 7px; border-radius: 6px; border: 1px solid var(--line-2); border-bottom-width: 2px; background: var(--bg-2); font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; text-align: center; color: var(--ink); }
+.sc-plus, .sc-or { color: var(--ink-3); font-size: 11px; }
+.rail-row .rail-stop { color: #dc2626; }
+.rail-row .rail-stop:disabled { opacity: .5; }
+#nf-test-row.hidden { display: none; }
+@media (max-width: 860px) {
+  .sc-card { max-height: 86vh; }
+  .sc-row { flex-direction: column; align-items: flex-start; gap: 4px; }
+  .sc-keys { justify-content: flex-start; max-width: 100%; }
+}
