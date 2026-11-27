@@ -692,6 +692,15 @@
             </div>
             <button id="set-cc-btn" class="btn btn-ghost" type="button">Check now</button>
           </div>
+          <!-- Claude in Chrome: Claude's tools in the person's own Chrome. Whether the pieces are in place, and the way to put them there. -->
+          <div class="set-row chrome-row" id="set-chrome">
+            <div class="set-info">
+              <div class="set-name">Use your Chrome (Claude in Chrome)</div>
+              <div class="set-desc">Let Claude navigate, click, and fill forms in your Chrome browser, with your own sign-ins. Applies to sessions that start from now on.</div>
+              <div id="set-chrome-card" class="chrome-card"></div>
+            </div>
+            <div id="set-chrome-switch"></div>
+          </div>
           <div class="set-row">
             <div class="set-info"><div class="set-name">Transcript view</div><div class="set-desc">What a session opens to: the answer, or Claude's thinking and tool detail too.</div></div>
             <div id="set-transcript-view" class="set-seg"></div>
@@ -900,6 +909,7 @@
   <script src="/vendor/marked.js"></script>
   <script src="/vendor/purify.js"></script>
   <script src="/vendor/katex/katex.min.js"></script>
+  <script src="/chrome-labels.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

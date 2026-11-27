@@ -442,6 +442,7 @@
       ? 'You have ' + v.version + (v.commit ? ' · ' + v.commit : '') + (v.update?.newer ? ' — ' + v.update.latest + ' is out' : ' — up to date')
       : 'Claude Anywhere updates itself from GitHub.';
     claudeCodeRow();
+    paintChrome();
     paintConvSettings();
     await paintOutputStyleDefault();
     paintEnvironmentsList();
@@ -518,6 +519,65 @@
       try { paintClaudeCode(await ccApi(s.newer ? '/update' : '/check', { method: 'POST', body: '{}' })); }
       catch (e) { btn.disabled = false; btn.textContent = 'Try again'; desc.textContent = e.message; }
     };
+  }
+  // ---------- Claude in Chrome: Claude's tools in your own Chrome, and what this computer has ready ----------
+  // Three pieces have to be in place on the computer that runs Claude: a browser, Anthropic's extension in
+  // it, and the native host that links the extension to Claude Code (lib/chrome.mjs). The card says which
+  // are, and Connect registers the host - the one piece this app can do for you.
+  let chromeReason = ''; // why Chrome cannot be used under the account in use now, when it cannot
+  let chromeOn = false; // whether the open session starts Claude Code with Chrome (its own switch, else the setting)
+  const chromeApi = (p = '', opts) => api('/chrome' + p, opts).catch((e) => { if (e.status === 404) return null; throw e; });
+  function chromeMenuRow() {
+    const row = el('div', 'menu-item menu-switch'); row.title = 'Claude can use the tabs and sign-ins of your own Chrome';
+    row.appendChild(el('span', 'menu-label', 'Use your Chrome'));
+    row.appendChild(el('span', 'desc', 'Takes effect when Claude Code next starts for this session.'));
+    const sw = toggleEl(chromeOn, async (on) => { chromeOn = on; await api(`/sessions/${state.current}/prefs`, { method: 'POST', body: JSON.stringify({ chrome: on }) }); });
+    sw.setAttribute('aria-label', 'Use your Chrome'); row.appendChild(sw);
+    if (chromeReason) { row.classList.add('chrome-blocked'); row.querySelector('.desc').textContent = chromeReason; }
+    return row;
+  }
+  const CHROME_SAYS = {
+    unsupported: 'Claude in Chrome does not work where this computer runs Claude (under WSL).',
+    'no-browser': 'Chrome is not installed on this computer.',
+    'no-extension': 'The Claude extension is not in Chrome yet.',
+    'no-host': 'Chrome is not connected to Claude Code yet.',
+    stale: 'Chrome is connected to a Claude Code that is no longer there. Connect again.',
+    ready: 'Ready. Claude can use Chrome in new sessions.',
+  };
+  async function paintChrome() {
+    const card = $('#set-chrome-card'), sw = $('#set-chrome-switch'); if (!card) return;
+    let s;
+    try { s = await chromeApi(); } catch (e) { card.textContent = e.message; return; }
+    card.innerHTML = ''; sw.innerHTML = '';
+    if (!s) { card.textContent = 'Restart server to use Chrome from here.'; return; }
+    chromeOn = state.current ? chromeOn : s.enabled;
+    const t = toggleEl(s.enabled, async (on) => { await api('/chrome', { method: 'POST', body: JSON.stringify({ enabled: on }) }); });
+    t.setAttribute('aria-label', 'Use your Chrome (Claude in Chrome)'); sw.appendChild(t);
+    const here = s.browsers.filter((b) => b.found);
+    const line = (ok, label, detail) => { const r = el('div', 'chrome-line ' + (ok ? 'ok' : 'todo')); r.appendChild(el('span', 'chrome-dot')); r.appendChild(el('span', 'chrome-label', label)); if (detail) r.appendChild(el('span', 'chrome-detail', detail)); card.appendChild(r); };
+    line(here.length > 0, 'Chrome', here.length ? here.map((b) => b.name).join(', ') + ' on this computer' : 'Not found');
+    const ext = s.browsers.find((b) => b.extension);
+    line(!!ext, 'Claude extension', ext ? ext.name + (ext.profiles.length > 1 ? ' · ' + ext.profiles.length + ' profiles' : '') : 'Not installed');
+    const reg = s.browsers.find((b) => b.registered && b.found);
+    const dead = reg && !reg.targetExists;
+    line(s.host === 'ok', 'Connected to Claude Code', s.host === 'ok' ? reg.name : dead ? 'Points at a Claude Code that is gone' : s.host === 'stale' ? 'Needs repair' : 'Not connected');
+    chromeReason = s.account?.reason || '';
+    line(s.account?.ok !== false, 'Signed in for Chrome', s.account?.ok !== false ? "This computer's Claude login" : 'Not with this account');
+    if (!s.account?.ok) {
+      const why = el('div', 'chrome-says chrome-why', s.account.reason); card.appendChild(why);
+      const sw2 = el('button', 'btn btn-primary', 'Switch to This computer'); sw2.type = 'button';
+      sw2.addEventListener('click', async () => { sw2.disabled = true; try { await api('/accounts/active', { method: 'POST', body: JSON.stringify({ which: 'local' }) }); } catch (e) { why.textContent = e.message; } paintChrome(); });
+      card.appendChild(sw2);
+    } else card.appendChild(el('div', 'chrome-says', CHROME_SAYS[s.state] || ''));
+    const bar = el('div', 'chrome-actions');
+    const btn = (text, fn, primary) => { const b = el('button', 'btn ' + (primary ? 'btn-primary' : 'btn-ghost'), text); b.type = 'button'; b.addEventListener('click', fn); bar.appendChild(b); return b; };
+    if (s.state !== 'unsupported' && s.state !== 'no-browser') {
+      if (!s.extension) btn('Get the extension', () => openExternal(s.storeUrl), s.state === 'no-extension');
+      if (s.host !== 'ok') { const c = btn('Connect', async () => { c.disabled = true; c.textContent = 'Connecting…'; try { await chromeApi('/connect', { method: 'POST', body: '{}' }); } catch (e) { card.appendChild(el('div', 'note error', e.message)); } paintChrome(); }, s.extension); }
+    }
+    const again = btn('Check again', async () => { again.disabled = true; again.textContent = 'Checking…'; await paintChrome(); });
+    if (s.host === 'ok' || s.extension) bar.appendChild(el('span', 'chrome-hint', 'Chrome reads a new connection when it starts: restart it once if the extension does not answer.'));
+    card.appendChild(bar);
   }
   async function paintAbout() {
     const box = $('#set-about'); box.innerHTML = '';
@@ -1802,6 +1862,8 @@
     state.effort = s.effort || '';
     state.ultracode = !!s.ultracode;
     if (s.fast !== undefined) state.fast = !!s.fast;
+    if (s.chrome !== undefined) chromeOn = !!s.chrome;
+    chromeReason = s.chromeReason || '';
     renderModelChip(); renderModeChip(); renderEffortChip();
   }
   function restoreDeviceDefaults() {
@@ -2012,6 +2074,7 @@
     m.appendChild(item('Session rail', '', railOpen, () => { m.classList.add('hidden'); toggleRail(); }));
     // Session chapters: MarkChapter, or a message pinned from its own menu.
     m.appendChild(item('Chapters', chapters.length ? String(chapters.length) : 'None yet', false, (e) => { e.stopPropagation(); renderChaptersMenu(m); }));
+    m.appendChild(chromeMenuRow());
     m.appendChild(item('Transcript view', TRANSCRIPT_VIEWS.find((v) => v[0] === state.transcriptView)?.[1] || 'Normal', false, (e) => { e.stopPropagation(); renderTranscriptMenu(m); }));
     m.appendChild(item('Output style', schOutputStyleCurrent ? styleLabel(schOutputStyleCurrent) : 'Default', false, (e) => { e.stopPropagation(); renderOutputStyleMenu(m); }));
 
@@ -2612,6 +2675,7 @@
       case 'TodoWrite': return ['Updated the task list', ''];
       case 'Skill': return ['Used a skill', first(i.skill)];
     }
+    const chromeStep = window.chromeLabel?.(name, i); if (chromeStep) return chromeStep;
     const mcp = /^mcp__(.+?)__(.+)$/.exec(name || '');
     if (mcp) return ['Used', mcp[1].replace(/^claude_ai_/, '').replace(/_/g, ' ') + ': ' + mcp[2]];
     return [name, toolSummary(name, i)];
@@ -2625,7 +2689,7 @@
   function groupLabel(names, inputs = [], outcome = {}) {
     const order = []; const c = {}; const failed = {}; const stopped = {}; const one = {};
     names.forEach((n, i) => {
-      const k = TOOL_KIND[n] || 'tool'; // a connector's SendUserFile is "used a tool", as Desktop counts it
+      const k = TOOL_KIND[n] || (/^mcp__claude-in-chrome__/.test(n) ? 'chrome' : 'tool'); // a connector's SendUserFile is "used a tool", as Desktop counts it
       if (!c[k]) { c[k] = 0; failed[k] = 0; stopped[k] = 0; order.push(k); one[k] = i; }
       c[k]++;
       if (outcome[i] === 'failed') failed[k]++; else if (outcome[i] === 'stopped') stopped[k]++;
@@ -2648,6 +2712,7 @@
         case 'search': return 'Searched ' + plural(n, 'time', 'times');
         case 'agent': return 'Ran ' + plural(n, 'agent', 'agents');
         case 'sent': return 'Sent';
+        case 'chrome': { const l = soleCall && window.chromeLabel?.(names[0], inp); return l ? (l[0] + ' ' + l[1]).trim() : n === 1 ? 'Used Chrome' : 'Used Chrome ' + plural(n, 'time', 'times'); }
         case 'finished': return n === 1 ? 'Finished a background command' : 'Finished ' + plural(n, 'background command', 'background commands');
         default: return n === 1 ? 'Used a tool' : 'Used ' + plural(n, 'tool', 'tools');
       }
