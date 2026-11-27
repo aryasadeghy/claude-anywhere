@@ -46,7 +46,7 @@ async function main() {
   const idle = (page) => until(async () => (await page.$eval('#send', (b) => b.title)) === 'Send', 30000);
   // Claude Code's request for a round's short label quotes the latest messages, a queued one too:
   // that is not the message reaching Claude as a turn, so it does not count.
-  const reached = (words) => api.bodies.some((b) => !JSON.stringify(b.system || '').includes('short summary label') && JSON.stringify(b.messages || []).includes(words));
+  const reached = (words) => api.bodies.some((b) => !/short summary label|an aside: a short reply/.test(JSON.stringify(b.system || '')) && JSON.stringify(b.messages || []).includes(words));
 
   const { browser, page, errors } = await open(chromium, { viewport: { width: 1380, height: 860 } });
   const queued = () => page.$$('#thread .msg.user.queued');
