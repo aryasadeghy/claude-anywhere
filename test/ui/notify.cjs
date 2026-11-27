@@ -110,7 +110,11 @@ async function main() {
   await page.evaluate(() => document.querySelector('#account-btn').click());
   await page.click('#account-menu .menu-item:has-text("Notifications")');
   check('Settings opens on Notifications', await until(() => page.isVisible('.set-pane[data-pane="notifications"].on'), 5000));
-  check('it says what Desktop says', await until(async () => (await page.textContent('#nf-desc')) === 'Get notified when your tasks complete so you don’t have to keep checking back.', 5000), await page.textContent('#nf-desc'));
+  // Desktop has a sentence for each state: CI's headless Chromium blocks notifications outright,
+  // a local Chrome asks - whichever this browser is in, its own sentence is the one shown.
+  const blocked = (await page.evaluate(() => (typeof Notification === 'undefined' ? 'denied' : Notification.permission))) === 'denied';
+  const desktopSays = blocked ? 'Enable notifications in your browser settings to get updates when tasks complete.' : 'Get notified when your tasks complete so you don’t have to keep checking back.';
+  check('it says what Desktop says', await until(async () => (await page.textContent('#nf-desc')) === desktopSays, 5000), await page.textContent('#nf-desc'));
   await page.screenshot({ path: path.join(SHOTS, 'notify-settings-off.png') });
   await page.click('#nf-toggle .toggle');
   check('turning it on subscribes this device', await until(async () => (await j('/push')).devices.length === 1, 8000));

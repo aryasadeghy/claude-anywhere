@@ -1298,8 +1298,12 @@ fn stop_server(app: &AppHandle) {
 #[cfg(windows)]
 fn install_on_quit(app: &AppHandle) {
     use std::os::windows::process::CommandExt;
-    let Some(state) = app.try_state::<ServerState>() else { return };
-    let Some(cfg) = state.spawn.as_ref() else { return };
+    let Some(state) = app.try_state::<ServerState>() else {
+        return;
+    };
+    let Some(cfg) = state.spawn.as_ref() else {
+        return;
+    };
     let busy = ureq::get(&format!("http://127.0.0.1:{}/api/runs", state.port))
         .set("Authorization", &format!("Bearer {}", state.token))
         .timeout(Duration::from_secs(2))
@@ -1322,10 +1326,16 @@ fn install_on_quit(app: &AppHandle) {
     let version = ready["version"].as_str().unwrap_or_default();
     let script = cfg.root.join("scripts").join("update.ps1");
     // The same version again means a stale note from an install that already happened.
-    if file.is_empty() || version == env!("CARGO_PKG_VERSION") || !Path::new(&file).exists() || !script.exists() {
+    if file.is_empty()
+        || version == env!("CARGO_PKG_VERSION")
+        || !Path::new(&file).exists()
+        || !script.exists()
+    {
         return;
     }
-    let exe = std::env::current_exe().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+    let exe = std::env::current_exe()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
     let log = updates.join("install-on-quit.log");
     let _ = Command::new("powershell.exe")
         .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
