@@ -93,6 +93,7 @@ async function main() {
   check('the card sees Chrome', first[0].startsWith('ok') && /Chrome/.test(first[0]), first.join(' | '));
   check('...says the extension is missing', first[1].startsWith('todo') && /Not installed/.test(first[1]), first.join(' | '));
   check('...and that nothing is connected', first[2].startsWith('todo') && /Not connected/.test(first[2]), first.join(' | '));
+  check('Signed in for Chrome is fine on the own login', first[3]?.startsWith('ok') && /Signed in for Chrome/.test(first[3]), first.join(' | '));
   check('Get the extension and Check again are offered', (await buttons(page)).includes('Get the extension') && (await buttons(page)).includes('Check again'), (await buttons(page)).join(','));
   check('the switch is off', !(await page.$eval('#set-chrome-switch .toggle', (t) => t.classList.contains('on'))));
   await page.screenshot({ path: path.join(SHOTS, 'chrome-settings-missing.png') });

@@ -524,6 +524,7 @@
   // Three pieces have to be in place on the computer that runs Claude: a browser, Anthropic's extension in
   // it, and the native host that links the extension to Claude Code (lib/chrome.mjs). The card says which
   // are, and Connect registers the host - the one piece this app can do for you.
+  let chromeReason = ''; // why Chrome cannot be used under the account in use now, when it cannot
   let chromeOn = false; // whether the open session starts Claude Code with Chrome (its own switch, else the setting)
   const chromeApi = (p = '', opts) => api('/chrome' + p, opts).catch((e) => { if (e.status === 404) return null; throw e; });
   function chromeMenuRow() {
@@ -532,6 +533,7 @@
     row.appendChild(el('span', 'desc', 'Takes effect when Claude Code next starts for this session.'));
     const sw = toggleEl(chromeOn, async (on) => { chromeOn = on; await api(`/sessions/${state.current}/prefs`, { method: 'POST', body: JSON.stringify({ chrome: on }) }); });
     sw.setAttribute('aria-label', 'Use your Chrome'); row.appendChild(sw);
+    if (chromeReason) { row.classList.add('chrome-blocked'); row.querySelector('.desc').textContent = chromeReason; }
     return row;
   }
   const CHROME_SAYS = {
@@ -559,7 +561,14 @@
     const reg = s.browsers.find((b) => b.registered && b.found);
     const dead = reg && !reg.targetExists;
     line(s.host === 'ok', 'Connected to Claude Code', s.host === 'ok' ? reg.name : dead ? 'Points at a Claude Code that is gone' : s.host === 'stale' ? 'Needs repair' : 'Not connected');
-    card.appendChild(el('div', 'chrome-says', CHROME_SAYS[s.state] || ''));
+    chromeReason = s.account?.reason || '';
+    line(s.account?.ok !== false, 'Signed in for Chrome', s.account?.ok !== false ? "This computer's Claude login" : 'Not with this account');
+    if (!s.account?.ok) {
+      const why = el('div', 'chrome-says chrome-why', s.account.reason); card.appendChild(why);
+      const sw2 = el('button', 'btn btn-primary', 'Switch to This computer'); sw2.type = 'button';
+      sw2.addEventListener('click', async () => { sw2.disabled = true; try { await api('/accounts/active', { method: 'POST', body: JSON.stringify({ which: 'local' }) }); } catch (e) { why.textContent = e.message; } paintChrome(); });
+      card.appendChild(sw2);
+    } else card.appendChild(el('div', 'chrome-says', CHROME_SAYS[s.state] || ''));
     const bar = el('div', 'chrome-actions');
     const btn = (text, fn, primary) => { const b = el('button', 'btn ' + (primary ? 'btn-primary' : 'btn-ghost'), text); b.type = 'button'; b.addEventListener('click', fn); bar.appendChild(b); return b; };
     if (s.state !== 'unsupported' && s.state !== 'no-browser') {
@@ -1854,6 +1863,7 @@
     state.ultracode = !!s.ultracode;
     if (s.fast !== undefined) state.fast = !!s.fast;
     if (s.chrome !== undefined) chromeOn = !!s.chrome;
+    chromeReason = s.chromeReason || '';
     renderModelChip(); renderModeChip(); renderEffortChip();
   }
   function restoreDeviceDefaults() {

@@ -1571,3 +1571,6 @@ html.embed .main { border-inline-start: 0; }
 .chrome-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 4px; }
 .chrome-hint { flex-basis: 100%; font-size: 12px; color: var(--ink-3); line-height: 1.45; }
 @media (max-width: 640px) { #set-chrome { align-items: flex-start; } }
+.chrome-line.todo.acct .chrome-dot, .chrome-why { color: var(--danger); }
+.chrome-line:has(+ .chrome-why) .chrome-dot { background: var(--danger); }
+.menu-item.chrome-blocked .desc { color: var(--danger); }

@@ -155,3 +155,14 @@ test('a run is started with --chrome only when Chrome is on for its session', as
   assert.equal(chrome.wanted('with'), true);
   assert.equal(chrome.wanted('without'), false);
 });
+
+test('under a token, an API key or a provider the flag is held back; the setting stays', () => {
+  chrome.setPolicy(() => true);
+  for (const [which, held] of [['local', false], ['token', true], ['provider', true]]) {
+    chrome.setAccount(() => which);
+    assert.equal(chrome.wanted('x'), true, 'the setting stays');
+    assert.equal(chrome.willRun('x'), !held, which);
+    assert.equal(chrome.accountReason() === chrome.NEEDS_LOGIN, held, which);
+  }
+  chrome.setAccount(() => 'local');
+});

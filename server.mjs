@@ -1555,7 +1555,7 @@ function sessionSettings(id) {
     }
   } catch {}
   // Ultracode and Fast mode are remembered per session too; Ultracode was saved and never read back.
-  return { model: saved.model || model || '', permissionMode: saved.permissionMode || mode || '', effort: saved.effort ?? '', ultracode: !!saved.ultracode, ...(saved.fast !== undefined ? { fast: !!saved.fast } : {}), chrome: chrome.wanted(id) };
+  return { model: saved.model || model || '', permissionMode: saved.permissionMode || mode || '', effort: saved.effort ?? '', ultracode: !!saved.ultracode, ...(saved.fast !== undefined ? { fast: !!saved.fast } : {}), chrome: chrome.wanted(id), chromeReason: chrome.accountReason() };
 }
 // The newest model and mode in bytes [from, to) of a transcript, a few MB at a time from the
 // end, stopping once both are found - prompt lines (the mode) are rare in a long transcript,
@@ -2038,6 +2038,7 @@ app.post('/api/claude-code/bundled', (_req, res) => res.json(claudeCode.useBundl
 // ---------- Claude in Chrome ----------
 // Claude driving the person's own Chrome (lib/chrome.mjs). On by default for no one: a preference of
 // this computer, with a switch of its own per session (a session's wins), read when Claude Code starts.
+chrome.setAccount(() => activeAccount());
 chrome.setPolicy((id) => { const p = readPrefs(); const own = id ? (p.sessionPrefs || {})[id]?.chrome : undefined; return own !== undefined ? own : !!p.chrome; });
 // `--chrome` is a launch flag: a process resting between turns still runs without it (or with it), so it
 // goes and the next message starts one that follows the choice. A turn in progress finishes as it began.
