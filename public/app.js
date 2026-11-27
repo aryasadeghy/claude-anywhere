@@ -5032,7 +5032,7 @@
     const devs = sd.droid?.devices?.filter((d) => d.state === 'device') || [];
     for (const d of devs) add('android:' + d.serial, 'Android · ' + (d.avd || d.serial));
     for (const avd of sd.droid?.avds || []) if (!devs.some((d) => d.avd === avd)) add('boot:' + avd, 'Android · start ' + avd);
-    if (!sd.droid?.sdk || (!devs.length && !(sd.droid?.avds || []).length)) add('android:', 'Android emulator');
+    if (!devs.length) add('android:', 'Android emulator');
     if (![...sel.options].some((o) => o.value === sd.src)) sd.src = sd.src.startsWith('android') && devs[0] ? 'android:' + devs[0].serial : sd.src.startsWith('android') ? 'android:' : 'pc:1';
     sel.value = sd.src;
     $('#sd-title').textContent = sd.src.startsWith('pc') ? 'Remote desktop' : 'Android emulator';
@@ -5040,17 +5040,17 @@
   }
   $('#sd-source').addEventListener('change', async (e) => {
     const v = e.target.value;
-    if (v.startsWith('boot:')) {
-      const avd = v.slice(5);
-      sdDisconnect(); sdCardShow('Starting ' + avd + '…', 'Android takes a minute or two to boot the first time. Its window opens on the PC too.');
-      try { const r = await api('/android/boot', { method: 'POST', body: JSON.stringify({ avd }) }); sd.src = 'android:' + r.device.serial; } catch (x) { sdCardShow('Could not start ' + avd, x.message); return; }
-      await sdRefresh(); return sdConnect();
-    }
+    if (v.startsWith('boot:')) return sdBoot(v.slice(5));
     const samePc = v.startsWith('pc:') && sd.src.startsWith('pc:') && sd.ws;
     sd.src = v; sdSources();
     if (samePc) { sd.ws.send(JSON.stringify({ t: 'display', id: Number(v.slice(3)) })); return; }
     sdConnect();
   });
+  async function sdBoot(avd) {
+    sdDisconnect(); sdCardShow('Starting ' + avd + '…', 'Android takes a minute or two to boot the first time. Its window opens on the PC too.');
+    try { const r = await api('/android/boot', { method: 'POST', body: JSON.stringify({ avd }) }); sd.src = 'android:' + r.device.serial; } catch (x) { sdCardShow('Could not start ' + avd, x.message); return; }
+    await sdRefresh(); sdConnect();
+  }
   function paintSdButtons() {
     const t = $('#sd-touch'); t.classList.toggle('on', sd.touch); t.setAttribute('aria-pressed', String(sd.touch));
   }
@@ -5091,7 +5091,13 @@
     if (!sdOpen) return;
     const android = sd.src.startsWith('android');
     if (android && !sd.droid?.sdk) return sdCardShow('No Android SDK on this computer', sd.droid?.message || 'Install Android Studio and make a virtual device in its Device Manager, then open this again.');
-    if (android && sd.src === 'android:') return sdCardShow('No emulator yet', 'Make a virtual device in Android Studio\'s Device Manager, then pick it here to start it.');
+    if (android && sd.src === 'android:') {
+      const avds = sd.droid?.avds || [];
+      if (!avds.length) return sdCardShow('No virtual device yet', 'Make one in Android Studio\'s Device Manager, then open this again.');
+      const box = el('div', 'sd-card-actions');
+      for (const avd of avds) { const b = el('button', 'btn btn-ghost', 'Start ' + avd); b.type = 'button'; b.addEventListener('click', () => sdBoot(avd)); box.appendChild(b); }
+      return sdCardShow('No emulator is running', 'Start one of your virtual devices. Its window opens on the PC too.', box);
+    }
     if (!android && sd.status && !sd.status.supported) return sdCardShow('Windows only for now', 'Remote desktop works when claude-anywhere runs on a Windows PC.');
     if (!android && sd.status && !sd.status.remoteDesktop) return sdOffCard();
     sdCardShow('Connecting…', '');
@@ -5112,7 +5118,13 @@
         return;
       }
       let m; try { m = JSON.parse(e.data); } catch { return; }
-      if (m.t === 'displays') { sd.displays = m.list || []; if (m.id && sd.src === 'pc:1' && m.id !== 1) sd.src = 'pc:' + m.id; sdSources(); }
+      if (m.t === 'displays') {
+        sd.displays = m.list || [];
+        // A new connection starts on the main display; the one picked before is asked for again.
+        const want = Number(sd.src.slice(3));
+        if (want && want !== m.id && sd.displays.some((d) => d.id === want)) sdSend({ t: 'display', id: want });
+        sdSources();
+      }
       else if (m.t === 'size') { sd.size = { w: m.w, h: m.h }; sdStage.dataset.size = m.w + 'x' + m.h; }
       else if (m.t === 'off') { if (sd.status) sd.status.remoteDesktop = false; sdOffCard(); }
       else if (m.t === 'stopped') { sd.stopped = true; const b = el('button', 'btn btn-ghost', 'Connect again'); b.type = 'button'; b.addEventListener('click', sdConnect); const box = el('div', 'sd-card-actions'); box.appendChild(b); sdCardShow('Stopped on the PC', m.text || 'Someone at the PC pressed Stop on its banner.', box); }
