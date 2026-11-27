@@ -33,7 +33,7 @@ const execFileP = promisify(execFile);
 import { tailSession, isWorkingElsewhere, WORKING_WINDOW_MS, sessionFile } from './lib/tail.mjs';
 import { transcriptMentions, initShown, markShown, wasShown } from './lib/mentioned.mjs';
 import { cliProcessFor } from './lib/cli-sessions.mjs';
-import { parsePreviewUrl, portFromReferer, proxyRequest, proxyUpgrade, listLocalPorts, proxyAtRoot, upgradeAtRoot, listenOn, injectBridge } from './lib/preview.mjs';
+import { parsePreviewUrl, portFromReferer, proxyRequest, proxyUpgrade, listLocalPorts, forgetPorts, proxyAtRoot, upgradeAtRoot, listenOn, injectBridge } from './lib/preview.mjs';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { searchTranscripts } from './lib/search.mjs';
 import * as worktrees from './lib/worktrees.mjs';
@@ -52,6 +52,9 @@ import * as shell from './lib/shell.mjs';
 import * as claudeCode from './lib/claude-code.mjs';
 import * as access from './lib/access.mjs';
 import * as terminal from './lib/terminal.mjs';
+import * as push from './lib/push.mjs';
+import * as aside from './lib/aside.mjs';
+import { stopPort } from './lib/ports.mjs';
 import * as browser from './lib/browser.mjs';
 import { getAuth, activeAccount, setActive, setToken, clearToken, setProvider, clearProvider, classifyToken, envFor, localSource, verifyEnv, candidateEnv, candidateProviderEnv } from './lib/auth.mjs';
 import { findByName, searchContents, officePreview, writeFileChecked } from './lib/files.mjs';
@@ -1694,7 +1697,13 @@ app.post('/api/sessions/:id/send', async (req, res, next) => {
     // hand the message over, it runs right after (Desktop behaviour), without starting it again.
     // Ctrl/Cmd+Enter in the composer: hold it until the turn running now truly ends, rather
     // than fold it into that turn at the next tool boundary like plain Enter does.
-    if (isLive(id)) { const qid = runs.get(id).enqueue(prompt, images, cid || undefined, { defer: !!req.body?.defer }); if (qid) return res.json({ queued: true, id: qid, sessionId: id }); }
+    if (isLive(id)) {
+      const run = runs.get(id), working = run.busy(), defer = !!req.body?.defer;
+      const qid = run.enqueue(prompt, images, cid || undefined, { defer });
+      // Sent while Claude works: a small model answers it at once (lib/aside.mjs) while the message itself goes in as ever.
+      if (qid && working && !defer && prompt && readPrefs().aside !== false) aside.answer(run, { id: qid, text: prompt }).catch(() => {});
+      if (qid) return res.json({ queued: true, id: qid, sessionId: id });
+    }
     const info = await getSessionInfo(id);
     if (!info) return res.status(404).json({ error: 'Session not found' });
     const { model, permissionMode, effort, ultracode, fast } = req.body || {};
@@ -1866,10 +1875,38 @@ app.post('/api/permissions/:reqId', (req, res) => {
 app.get('/api/notify', (req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
   const send = (t) => (payload) => res.write(`data: ${JSON.stringify({ t, ...payload })}\n\n`);
-  const onPerm = send('permission'), onDone = send('turn_done'), onResolved = send('permission_resolved');
-  bus.on('permission', onPerm); bus.on('turn_done', onDone); bus.on('permission_resolved', onResolved);
+  const onPerm = send('permission'), onDone = send('turn_done'), onResolved = send('permission_resolved'), onTask = send('task_done');
+  bus.on('permission', onPerm); bus.on('turn_done', onDone); bus.on('permission_resolved', onResolved); bus.on('task_done', onTask);
   const ping = setInterval(() => res.write(': ping\n\n'), 20000);
-  req.on('close', () => { clearInterval(ping); bus.off('permission', onPerm); bus.off('turn_done', onDone); bus.off('permission_resolved', onResolved); });
+  req.on('close', () => { clearInterval(ping); bus.off('permission', onPerm); bus.off('turn_done', onDone); bus.off('permission_resolved', onResolved); bus.off('task_done', onTask); });
+});
+
+// ---------- notifications on any device, the aside, stopping a server ----------
+// The desktop shell notifies from the stream above; browsers and phones subscribe to Web Push
+// (lib/push.mjs, lib/webpush.mjs). A page in front reports it every few seconds, so the device
+// being looked at is not buzzed.
+push.init(DATA_DIR, { titleOf: async (id) => { const i = await getSessionInfo(id).catch(() => null); return { title: i?.customTitle || i?.summary || '' }; } });
+const pushable = (sessionId) => !sessionId || !net.isSideChat(sessionId);
+bus.on('permission', ({ sessionId, tool, summary }) => { if (pushable(sessionId)) push.notify('permission', { sessionId, tool, summary }).catch(() => {}); });
+bus.on('turn_done', ({ sessionId, text, isError }) => { if (pushable(sessionId)) push.notify('turn', { sessionId, text, isError }).catch(() => {}); });
+bus.on('task_done', ({ sessionId, status, summary }) => { if (pushable(sessionId)) push.notify('task', { sessionId, status, summary }).catch(() => {}); });
+app.get('/api/push', (_req, res) => res.json({ key: push.publicKey(), devices: push.devices(), aside: readPrefs().aside !== false }));
+app.post('/api/push/subscribe', (req, res) => push.subscribe(req.body?.subscription, deviceName(req)) ? res.json({ ok: true }) : res.status(400).json({ error: 'That is not a push subscription.' }));
+app.post('/api/push/unsubscribe', (req, res) => res.json({ ok: push.unsubscribe(String(req.body?.endpoint || '')) }));
+app.post('/api/push/focus', (req, res) => { push.reportFocus(String(req.body?.endpoint || ''), !!req.body?.focused); res.json({ ok: true }); });
+app.post('/api/push/test', async (req, res) => {
+  const endpoint = String(req.body?.endpoint || '');
+  if (!push.has(endpoint)) return res.status(404).json({ error: 'This device is not subscribed.' });
+  const r = await push.notify('test', { only: endpoint });
+  res.json({ ok: r.sent > 0, ...r });
+});
+// Settings > Notifications: Claude's instant reply to a message sent while it works.
+app.post('/api/aside', (req, res) => { const p = readPrefs(); p.aside = !!req.body?.enabled; writePrefs(p); res.json({ aside: p.aside }); });
+// The Servers card's Stop: the process listening on that port and what it started, nothing else.
+app.post('/api/preview/stop', async (req, res) => {
+  const r = await stopPort(req.body?.port, { expectPid: Number(req.body?.pid) || 0, refuse: ownPorts });
+  forgetPorts();
+  res.status(r.ok ? 200 : 400).json(r);
 });
 
 // Images that Claude's answers point at on this PC (a screenshot it saved, a generated

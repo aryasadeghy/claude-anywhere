@@ -168,6 +168,7 @@
     if (pane === 'account') loadAccountPane();
     if (pane === 'computers') openComputers();
     if (pane === 'remote') paintRemote();
+    if (pane === 'notifications') paintNotifications();
     if (pane === 'connectors') { openConnectors(); paintVersion(); }
   }
   settingsModal.querySelectorAll('.set-tab').forEach((t) => t.addEventListener('click', () => openSettings(t.dataset.pane)));
@@ -420,6 +421,8 @@
     m.appendChild(item('Settings…', '', false, () => { m.classList.add('hidden'); openSettings('general'); }, { icon: "<svg viewBox=\"0 0 20 20\" width=\"15\" height=\"15\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.4\"><circle cx=\"10\" cy=\"10\" r=\"2.7\"/><path d=\"M10 1.9l1.1 2a6 6 0 0 1 1.7.7l2.2-.5 1.4 2.4-1.5 1.7a6 6 0 0 1 0 1.6l1.5 1.7-1.4 2.4-2.2-.5a6 6 0 0 1-1.7.7l-1.1 2h-2.8l-1.1-2a6 6 0 0 1-1.7-.7l-2.2.5-1.4-2.4 1.5-1.7a6 6 0 0 1 0-1.6L3.4 6.5l1.4-2.4 2.2.5a6 6 0 0 1 1.7-.7l1.1-2z\" stroke-linejoin=\"round\"/></svg>" }));
     m.appendChild(item('Which computer…', ($('#sidebar-host').textContent || '').split(' · ').slice(0, 2).join(' · '), false, () => { m.classList.add('hidden'); openSettings('computers'); }, { icon: "<svg viewBox=\"0 0 20 20\" width=\"15\" height=\"15\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\"><rect x=\"4\" y=\"4\" width=\"12\" height=\"8\" rx=\"1.4\"/><path d=\"M2.5 15h15\" stroke-linecap=\"round\"/></svg>" }));
     m.appendChild(item('Connectors & plugins…', '', false, () => { m.classList.add('hidden'); openSettings('connectors'); }, { icon: "<svg viewBox=\"0 0 20 20\" width=\"15\" height=\"15\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\"><path d=\"M7.5 3v4M12.5 3v4M5 7.5h10v2a5 5 0 0 1-5 5 5 5 0 0 1-5-5z\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/><path d=\"M10 14.5V18\" stroke-linecap=\"round\"/></svg>" }));
+    m.appendChild(item('Keyboard shortcuts', isMac ? '⌘/' : 'Ctrl+/', false, () => { m.classList.add('hidden'); openShortcuts(); }, { icon: "<svg viewBox=\"0 0 20 20\" width=\"15\" height=\"15\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\"><rect x=\"2.5\" y=\"5\" width=\"15\" height=\"10\" rx=\"1.6\"/><path d=\"M5.5 8h1M8.5 8h1M11.5 8h1M14 8h.5M6 12h8\" stroke-linecap=\"round\"/></svg>" }));
+    m.appendChild(item('Notifications…', '', false, () => { m.classList.add('hidden'); openSettings('notifications'); }, { icon: "<svg viewBox=\"0 0 20 20\" width=\"15\" height=\"15\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\"><path d=\"M5 14V9a5 5 0 0 1 10 0v5l1.5 1.5h-13z\" stroke-linejoin=\"round\"/><path d=\"M8.5 17.5a1.6 1.6 0 0 0 3 0\" stroke-linecap=\"round\"/></svg>" }));
     m.appendChild(el('div', 'menu-sep'));
     m.appendChild(item('Switch Claude account…', '', false, () => { m.classList.add('hidden'); openSettings('account'); }, { icon: "<svg viewBox=\"0 0 20 20\" width=\"15\" height=\"15\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\"><circle cx=\"10\" cy=\"7\" r=\"3\"/><path d=\"M3.8 16.5a6.4 6.4 0 0 1 12.4 0\" stroke-linecap=\"round\"/></svg>" }));
     m.appendChild(item('Keep this computer awake', (AWAKE.find((x) => x[0] === awakeMode) || AWAKE[0])[1], false, () => { m.classList.add('hidden'); setAwake(AWAKE[(AWAKE.findIndex((x) => x[0] === awakeMode) + 1) % AWAKE.length][0]); }, { icon: "<svg viewBox=\"0 0 20 20\" width=\"15\" height=\"15\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\"><path d=\"M2.4 10S5.2 5.6 10 5.6 17.6 10 17.6 10 14.8 14.4 10 14.4 2.4 10 2.4 10z\" stroke-linejoin=\"round\"/><circle cx=\"10\" cy=\"10\" r=\"2.1\"/></svg>" }));
@@ -442,7 +445,7 @@
       ? 'You have ' + v.version + (v.commit ? ' · ' + v.commit : '') + (v.update?.newer ? ' — ' + v.update.latest + ' is out' : ' — up to date')
       : 'Claude Anywhere updates itself from GitHub.';
     claudeCodeRow();
-    paintConvSettings();
+    paintConvSettings(); paintAside();
     await paintOutputStyleDefault();
     paintEnvironmentsList();
   }
@@ -4268,6 +4271,9 @@
         const open = el('button', 'link-btn small', 'Open'); open.type = 'button';
         open.addEventListener('click', async () => { await openPreview(); go(pv.active || addTab(), { kind: 'server', port: p.port, path: '/' }); });
         row.appendChild(open);
+        const stopBtn = el('button', 'link-btn small danger rail-stop', 'Stop'); stopBtn.type = 'button'; stopBtn.title = 'Stop this server and what it started';
+        stopBtn.addEventListener('click', () => stopServer(p, row));
+        row.appendChild(stopBtn);
         c.appendChild(row);
       }
     }));
@@ -6263,6 +6269,7 @@
         }
         // Drag-to-reorder: the ids keep their bubbles, only the order changes.
         case 'reordered': reorderBubbles(ev.ids || []); break;
+        case 'aside': showAside(ev); break;
         case 'init':
           mode = 'run'; setRunning(true);
           if (ev.controls) { if (ev.controls.permissionMode) state.mode = ev.controls.permissionMode; if (ev.controls.model) state.model = ev.controls.model; state.effort = ev.controls.effort || ''; if (ev.controls.ultracode !== undefined) state.ultracode = !!ev.controls.ultracode; if (ev.controls.fast !== undefined) state.fast = !!ev.controls.fast; renderModeChip(); renderModelChip(); renderEffortChip(); }
@@ -7523,6 +7530,7 @@
       { name: 'Search sessions', hint: 'Ctrl+F', run: () => { const sb = $('#sidebar'); if (!sb.classList.contains('searching')) $('#search-btn').click(); else $('#search-input').focus(); app.classList.add('sidebar-open'); } },
       { name: 'Search inside transcripts', hint: '', run: () => { const sb = $('#sidebar'); if (!sb.classList.contains('searching')) $('#search-btn').click(); $('#search-inside').checked = true; $('#search-inside').dispatchEvent(new Event('change')); $('#search-input').focus(); app.classList.add('sidebar-open'); } },
       { name: 'Toggle sidebar', hint: 'Ctrl+B', run: () => app.classList.toggle('sidebar-open') },
+      { name: 'Keyboard shortcuts', hint: 'Ctrl+/', run: () => openShortcuts() },
     ];
     for (const [id, name] of GROUPS.map((g) => [g[0], g[1]])) out.push({ name: 'Group sessions by ' + name.toLowerCase(), group: 'View', on: state.view.group === id, run: () => setView({ group: id }) });
     for (const [id, name] of SORTS.map((g) => [g[0], g[1]])) out.push({ name: 'Sort sessions by ' + name.toLowerCase(), group: 'View', on: state.view.sort === id, run: () => setView({ sort: id }) });
@@ -7622,6 +7630,208 @@
 
     else if (e.code === 'Backquote') { e.preventDefault(); toggleTerminal(); } // Ctrl+` : VS Code's and Desktop's own terminal shortcut
   });
+
+  // ---------- notify: notifications on any device, the aside, keyboard shortcuts, stopping a server ----------
+  // The desktop shell notifies by itself (spawn_notifier in the Rust shell). Everywhere else a
+  // device subscribes to Web Push from Settings > Notifications: the service worker (sw.js)
+  // shows what the server sends, and a click opens that session. A tab that is open but hidden
+  // on a device with no subscription is told through the in-page Notification API instead.
+  const inShell = !!window.__TAURI__;
+  const standalone = window.matchMedia?.('(display-mode: standalone)').matches || navigator.standalone === true;
+  const iosBrowser = /iPhone|iPad|iPod/.test(navigator.userAgent) && !standalone; // Safari only offers push to a web app on the Home Screen
+  const pushReady = () => isSecureContext && 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+  const b64uBytes = (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
+  let nfSub = null, nfPage = false, nfInfo = { devices: [], aside: true }, nfSource = null;
+  const nfRegistration = () => navigator.serviceWorker.register('/sw.js').then(() => navigator.serviceWorker.ready);
+  async function nfRefresh() {
+    try { nfInfo = { ...nfInfo, ...(await api('/push')) }; } catch {}
+    nfSub = null;
+    if (pushReady()) { try { nfSub = await (await nfRegistration()).pushManager.getSubscription(); } catch {} }
+    // A subscription the server has forgotten (its data was cleared) is no subscription.
+    if (nfSub && !nfInfo.devices.some((d) => d.endpoint === nfSub.endpoint)) { try { await api('/push/subscribe', { method: 'POST', body: JSON.stringify({ subscription: nfSub.toJSON() }) }); nfInfo = { ...nfInfo, ...(await api('/push')) }; } catch {} }
+    nfPage = !nfSub && localStorage.getItem('cr.notifyPage') === '1' && 'Notification' in window && Notification.permission === 'granted';
+    nfSourceSync();
+  }
+  // The device being looked at is not buzzed: the page says so every few seconds while it is in front.
+  const nfLooking = () => document.visibilityState === 'visible' && document.hasFocus();
+  let nfBeat = 0;
+  function nfReport(force) {
+    if (!nfSub || embedded) return;
+    const on = nfLooking();
+    if (!on && !nfBeat && !force) return;
+    nfBeat = on ? Date.now() : 0;
+    api('/push/focus', { method: 'POST', body: JSON.stringify({ endpoint: nfSub.endpoint, focused: on }) }).catch(() => {});
+  }
+  setInterval(() => nfReport(false), 5000);
+  for (const ev of ['focus', 'blur', 'visibilitychange']) window.addEventListener(ev, () => nfReport(true));
+  // Page-only mode: the shell's own event stream, shown as notifications while this tab is hidden.
+  function nfSourceSync() {
+    if (nfPage && !nfSource && !embedded) {
+      nfSource = new EventSource('/api/notify?token=' + encodeURIComponent(state.token || ''));
+      nfSource.onmessage = (m) => {
+        if (nfLooking()) return;
+        let ev; try { ev = JSON.parse(m.data); } catch { return; }
+        const w = ev.t === 'permission' ? { title: /AskUserQuestion$/.test(ev.tool || '') ? 'Claude has a question' : 'Claude needs your approval', body: ev.summary || '' } : ev.t === 'turn_done' ? { title: ev.isError ? 'Claude hit an error' : 'Task complete', body: ev.text || '' } : ev.t === 'task_done' ? { title: 'Background task ' + (ev.status === 'completed' ? 'finished' : ev.status), body: ev.summary || '' } : null;
+        if (!w) return;
+        const n = new Notification(w.title, { body: w.body, tag: 'session-' + (ev.sessionId || ''), icon: '/icon-192.png' });
+        n.onclick = () => { window.focus(); if (ev.sessionId) location.hash = '#/s/' + ev.sessionId; n.close(); };
+      };
+    } else if (!nfPage && nfSource) { nfSource.close(); nfSource = null; }
+  }
+  async function nfEnable() {
+    if (!('Notification' in window)) throw new Error('This browser cannot show notifications.');
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') throw new Error('Notifications are blocked. Allow them in your browser or system settings, then try again.');
+    if (pushReady() && nfInfo.key) {
+      const reg = await nfRegistration();
+      const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uBytes(nfInfo.key) });
+      await api('/push/subscribe', { method: 'POST', body: JSON.stringify({ subscription: sub.toJSON() }) });
+    } else localStorage.setItem('cr.notifyPage', '1');
+    await nfRefresh();
+    nfReport(true); // in front right now: the first push is not for this device
+  }
+  async function nfDisable() {
+    if (nfSub) { const ep = nfSub.endpoint; await nfSub.unsubscribe().catch(() => {}); await api('/push/unsubscribe', { method: 'POST', body: JSON.stringify({ endpoint: ep }) }); }
+    localStorage.removeItem('cr.notifyPage');
+    await nfRefresh();
+  }
+  // A click on a notification, with the app already open, says which session to show.
+  if ('serviceWorker' in navigator) navigator.serviceWorker.addEventListener('message', (e) => { if (e.data?.t === 'open' && e.data.url) { const h = String(e.data.url).split('#')[1]; if (h) location.hash = '#' + h; } });
+
+  async function paintNotifications() {
+    await nfRefresh();
+    const on = !!(nfSub || nfPage), blocked = 'Notification' in window && Notification.permission === 'denied';
+    const name = $('#nf-name'), desc = $('#nf-desc'), wrap = $('#nf-toggle'), tests = $('#nf-test-row'), list = $('#nf-devices');
+    wrap.innerHTML = ''; list.innerHTML = '';
+    let why = '';
+    if (inShell) why = 'This window already tells you through your system notifications. Open the app in a browser on another device to get them there.';
+    else if (iosBrowser) why = 'On an iPhone or iPad, notifications work once the app is on your Home Screen: tap Share, then Add to Home Screen, and open it from there.';
+    else if (!('Notification' in window)) why = 'This browser cannot show notifications.';
+    else if (!isSecureContext) why = 'Notifications need a secure address: https, or localhost on this computer. Open the app through https (tailscale serve gives it one) to turn them on here.';
+    name.textContent = blocked ? 'Notifications blocked' : on ? 'Notifications enabled' : 'Notifications';
+    desc.textContent = why || (blocked ? 'Enable notifications in your browser settings to get updates when tasks complete.' : on ? 'You’ll receive notifications when your tasks need attention.' : 'Get notified when your tasks complete so you don’t have to keep checking back.');
+    if (!why && !blocked) {
+      wrap.appendChild(toggleEl(on, async (next) => { try { await (next ? nfEnable() : nfDisable()); } finally { paintNotifications(); } }));
+    }
+    $('#nf-error').hidden = true;
+    tests.classList.toggle('hidden', !on);
+    $('#nf-test-result').textContent = '';
+    for (const d of nfInfo.devices) {
+      const row = el('div', 'ct-row'), info = el('div', 'ct-info');
+      info.appendChild(el('div', 'ct-name', d.name + (nfSub && nfSub.endpoint === d.endpoint ? ' · this device' : '')));
+      info.appendChild(el('div', 'ct-desc', 'Subscribed ' + new Date(d.since).toLocaleDateString()));
+      row.appendChild(info);
+      if (!(nfSub && nfSub.endpoint === d.endpoint)) { const rm = el('button', 'btn btn-ghost small danger', 'Remove'); rm.type = 'button'; rm.addEventListener('click', async () => { await api('/push/unsubscribe', { method: 'POST', body: JSON.stringify({ endpoint: d.endpoint }) }); paintNotifications(); }); row.appendChild(rm); }
+      list.appendChild(row);
+    }
+  }
+  // The aside's own switch, in General: Claude's instant reply to a message sent mid-turn.
+  async function paintAside() {
+    try { nfInfo = { ...nfInfo, ...(await api('/push')) }; } catch {}
+    const aw = $('#set-aside'); aw.innerHTML = '';
+    aw.appendChild(toggleEl(nfInfo.aside, async (next) => { await api('/aside', { method: 'POST', body: JSON.stringify({ enabled: next }) }); nfInfo.aside = next; }));
+  }
+  $('#nf-test').addEventListener('click', async () => {
+    const out = $('#nf-test-result'); out.textContent = 'Sending…';
+    try {
+      if (nfSub) { const r = await api('/push/test', { method: 'POST', body: JSON.stringify({ endpoint: nfSub.endpoint }) }); out.textContent = r.ok ? 'Sent. It should appear in a moment.' : 'The push service did not take it.'; }
+      else { new Notification('Notifications are on', { body: 'This is what a finished task will look like.', icon: '/icon-192.png' }); out.textContent = 'Sent.'; }
+    } catch (e) { out.textContent = e.message; }
+  });
+  async function notifyStart() {
+    if (embedded || inShell) return;
+    await nfRefresh();
+    nfReport(true);
+  }
+
+  // The aside, drawn under the message it answers: a short reply from a small model, written
+  // while the real work carries on. It lives inside the bubble, so a queued message that is moved
+  // (the stack of dashed bubbles) takes its aside with it.
+  function showAside(ev) {
+    const b = bubbleFor({ id: ev.id }); if (!b || b.querySelector('.aside')) return;
+    const a = el('div', 'aside'); a.title = 'A quick reply from Claude while it works. Claude reads your message itself at its next step.';
+    a.appendChild(el('span', 'aside-label', 'Quick reply'));
+    a.appendChild(el('span', 'aside-text', ev.text));
+    (b.querySelector('.msg-body') || b).appendChild(a);
+    autoscroll();
+  }
+
+  // Every shortcut the page has. Written from the keydown handlers above: a key that is not
+  // handled somewhere in this file is not listed.
+  const SHORTCUTS = [
+    ['General', [
+      ['Mod+K', 'Open the command palette'], ['Mod+/', 'Show keyboard shortcuts'], ['Mod+N', 'New session'], ['Mod+B', 'Show or hide the sidebar'],
+      ['Mod+F', 'Find in this session (search sessions when none is open)'], ['Mod+Shift+F', 'Search sessions, while a session is open'],
+      ['Mod+Shift+B', 'Open or close the Browser'], ['Mod+`', 'Open or close the terminal'], ['Mod+U', 'Attach files to the message'],
+    ]],
+    ['Message box', [
+      ['Enter', 'Send the message (on a phone, a new line)'], ['Shift+Enter', 'New line'],
+      ['Mod+Enter', 'While Claude works: queue the message for after the turn'], ['Esc', 'While Claude works: stop'], ['Esc Esc', 'Rewind to your last message (when Claude is idle)'],
+      ['Shift+Tab', 'Switch between permission modes'], ['/', 'At the start: slash commands'], ['@', 'Mention a file'], ['!', 'At the start: run a shell command'],
+      ['↑ ↓', 'Choose in the / and @ list'], ['Enter or Tab', 'Pick the highlighted command or file'],
+    ]],
+    ['Questions and menus', [
+      ['1 to 9', 'Pick that option on a question from Claude'], ['1 to 5', 'Pick a permission mode, while its menu is open'], ['Esc', 'Close a menu or dialog'],
+    ]],
+    ['Sessions list', [
+      ['Mod+Click', 'Add a session to the selection'], ['Shift+Click', 'Select a range of sessions'], ['Delete', 'Delete the selected sessions'], ['Esc', 'Clear the selection'],
+    ]],
+    ['Find and palette', [
+      ['Enter', 'Next match'], ['Shift+Enter', 'Previous match'], ['↑ ↓', 'Move through the command palette'], ['Enter', 'Run the highlighted command'],
+    ]],
+    ['Files', [['Mod+S', 'Save the open file'], ['Mod+F', 'Find in the open file'], ['Tab', 'Insert a tab in the editor']]],
+    ['Effort slider', [['← →', 'Lower or raise the effort (↑ ↓ too)'], ['Home End', 'Lowest or highest']]],
+  ];
+  const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+  const keyWords = (s) => s.split(' ').map((part) => part.split('+').map((k) => (k === 'Mod' ? (isMac ? '⌘' : 'Ctrl') : k === 'Shift' && isMac ? '⇧' : k)));
+  const scModal = el('div', 'modal hidden'); scModal.id = 'shortcuts-modal';
+  scModal.innerHTML = '<div class="modal-card sc-card" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts"><div class="sc-head"><h3 class="set-title">Keyboard shortcuts</h3><button class="icon-btn sc-close" type="button" aria-label="Close"><svg viewBox="0 0 20 20" width="16" height="16"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div><input id="sc-search" type="search" placeholder="Search shortcuts" aria-label="Search shortcuts" autocomplete="off" /><div id="sc-count" class="muted small" aria-live="polite"></div><div id="sc-list" class="sc-list"></div></div>';
+  document.body.appendChild(scModal);
+  const scList = scModal.querySelector('#sc-list'), scSearch = scModal.querySelector('#sc-search');
+  function paintShortcuts() {
+    const q = scSearch.value.trim().toLowerCase();
+    scList.innerHTML = '';
+    let n = 0;
+    for (const [group, rows] of SHORTCUTS) {
+      const hit = rows.filter(([keys, what]) => !q || (group + ' ' + what + ' ' + keyWords(keys).map((p) => p.join('+')).join(' ')).toLowerCase().includes(q));
+      if (!hit.length) continue;
+      const sec = el('section', 'sc-group'); sec.appendChild(el('h4', 'sc-group-name', group));
+      for (const [keys, what] of hit) {
+        const row = el('div', 'sc-row'); row.appendChild(el('span', 'sc-what', what));
+        const k = el('span', 'sc-keys');
+        keyWords(keys).forEach((combo, i) => {
+          if (i) k.appendChild(document.createTextNode(' '));
+          combo.forEach((one, j) => { if (/^(or|to)$/.test(one)) { k.appendChild(el('span', 'sc-or', one)); return; } if (j) k.appendChild(el('span', 'sc-plus', '+')); k.appendChild(el('kbd', '', one)); });
+        });
+        row.appendChild(k); sec.appendChild(row); n++;
+      }
+      scList.appendChild(sec);
+    }
+    if (!n) scList.appendChild(el('div', 'palette-empty', 'No matching shortcuts'));
+    scModal.querySelector('#sc-count').textContent = q ? n + (n === 1 ? ' shortcut found' : ' shortcuts found') : '';
+  }
+  let scReturn = null;
+  function openShortcuts() { scReturn = document.activeElement; scSearch.value = ''; paintShortcuts(); scModal.classList.remove('hidden'); scSearch.focus(); }
+  function closeShortcuts() { scModal.classList.add('hidden'); try { scReturn?.focus?.(); } catch {} }
+  scSearch.addEventListener('input', paintShortcuts);
+  scModal.querySelector('.sc-close').addEventListener('click', closeShortcuts);
+  scModal.addEventListener('mousedown', (e) => { if (e.target === scModal) closeShortcuts(); });
+  // Capture phase: Esc here must close this panel and nothing underneath it (Esc also stops a turn).
+  document.addEventListener('keydown', (e) => {
+    if (!scModal.classList.contains('hidden') && e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeShortcuts(); return; }
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === '/' || e.code === 'Slash') && !$('#app').classList.contains('hidden')) { e.preventDefault(); e.stopPropagation(); scModal.classList.contains('hidden') ? openShortcuts() : closeShortcuts(); }
+  }, true);
+
+  // The Servers card's Stop. The server finds the listener by port and stops it with what it
+  // started, and refuses a port this app uses itself.
+  async function stopServer(p, row) {
+    const what = (p.label || p.process || 'The process') + (p.pid ? ' (process ' + p.pid + ')' : '');
+    if (!confirm('Stop the server on localhost:' + p.port + '?\n\n' + what + ' and anything it started will be closed. Anything using it will stop working.')) return;
+    const btn = row.querySelector('.rail-stop'); if (btn) { btn.disabled = true; btn.textContent = 'Stopping…'; }
+    try { await api('/preview/stop', { method: 'POST', body: JSON.stringify({ port: p.port, pid: p.pid }) }); }
+    catch (e) { alert(e.message); }
+    await loadPorts(); paintRail();
+  }
 
   // ---------- routing ----------
   // Opening a session fetches and renders its whole transcript, seconds for a big one.
@@ -7795,6 +8005,7 @@
     await Promise.all([loadSessions(), loadProjects(), loadAwake(), loadModels(), loadConvSettings(), loadEnvironments(), loadSections()]);
     if (!embedded && localStorage.getItem('cr.rail') === '1') openRail(); // remembered across restarts, like every other pane
     route();
+    notifyStart();
     // First time on this device: ask which account to use (local or token).
     let chosen = false; try { chosen = !!localStorage.getItem('cr.accountChosen'); } catch {}
     if (!chosen && !me.hasToken) openAccounts();

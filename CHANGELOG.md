@@ -7,6 +7,25 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Notifications on any device.** Settings › Notifications turns on Web Push for a browser or phone
+  (Chrome on a Mac, Android, Safari on an iPhone once the app is on the Home Screen): a push arrives
+  when a task finishes, when Claude has a question or needs your approval, and when a background task
+  ends - not on the device you are looking at. A click opens that session. Push needs https or
+  localhost, and the setting says so on plain http; a hidden tab there still gets the in-page
+  notification. The encryption (RFC 8291) and VAPID signing use `node:crypto`; no new dependency.
+  There is a "Send a test notification" button.
+- **An instant reply to a message sent while Claude works.** Desktop's aside: a small fast model answers
+  in a line or two, under your message, while the work carries on; Claude reads the message at its next
+  step and is told what the aside said. Nothing is shown if it fails or takes more than 8 seconds.
+  Settings › General › Quick replies while Claude works turns it off.
+- **Keyboard shortcuts** (Ctrl+/ or ⌘/, the command palette, the account menu): every shortcut the app
+  has, grouped and searchable.
+- **Stop on the Servers card** ends a dev server and what it started, found by its port (netstat on
+  Windows, lsof elsewhere), after asking. The app's own ports are refused. The card now lists servers on
+  a Mac or Linux machine too.
+
 ## [0.14.3] — 2026-11-27
 
 ### Fixed
