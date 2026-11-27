@@ -77,7 +77,9 @@ async function main() {
   const children = [];
 
   async function open(type, opts, { granted = true } = {}) {
-    const browser = await type.launch({ headless: true, ...(type === chromium && channel ? { channel } : {}) });
+    // Not the bundled headless shell CI would pick: it has no notifications at all, so a worker's
+    // showNotification never shows. 'chromium' is the full browser, headless - and CI installs it.
+    const browser = await type.launch({ headless: true, ...(type === chromium ? { channel: channel || 'chromium' } : {}) });
     const ctx = await browser.newContext({ colorScheme: 'dark', ...opts });
     if (granted && type === chromium) await ctx.grantPermissions(['notifications'], { origin: app.base });
     // Headless Chromium has no push service to subscribe to: the browser's subscribe() answers with
