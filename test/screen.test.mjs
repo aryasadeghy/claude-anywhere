@@ -165,6 +165,8 @@ test('the switches start off, and another device turns them on only with the app
     assert.equal(JSON.parse(fs.readFileSync(path.join(tmp, 'data', 'screen', 'screen.json'), 'utf8')).remoteDesktop, true, 'kept on disk');
   } finally {
     await app.stop();
-    fs.rmSync(tmp, { recursive: true, force: true });
+    // A child of the stopped app can still be writing into the config dir for a moment (ENOTEMPTY on
+    // Linux CI): retry, and never let the clean-up fail a test that passed.
+    try { fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch {}
   }
 });

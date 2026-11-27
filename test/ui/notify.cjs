@@ -86,6 +86,9 @@ async function main() {
       if (window.top !== window) return;
       localStorage.setItem('cr.accountChosen', '1'); localStorage.setItem('cr.token', token);
       window.__focus = true; document.hasFocus = () => window.__focus; // the page says whether it is in front
+      // CI's bundled headless Chromium answers "denied" whatever grantPermissions said, and then the
+      // switch is (rightly) not offered: the permission is the browser's to give, so the test gives it.
+      if (window.Notification) { Object.defineProperty(Notification, 'permission', { get: () => 'granted', configurable: true }); Notification.requestPermission = async () => 'granted'; }
       if (window.PushManager) {
         const fake = () => ({ endpoint: sub.endpoint, toJSON: () => ({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } }), unsubscribe: async () => { localStorage.removeItem('t.sub'); return true; } });
         PushManager.prototype.subscribe = async () => { localStorage.setItem('t.sub', '1'); return fake(); };
