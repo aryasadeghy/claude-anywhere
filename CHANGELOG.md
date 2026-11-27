@@ -7,6 +7,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **Update this computer works on an installed app.** It answered "scripts/update.ps1 is missing": the
+  installer carries the server, but not the script that replaces the app. It is in the installer now.
+  A computer still on 0.14.2 or older updates once by hand (download the installer from the release
+  page); from then on the button works.
+
 ## [0.14.2] — 2026-11-26
 
 ### Fixed

@@ -28,6 +28,7 @@
       "../package.json": "server/package.json",
       "../lib": "server/lib",
       "../public": "server/public",
+      "../scripts/update.ps1": "server/scripts/update.ps1",
       "../node_modules": "server/node_modules",
       "../runtime": "server/runtime"
     },
