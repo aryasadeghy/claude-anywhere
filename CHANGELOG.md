@@ -7,6 +7,27 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Remote desktop, when you need it.** A Remote desktop pane (the pane buttons, the session menu, or
+  Ctrl+K) shows this PC's screen and drives its mouse and keyboard - from the PC itself or a phone,
+  where a tap is a click, two fingers scroll and a button brings up the keyboard. Several displays
+  each have their own entry; pictures come only when something changed, lighter when the link is
+  slow. Nothing runs until the pane opens, and closing it stops. It starts off: "Allow remote
+  desktop" (in the pane, or Settings > Remote access) turns it on, and from another device that asks
+  for the app password. Ctrl+Alt+Del cannot be sent, and the pane says so. Windows only for now.
+- **A banner on the PC while it is controlled.** "This PC is being controlled from claude-anywhere",
+  on top of everything, with a Stop that ends every remote view and Claude's control at once.
+- **Claude can use this PC (computer use).** With "Let Claude use this PC" on (off until you turn it
+  on), Claude has Desktop's computer-use tools: screenshot, zoom, clicks, drag, scroll, type, key,
+  open_application, list_apps, switch_display, wait. It asks per app with Desktop's tiers - View
+  only, Click only, Full control - through the normal permission card, and the answer holds for the
+  session; apps it was not given are painted over in its screenshots before they leave the PC.
+  A Stop in the chat or on the banner ends its control immediately.
+- **The Android emulator.** Where the Android SDK is on the PC, Claude can list virtual devices, boot
+  one, look at it, tap, swipe, type, press keys, install an APK and launch an app (android_control),
+  and the same pane shows the emulator. Without an SDK the pane says how to get one.
+
 ## [0.14.3] — 2026-11-27
 
 ### Fixed

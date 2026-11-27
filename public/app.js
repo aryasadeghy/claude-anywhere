@@ -2554,6 +2554,8 @@
         case 'agent': return 'Ran ' + plural(n, 'agent', 'agents');
         case 'sent': return 'Sent';
         case 'finished': return n === 1 ? 'Finished a background command' : 'Finished ' + plural(n, 'background command', 'background commands');
+        case 'computer': return 'Used your computer';
+        case 'device': return 'Used the device';
         default: return n === 1 ? 'Used a tool' : 'Used ' + plural(n, 'tool', 'tools');
       }
     };
@@ -4963,6 +4965,9 @@
   var sdOpen = false; // var: the other panes close this one through the observer below
   const sd = { ws: null, src: 'pc:1', size: { w: 0, h: 0 }, status: null, droid: null, displays: [], touch: rvCoarse, stopped: false, seq: 0 };
   const sdApple = /Mac|iPhone|iPad|iPod/.test(navigator.platform || '') || /iPhone|iPad/.test(navigator.userAgent);
+  // A group of computer-use steps reads as Desktop's does: "Used your computer", "Used the device".
+  for (const n of ['request_access', 'screenshot', 'zoom', 'left_click', 'right_click', 'middle_click', 'double_click', 'triple_click', 'mouse_move', 'left_click_drag', 'scroll', 'type', 'key', 'open_application', 'list_apps', 'switch_display', 'cursor_position', 'wait']) TOOL_KIND['mcp__claude-anywhere__' + n] = 'computer';
+  TOOL_KIND['mcp__claude-anywhere__android_control'] = 'device';
   const SD_ICON = '<svg viewBox="0 0 20 20" width="17" height="17"><rect x="2.5" y="3.5" width="15" height="10" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M7 16.5h6M10 13.5v3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
   const sdPanel = el('aside', 'tasks-panel sd-panel hidden'); sdPanel.id = 'sd-panel'; sdPanel.setAttribute('aria-label', 'Remote desktop');
   sdPanel.innerHTML = `<div class="tp-head sd-head">
@@ -5108,7 +5113,7 @@
       }
       let m; try { m = JSON.parse(e.data); } catch { return; }
       if (m.t === 'displays') { sd.displays = m.list || []; if (m.id && sd.src === 'pc:1' && m.id !== 1) sd.src = 'pc:' + m.id; sdSources(); }
-      else if (m.t === 'size') sd.size = { w: m.w, h: m.h };
+      else if (m.t === 'size') { sd.size = { w: m.w, h: m.h }; sdStage.dataset.size = m.w + 'x' + m.h; }
       else if (m.t === 'off') { if (sd.status) sd.status.remoteDesktop = false; sdOffCard(); }
       else if (m.t === 'stopped') { sd.stopped = true; const b = el('button', 'btn btn-ghost', 'Connect again'); b.type = 'button'; b.addEventListener('click', sdConnect); const box = el('div', 'sd-card-actions'); box.appendChild(b); sdCardShow('Stopped on the PC', m.text || 'Someone at the PC pressed Stop on its banner.', box); }
       else if (m.t === 'nosdk') sdCardShow('No Android SDK on this computer', m.text);
