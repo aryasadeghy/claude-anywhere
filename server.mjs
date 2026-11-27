@@ -58,6 +58,8 @@ import * as push from './lib/push.mjs';
 import * as aside from './lib/aside.mjs';
 import { stopPort } from './lib/ports.mjs';
 import * as browser from './lib/browser.mjs';
+import * as screen from './lib/screen.mjs';
+import * as android from './lib/android.mjs';
 import { getAuth, activeAccount, setActive, setToken, clearToken, setProvider, clearProvider, classifyToken, envFor, localSource, verifyEnv, candidateEnv, candidateProviderEnv } from './lib/auth.mjs';
 import { findByName, searchContents, officePreview, writeFileChecked } from './lib/files.mjs';
 import { sessionOutputs } from './lib/outputs.mjs';
@@ -347,6 +349,32 @@ app.get('/api/browser/tabs/:id/screenshot', async (req, res) => {
   try { res.json({ dataUrl: 'data:image/jpeg;base64,' + (await browser.screenshot(tab, { quality: 85 })), title: tab.title, url: tab.url }); } catch (e) { res.status(500).json({ error: e.message }); }
 });
 app.delete('/api/browser/tabs/:id', async (req, res) => res.json({ ok: await browser.closeTab(req.params.id) }));
+
+// ---------- this PC's screen: remote desktop, computer use, the Android emulator ----------
+// lib/screen.mjs and lib/android.mjs; Claude's side is lib/tools-computer.mjs. Two switches, both
+// off until someone turns them on. Turning one on from another device asks for the app password,
+// as changing the password does: a stolen device token must not be enough to watch and drive
+// this computer. Turning one off never asks.
+screen.configure({ dataDir: path.join(DATA_DIR, 'screen') });
+const screenStatus = (req) => ({ supported: screen.supported(), ...screen.getSettings(), needsPassword: access.passwordRequired() && !access.isLocal(req) && !access.isAppKey(bearer(req)), controlledBy: screen.controlledBy(), android: !!android.sdk(), cad: screen.CAD });
+app.get('/api/screen/status', (req, res) => res.json(screenStatus(req)));
+app.post('/api/screen/settings', (req, res) => {
+  const want = { remoteDesktop: req.body?.remoteDesktop, computerUse: req.body?.computerUse };
+  if (Object.values(want).includes(true)) {
+    if (!screen.supported()) return res.status(400).json({ error: screen.NOT_HERE });
+    if (access.passwordRequired() && !access.isLocal(req) && !access.isAppKey(bearer(req))) {
+      const ip = access.clientIp(req), wait = access.locked(ip);
+      if (wait) return res.status(429).json({ error: 'Too many wrong passwords. Try again in ' + waitWords(wait) + '.' });
+      // 403, not 401: the page signs itself out on a 401, and this device is still signed in.
+      if (!req.body?.password) return res.status(403).json({ error: 'Enter the app password to turn this on from another device.', needsPassword: true });
+      if (!access.checkPassword(String(req.body.password))) { access.failed(ip); return res.status(403).json({ error: 'That is not the app password.', needsPassword: true }); }
+      access.succeeded(ip);
+    }
+  }
+  res.json({ ...screenStatus(req), ...screen.setSettings(want) });
+});
+app.get('/api/android/status', async (_req, res) => { try { res.json(await android.status()); } catch (e) { res.status(500).json({ error: e.message }); } });
+app.post('/api/android/boot', async (req, res) => { try { res.json({ device: await android.boot(String(req.body?.avd || '')) }); } catch (e) { res.status(400).json({ error: e.message }); } });
 
 // Who a given account ('local' = this computer's `claude login`, 'token' = the pasted
 // token) is, as reported by the CLI itself. Nothing secret leaves this function.
@@ -2249,6 +2277,11 @@ export function startServer({ host = HOST, port = PORT } = {}) {
           const q = new URL(req.url, 'http://x').searchParams;
           if ((!access.remoteAllowed() && !access.isLocal(req)) || !knownToken(q.get('token') || '')) return socket.destroy();
           return terminal.handleUpgrade(req, socket, head, { sessionId: q.get('session') || '', tabId: q.get('tab') || '' });
+        }
+        if (/^\/api\/(screen|android)\/ws$/.test((req.url || '').split('?')[0])) {
+          const q = new URL(req.url, 'http://x').searchParams;
+          if ((!access.remoteAllowed() && !access.isLocal(req)) || !knownToken(q.get('token') || '')) return socket.destroy();
+          return req.url.startsWith('/api/screen/') ? screen.handleUpgrade(req, socket, head) : android.handleUpgrade(req, socket, head, { serial: q.get('serial') || '' });
         }
         const hit = parsePreviewUrl((req.url || '').split('?')[0]);
         if (!hit) return;

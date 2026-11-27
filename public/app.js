@@ -167,7 +167,7 @@
     if (pane === 'about') paintAbout();
     if (pane === 'account') loadAccountPane();
     if (pane === 'computers') openComputers();
-    if (pane === 'remote') paintRemote();
+    if (pane === 'remote') { paintRemote(); paintScreenSettings(); }
     if (pane === 'notifications') paintNotifications();
     if (pane === 'connectors') { openConnectors(); paintVersion(); }
   }
@@ -2073,6 +2073,8 @@
     m.appendChild(item('Artifacts', 'Pages and documents Claude made, with their versions', artOpen, () => { m.classList.add('hidden'); openArtifacts(); }));
     m.appendChild(item('Browser', 'Dev servers and the project\'s pages and PDFs, here and on your phone', false, () => { m.classList.add('hidden'); openPreview(); }));
     m.appendChild(item('Terminal', 'PowerShell or your shell, right here', false, () => { m.classList.add('hidden'); toggleTerminal(); }, { hint: 'Ctrl+`' }));
+    m.appendChild(item('Remote desktop', 'This PC\'s screen, mouse and keyboard, when you need them', sdOpen && sd.src.startsWith('pc'), () => { m.classList.add('hidden'); openScreen('pc:1'); }));
+    m.appendChild(item('Android emulator', 'An emulator on this PC, to watch and use', sdOpen && sd.src.startsWith('android'), () => { m.classList.add('hidden'); openScreen('android:' + (sd.droid?.devices?.find((d) => d.state === 'device')?.serial || '')); }));
     // The rail itself is desktop-width only, but its cards (as a sheet) reach the phone from here.
     m.appendChild(item('Session rail', '', railOpen, () => { m.classList.add('hidden'); toggleRail(); }));
     // Session chapters: MarkChapter, or a message pinned from its own menu.
@@ -2717,6 +2719,8 @@
         case 'sent': return 'Sent';
         case 'chrome': { const l = soleCall && window.chromeLabel?.(names[0], inp); return l ? (l[0] + ' ' + l[1]).trim() : n === 1 ? 'Used Chrome' : 'Used Chrome ' + plural(n, 'time', 'times'); }
         case 'finished': return n === 1 ? 'Finished a background command' : 'Finished ' + plural(n, 'background command', 'background commands');
+        case 'computer': return 'Used your computer';
+        case 'device': return 'Used the device';
         default: return n === 1 ? 'Used a tool' : 'Used ' + plural(n, 'tool', 'tools');
       }
     };
@@ -5121,7 +5125,346 @@
     if (pv.active !== t || !t.frame) activate(t);
   }
 
-  // ---------- Files: a tree beside tabs, fuzzy find, edit in place, comments, Office previews ----------
+  // ---------- screen: this PC's remote desktop and the Android emulator, in one pane ----------
+  // lib/screen.mjs streams a display of the PC running the server, lib/android.mjs an emulator's
+  // screen: pictures down a websocket, pointer and keys back up, as the Browser pane does with its
+  // Chrome. Nothing runs on the PC until the pane opens, and closing it stops the pictures. The
+  // person asked for AnyDesk when they need it, not a desktop that is always being watched.
+  var sdOpen = false; // var: the other panes close this one through the observer below
+  const sd = { ws: null, src: 'pc:1', size: { w: 0, h: 0 }, status: null, droid: null, displays: [], touch: rvCoarse, stopped: false, seq: 0 };
+  const sdApple = /Mac|iPhone|iPad|iPod/.test(navigator.platform || '') || /iPhone|iPad/.test(navigator.userAgent);
+  // A group of computer-use steps reads as Desktop's does: "Used your computer", "Used the device".
+  for (const n of ['request_access', 'screenshot', 'zoom', 'left_click', 'right_click', 'middle_click', 'double_click', 'triple_click', 'mouse_move', 'left_click_drag', 'scroll', 'type', 'key', 'open_application', 'list_apps', 'switch_display', 'cursor_position', 'wait']) TOOL_KIND['mcp__claude-anywhere__' + n] = 'computer';
+  TOOL_KIND['mcp__claude-anywhere__android_control'] = 'device';
+  const SD_ICON = '<svg viewBox="0 0 20 20" width="17" height="17"><rect x="2.5" y="3.5" width="15" height="10" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M7 16.5h6M10 13.5v3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
+  const sdPanel = el('aside', 'tasks-panel sd-panel hidden'); sdPanel.id = 'sd-panel'; sdPanel.setAttribute('aria-label', 'Remote desktop');
+  sdPanel.innerHTML = `<div class="tp-head sd-head">
+      <span class="tp-title" id="sd-title">Remote desktop</span>
+      <select id="sd-source" class="sd-source" aria-label="What to show"></select>
+      <span id="sd-live" class="sd-live hidden">Live</span>
+      <span class="sb-spacer"></span>
+      <button id="sd-touch" class="icon-btn small" type="button" title="Touch mode: tap to click, two fingers to scroll" aria-label="Touch mode" aria-pressed="false"><svg viewBox="0 0 20 20" width="15" height="15"><path d="M8 10V4.5a1.5 1.5 0 0 1 3 0V9l3.6.7a1.8 1.8 0 0 1 1.4 2l-.6 4a1.5 1.5 0 0 1-1.5 1.3H9.3a1.5 1.5 0 0 1-1.2-.6L5 12.3a1.3 1.3 0 0 1 1.9-1.7z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button>
+      <button id="sd-kbd" class="icon-btn small" type="button" title="Keyboard" aria-label="Keyboard"><svg viewBox="0 0 20 20" width="15" height="15"><rect x="2.5" y="5" width="15" height="10" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5.5 8h1M8.5 8h1M11.5 8h1M14 8h.5M5.5 10.5h1M8.5 10.5h3M13.5 10.5h1M7 12.8h6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></button>
+      <button id="sd-keys" class="icon-btn small" type="button" title="Keys" aria-label="Keys"><svg viewBox="0 0 20 20" width="15" height="15"><circle cx="4" cy="10" r="1.4" fill="currentColor"/><circle cx="10" cy="10" r="1.4" fill="currentColor"/><circle cx="16" cy="10" r="1.4" fill="currentColor"/></svg></button>
+      <div id="sd-keys-menu" class="menu menu-top menu-end hidden"></div>
+      <button id="sd-close" class="icon-btn small" type="button" title="Close" aria-label="Close"><svg viewBox="0 0 20 20" width="15" height="15"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+    </div>
+    <div id="sd-note" class="pv-note muted small hidden"></div>
+    <div id="sd-stage" class="sd-stage"><img class="sd-img" alt="" draggable="false"><textarea class="rv-kbd sd-input" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" aria-label="Type on the remote screen"></textarea><div class="sd-card hidden"></div></div>`;
+  $('#files-panel').after(sdPanel);
+  const sdStage = $('#sd-stage'), sdImg = sdPanel.querySelector('.sd-img'), sdKbd = sdPanel.querySelector('.sd-input'), sdCard = sdPanel.querySelector('.sd-card'), sdNoteEl = $('#sd-note');
+  let sdNoteTimer = null;
+  const sdNote = (t) => { sdNoteEl.textContent = t; sdNoteEl.classList.remove('hidden'); clearTimeout(sdNoteTimer); sdNoteTimer = setTimeout(() => sdNoteEl.classList.add('hidden'), 6000); };
+  const sdPaneBtn = el('button', 'icon-btn'); sdPaneBtn.id = 'pane-screen-btn'; sdPaneBtn.type = 'button'; sdPaneBtn.title = 'Remote desktop'; sdPaneBtn.setAttribute('aria-label', 'Remote desktop'); sdPaneBtn.innerHTML = SD_ICON;
+  $('#pane-btns').appendChild(sdPaneBtn);
+  sdPaneBtn.addEventListener('click', () => (sdOpen ? closeScreen() : openScreen()));
+  // Another pane opening takes the place this one had.
+  new MutationObserver(() => { if (sdOpen && [...document.querySelectorAll('.tasks-panel')].some((p) => p !== sdPanel && !p.classList.contains('hidden') && !p.classList.contains('mini') && !p.classList.contains('rail-panel'))) closeScreen(); })
+    .observe(app, { subtree: true, attributes: true, attributeFilter: ['class'] });
+
+  async function openScreen(src) {
+    closeArtifacts();
+    if (tasksOpen) closeTasks(); if (previewOpen) closePreview(); if (filesOpen) closeFiles(); if (changesOpen) closeChanges(); if (terminalOpen) closeTerminal(); if (btwOpen) closeBtwPanel();
+    sdOpen = true; sdPanel.classList.remove('hidden'); app.classList.add('panel-open'); sdPaneBtn.classList.add('on');
+    if (src) sd.src = src;
+    sd.stopped = false;
+    await sdRefresh();
+    sdConnect();
+  }
+  function closeScreen() {
+    if (!sdOpen) return;
+    sdOpen = false; sdPanel.classList.add('hidden'); sdPaneBtn.classList.remove('on');
+    // Closed because another pane opened: that one is beside the chat now, and keeps its room.
+    if (![...document.querySelectorAll('.tasks-panel')].some((p) => !p.classList.contains('hidden') && !p.classList.contains('rail-panel') && !p.classList.contains('mini'))) app.classList.remove('panel-open');
+    sdDisconnect(); $('#sd-keys-menu').classList.add('hidden');
+  }
+  $('#sd-close').addEventListener('click', closeScreen);
+  // Claude attached to an emulator: the pane comes forward on it, as the Browser does for its tab.
+  function sdShow(ev) {
+    if (ev.source !== 'android') return;
+    const want = 'android:' + ev.serial;
+    if (sdOpen && sd.src === want) return;
+    openScreen(want);
+  }
+
+  async function sdRefresh() {
+    const [s, a] = await Promise.all([api('/screen/status').catch(() => null), api('/android/status').catch(() => null)]);
+    sd.status = s; sd.droid = a;
+    sdSources();
+  }
+  function sdSources() {
+    const sel = $('#sd-source'); sel.innerHTML = '';
+    const add = (value, label) => { const o = el('option', null, label); o.value = value; sel.appendChild(o); };
+    if (sd.displays.length) for (const d of sd.displays) add('pc:' + d.id, sd.displays.length > 1 ? 'This PC · ' + d.label : 'This PC');
+    else add('pc:1', 'This PC');
+    const devs = sd.droid?.devices?.filter((d) => d.state === 'device') || [];
+    for (const d of devs) add('android:' + d.serial, 'Android · ' + (d.avd || d.serial));
+    for (const avd of sd.droid?.avds || []) if (!devs.some((d) => d.avd === avd)) add('boot:' + avd, 'Android · start ' + avd);
+    if (!devs.length) add('android:', 'Android emulator');
+    if (![...sel.options].some((o) => o.value === sd.src)) sd.src = sd.src.startsWith('android') && devs[0] ? 'android:' + devs[0].serial : sd.src.startsWith('android') ? 'android:' : 'pc:1';
+    sel.value = sd.src;
+    $('#sd-title').textContent = sd.src.startsWith('pc') ? 'Remote desktop' : 'Android emulator';
+    paintSdButtons();
+  }
+  $('#sd-source').addEventListener('change', async (e) => {
+    const v = e.target.value;
+    if (v.startsWith('boot:')) return sdBoot(v.slice(5));
+    const samePc = v.startsWith('pc:') && sd.src.startsWith('pc:') && sd.ws;
+    sd.src = v; sdSources();
+    if (samePc) { sd.ws.send(JSON.stringify({ t: 'display', id: Number(v.slice(3)) })); return; }
+    sdConnect();
+  });
+  async function sdBoot(avd) {
+    sdDisconnect(); sdCardShow('Starting ' + avd + '…', 'Android takes a minute or two to boot the first time. Its window opens on the PC too.');
+    try { const r = await api('/android/boot', { method: 'POST', body: JSON.stringify({ avd }) }); sd.src = 'android:' + r.device.serial; } catch (x) { sdCardShow('Could not start ' + avd, x.message); return; }
+    await sdRefresh(); sdConnect();
+  }
+  function paintSdButtons() {
+    const t = $('#sd-touch'); t.classList.toggle('on', sd.touch); t.setAttribute('aria-pressed', String(sd.touch));
+  }
+  $('#sd-touch').addEventListener('click', () => { sd.touch = !sd.touch; paintSdButtons(); });
+  $('#sd-kbd').addEventListener('click', () => sdKbd.focus({ preventScroll: true }));
+
+  // What stands in the stage when there is no picture: off, not here, how to get an SDK.
+  function sdCardShow(title, body, actions) {
+    sdCard.innerHTML = ''; sdCard.classList.remove('hidden'); sdStage.classList.remove('live'); $('#sd-live').classList.add('hidden');
+    sdCard.appendChild(el('div', 'sd-card-title', title));
+    if (body) sdCard.appendChild(el('p', 'sd-card-body', body));
+    if (actions) sdCard.appendChild(actions);
+  }
+  function sdOffCard() {
+    const box = el('div', 'sd-card-actions');
+    let pw = null;
+    if (sd.status?.needsPassword) { pw = el('input', 'sd-pw'); pw.type = 'password'; pw.placeholder = 'App password'; pw.autocomplete = 'current-password'; box.appendChild(pw); }
+    const b = el('button', 'btn btn-primary', 'Allow remote desktop'); b.type = 'button';
+    const err = el('p', 'login-error'); err.hidden = true;
+    b.addEventListener('click', async () => {
+      b.disabled = true; err.hidden = true;
+      try { sd.status = await api('/screen/settings', { method: 'POST', body: JSON.stringify({ remoteDesktop: true, password: pw?.value || '' }) }); sdConnect(); }
+      catch (x) { err.hidden = false; err.textContent = x.message; b.disabled = false; }
+    });
+    pw?.addEventListener('keydown', (e) => { if (e.key === 'Enter') b.click(); });
+    box.appendChild(b); box.appendChild(err);
+    sdCardShow('Remote desktop is off', `Turn it on to see ${state.host || 'this PC'}'s screen here and use its mouse and keyboard, from this window or your phone. It runs only while this pane is open, and while it does, a banner on the PC says so — its Stop ends it at once.` + (sd.status?.needsPassword ? ' From another device, this asks for the app password.' : ''), box);
+  }
+
+  function sdDisconnect() {
+    const ws = sd.ws; sd.ws = null; sd.seq++;
+    if (ws) { ws.onclose = null; try { ws.close(); } catch {} }
+    sdStage.classList.remove('live'); $('#sd-live').classList.add('hidden');
+    const prev = sdImg.src; sdImg.removeAttribute('src'); if (prev.startsWith('blob:')) URL.revokeObjectURL(prev);
+  }
+  function sdConnect() {
+    sdDisconnect();
+    if (!sdOpen) return;
+    const android = sd.src.startsWith('android');
+    if (android && !sd.droid?.sdk) return sdCardShow('No Android SDK on this computer', sd.droid?.message || 'Install Android Studio and make a virtual device in its Device Manager, then open this again.');
+    if (android && sd.src === 'android:') {
+      const avds = sd.droid?.avds || [];
+      if (!avds.length) return sdCardShow('No virtual device yet', 'Make one in Android Studio\'s Device Manager, then open this again.');
+      const box = el('div', 'sd-card-actions');
+      for (const avd of avds) { const b = el('button', 'btn btn-ghost', 'Start ' + avd); b.type = 'button'; b.addEventListener('click', () => sdBoot(avd)); box.appendChild(b); }
+      return sdCardShow('No emulator is running', 'Start one of your virtual devices. Its window opens on the PC too.', box);
+    }
+    if (!android && sd.status && !sd.status.supported) return sdCardShow('Windows only for now', 'Remote desktop works when claude-anywhere runs on a Windows PC.');
+    if (!android && sd.status && !sd.status.remoteDesktop) return sdOffCard();
+    sdCardShow('Connecting…', '');
+    const seq = sd.seq;
+    const q = new URLSearchParams({ token: state.token || '', ...(android ? { serial: sd.src.slice(8) } : {}) });
+    const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + (android ? '/api/android/ws?' : '/api/screen/ws?') + q);
+    ws.binaryType = 'blob';
+    sd.ws = ws; sd.size = { w: 0, h: 0 };
+    ws.onopen = () => sdSize();
+    ws.onmessage = (e) => {
+      if (seq !== sd.seq) return;
+      if (typeof e.data !== 'string') {
+        // The previous picture's URL goes once the next is on screen: freed early, the pane flashes empty.
+        const next = URL.createObjectURL(e.data), prev = sdImg.src;
+        sdImg.onload = () => { if (prev.startsWith('blob:')) URL.revokeObjectURL(prev); };
+        sdImg.src = next;
+        if (!sdStage.classList.contains('live')) { sdStage.classList.add('live'); sdCard.classList.add('hidden'); $('#sd-live').classList.remove('hidden'); }
+        return;
+      }
+      let m; try { m = JSON.parse(e.data); } catch { return; }
+      if (m.t === 'displays') {
+        sd.displays = m.list || [];
+        // A new connection starts on the main display; the one picked before is asked for again.
+        const want = Number(sd.src.slice(3));
+        if (want && want !== m.id && sd.displays.some((d) => d.id === want)) sdSend({ t: 'display', id: want });
+        sdSources();
+      }
+      else if (m.t === 'size') { sd.size = { w: m.w, h: m.h }; sdStage.dataset.size = m.w + 'x' + m.h; }
+      else if (m.t === 'off') { if (sd.status) sd.status.remoteDesktop = false; sdOffCard(); }
+      else if (m.t === 'stopped') { sd.stopped = true; const b = el('button', 'btn btn-ghost', 'Connect again'); b.type = 'button'; b.addEventListener('click', sdConnect); const box = el('div', 'sd-card-actions'); box.appendChild(b); sdCardShow('Stopped on the PC', m.text || 'Someone at the PC pressed Stop on its banner.', box); }
+      else if (m.t === 'nosdk') sdCardShow('No Android SDK on this computer', m.text);
+      else if (m.t === 'error') sdCardShow('Could not connect', m.text);
+      else if (m.t === 'note') sdNote(m.text);
+    };
+    ws.onclose = () => { if (seq !== sd.seq || !sdOpen) return; if (!sdCard.classList.contains('hidden') && !/Connecting/.test(sdCard.textContent)) return; const b = el('button', 'btn btn-ghost', 'Connect again'); b.type = 'button'; b.addEventListener('click', sdConnect); const box = el('div', 'sd-card-actions'); box.appendChild(b); sdCardShow('Disconnected', 'The connection to the PC closed.', box); };
+  }
+  const sdSend = (m) => { if (sd.ws?.readyState === 1) sd.ws.send(JSON.stringify(m)); };
+  // The size the pane draws at, in device pixels: the PC sends nothing bigger.
+  function sdSize() {
+    const w = sdStage.clientWidth, h = sdStage.clientHeight;
+    if (!w || !h || document.visibilityState === 'hidden') return sdSend({ t: 'pause' });
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    sdSend({ t: 'size', w, h, pw: Math.round(w * dpr), ph: Math.round(h * dpr) });
+  }
+  new ResizeObserver(() => sdSize()).observe(sdStage);
+  document.addEventListener('visibilitychange', () => { if (sdOpen) sdSize(); });
+
+  // Where on the remote screen a point of the pane is: the picture is fitted, letterboxed.
+  const sdPt = (e) => {
+    const r = sdStage.getBoundingClientRect(), W = sd.size.w || r.width, H = sd.size.h || r.height;
+    const s = Math.min(r.width / W, r.height / H) || 1;
+    return { x: Math.round((e.clientX - r.left - (r.width - W * s) / 2) / s), y: Math.round((e.clientY - r.top - (r.height - H * s) / 2) / s), s };
+  };
+  const sdBtn = (b) => (b === 2 ? 'right' : b === 1 ? 'middle' : 'left');
+  // Touch mode: a tap is a click, a held finger a right-click, a finger that moves drags, and two
+  // fingers scroll. Off, a finger is the mouse itself.
+  const fingers = new Map();
+  let tg = null, moveRaf = 0, moveEv = null;
+  sdStage.addEventListener('pointerdown', (e) => {
+    if (e.target === sdKbd || !sdStage.classList.contains('live')) return;
+    e.preventDefault();
+    try { sdStage.setPointerCapture(e.pointerId); } catch {}
+    const p = sdPt(e);
+    if (e.pointerType === 'touch' && sd.touch && sd.src.startsWith('pc')) {
+      fingers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (fingers.size === 2) { if (tg?.dragging) sdSend({ t: 'mouse', type: 'up', button: 'left', ...sdPt(e) }); clearTimeout(tg?.hold); tg = { scroll: true, y: avgY(), x: avgX() }; return; }
+      if (fingers.size > 2) return;
+      tg = { x0: e.clientX, y0: e.clientY, p, at: Date.now(), moved: false, dragging: false };
+      tg.hold = setTimeout(() => { if (tg && !tg.moved && !tg.scroll) { tg.done = true; sdSend({ t: 'mouse', type: 'click', button: 'right', ...p }); if (navigator.vibrate) navigator.vibrate(10); } }, 600);
+      return;
+    }
+    if (e.pointerType !== 'touch') sdKbd.focus({ preventScroll: true });
+    sdSend({ t: 'mouse', type: 'down', button: sdBtn(e.button), ...p });
+  });
+  const avgY = () => [...fingers.values()].reduce((a, f) => a + f.y, 0) / fingers.size;
+  const avgX = () => [...fingers.values()].reduce((a, f) => a + f.x, 0) / fingers.size;
+  sdStage.addEventListener('pointermove', (e) => {
+    if (!sdStage.classList.contains('live')) return;
+    if (fingers.has(e.pointerId)) {
+      fingers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (!tg) return;
+      if (tg.scroll) {
+        if (fingers.size < 2) return;
+        const y = avgY(), x = avgX(), s = sdPt(e).s, p = sdPt({ clientX: x, clientY: y });
+        // Fingers going up push the page up: the wheel turns down.
+        const dy = (tg.y - y) / s, dx = (tg.x - x) / s;
+        if (Math.abs(dy) + Math.abs(dx) > 30) { sdSend({ t: 'wheel', x: p.x, y: p.y, dx, dy }); tg.y = y; tg.x = x; }
+        return;
+      }
+      if (!tg.moved && Math.hypot(e.clientX - tg.x0, e.clientY - tg.y0) > 10) { tg.moved = true; clearTimeout(tg.hold); tg.dragging = true; sdSend({ t: 'mouse', type: 'down', button: 'left', ...tg.p }); }
+      if (tg.dragging) { moveEv = e; if (!moveRaf) moveRaf = requestAnimationFrame(() => { moveRaf = 0; if (moveEv) sdSend({ t: 'mouse', type: 'move', ...sdPt(moveEv) }); }); }
+      return;
+    }
+    if (sd.src.startsWith('android')) return; // a phone screen has no pointer between touches
+    moveEv = e;
+    if (!moveRaf) moveRaf = requestAnimationFrame(() => { moveRaf = 0; if (moveEv) sdSend({ t: 'mouse', type: 'move', ...sdPt(moveEv) }); });
+  });
+  const sdUp = (e) => {
+    if (fingers.has(e.pointerId)) {
+      fingers.delete(e.pointerId);
+      if (!tg) return;
+      if (tg.scroll) { if (!fingers.size) tg = null; return; }
+      clearTimeout(tg.hold);
+      if (tg.dragging) sdSend({ t: 'mouse', type: 'up', button: 'left', ...sdPt(e) });
+      else if (!tg.done && e.type === 'pointerup') sdSend({ t: 'mouse', type: 'click', button: 'left', ...tg.p });
+      tg = null; return;
+    }
+    if (!sdStage.classList.contains('live')) return;
+    sdSend({ t: 'mouse', type: 'up', button: sdBtn(e.button), ...sdPt(e) });
+  };
+  sdStage.addEventListener('pointerup', sdUp); sdStage.addEventListener('pointercancel', sdUp);
+  sdStage.addEventListener('contextmenu', (e) => e.preventDefault()); // the PC's own right-click, not the page's
+  sdStage.addEventListener('wheel', (e) => {
+    if (!sdStage.classList.contains('live')) return;
+    e.preventDefault();
+    const k = e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? sdStage.clientHeight : 1, p = sdPt(e);
+    sdSend({ t: 'wheel', x: p.x, y: p.y, dx: e.deltaX * k, dy: e.deltaY * k });
+  }, { passive: false });
+
+  // Keys: where on the keyboard (code) for shortcuts, the characters themselves for typing. On a
+  // Mac or an iPhone, Cmd is the PC's Ctrl - Cmd+C copies there because Ctrl+C does here.
+  let sdComposing = false;
+  const sdKey = (e, type) => {
+    let code = e.code, ctrl = e.ctrlKey, meta = e.metaKey;
+    if (sdApple && /^Meta/.test(code)) code = code.replace('Meta', 'Control');
+    if (sdApple && meta) { ctrl = true; meta = false; }
+    const text = type === 'down' && e.key.length === 1 && !ctrl && !e.altKey && !meta ? e.key : '';
+    sdSend({ t: 'key', type, key: e.key, code, keyCode: e.keyCode, text, ctrl, alt: e.altKey, meta });
+  };
+  sdKbd.addEventListener('keydown', (e) => {
+    if (e.isComposing || sdComposing || e.key === 'Process' || e.key === 'Unidentified' || e.keyCode === 229) return;
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && /^[bk]$/i.test(e.key)) return; // the app's own pane shortcuts
+    if ((e.ctrlKey || e.metaKey) && /^v$/i.test(e.key)) return; // the paste event brings the text
+    e.preventDefault(); e.stopPropagation();
+    sdKey(e, 'down');
+  });
+  sdKbd.addEventListener('keyup', (e) => { if (e.key === 'Process' || e.key === 'Unidentified' || e.keyCode === 229) return; e.preventDefault(); e.stopPropagation(); sdKey(e, 'up'); });
+  // A phone's keyboard says what it typed through beforeinput, not keydown.
+  sdKbd.addEventListener('beforeinput', (e) => {
+    if (e.isComposing || e.inputType === 'insertCompositionText') return;
+    const press = (key, code, keyCode) => { sdSend({ t: 'key', type: 'down', key, code, keyCode }); sdSend({ t: 'key', type: 'up', key, code, keyCode }); };
+    if (e.inputType === 'insertText' || e.inputType === 'insertReplacementText') { e.preventDefault(); const s = e.data ?? e.dataTransfer?.getData('text/plain') ?? ''; if (s) sdSend({ t: 'text', text: s }); }
+    else if (e.inputType === 'insertLineBreak' || e.inputType === 'insertParagraph') { e.preventDefault(); press('Enter', 'Enter', 13); }
+    else if (e.inputType === 'deleteContentBackward') { e.preventDefault(); press('Backspace', 'Backspace', 8); }
+    else if (e.inputType === 'deleteContentForward') { e.preventDefault(); press('Delete', 'Delete', 46); }
+  });
+  sdKbd.addEventListener('compositionstart', () => { sdComposing = true; });
+  sdKbd.addEventListener('compositionend', (e) => { sdComposing = false; if (e.data) sdSend({ t: 'text', text: e.data }); sdKbd.value = ''; });
+  sdKbd.addEventListener('input', () => { if (!sdComposing) sdKbd.value = ''; });
+  sdKbd.addEventListener('paste', (e) => { e.preventDefault(); const s = e.clipboardData?.getData('text/plain'); if (s) sdSend({ t: 'text', text: s }); });
+
+  // The keys a browser keeps for itself, and the ones only a phone's buttons have.
+  menuFor('#sd-keys', '#sd-keys-menu', (m) => {
+    m.innerHTML = '';
+    const sp = (label, name, desc) => m.appendChild(item(label, desc || '', false, () => { m.classList.add('hidden'); sdSend({ t: 'special', name }); }));
+    if (sd.src.startsWith('android')) { sp('Back', 'back'); sp('Home', 'home'); sp('Recent apps', 'recents'); sp('Power', 'power'); sp('Volume up', 'volume_up'); sp('Volume down', 'volume_down'); return; }
+    sp('Windows key', 'win'); sp('Alt+Tab', 'alttab'); sp('Task Manager', 'taskmgr', 'Ctrl+Shift+Esc'); sp('Show desktop', 'showdesktop', 'Windows+D');
+    const cad = item('Ctrl+Alt+Del', 'Not possible from here', false, () => { m.classList.add('hidden'); sdNote(sd.status?.cad || 'Ctrl+Alt+Del cannot be sent: Windows takes it only from a keyboard at the PC itself.'); });
+    cad.classList.add('sd-cad'); m.appendChild(el('div', 'menu-sep')); m.appendChild(cad);
+  });
+
+  // ---- Settings › Remote access: the two switches, off until someone turns them on ----
+  const sdSet = el('div', 'ra-section sd-settings');
+  sdSet.innerHTML = `<div class="set-name">This PC's screen</div>
+    <div class="set-row"><div class="set-info"><div class="set-name">Allow remote desktop</div><div class="set-desc">See this PC's screen and use its mouse and keyboard from the Remote desktop pane — on this computer or your phone. It runs only while the pane is open, and a banner on the PC with a Stop says so.</div></div><div id="sd-set-rd"></div></div>
+    <div class="set-row"><div class="set-info"><div class="set-name">Let Claude use this PC</div><div class="set-desc">Computer use: Claude can take screenshots and use the mouse and keyboard. It asks before it touches each app — View only, Click only or Full control — and sees nothing of the apps you did not allow. Applies to sessions started after you turn it on.</div></div><div id="sd-set-cu"></div></div>
+    <input id="sd-set-pw" class="hidden" type="password" placeholder="App password, to turn these on from this device" autocomplete="current-password" />
+    <p id="sd-set-error" class="login-error" hidden></p>`;
+  $('.set-pane[data-pane="remote"]').appendChild(sdSet);
+  async function paintScreenSettings() {
+    let s; try { s = await api('/screen/status'); } catch { return; }
+    sd.status = s;
+    $('#sd-set-pw').classList.toggle('hidden', !s.needsPassword);
+    const err = $('#sd-set-error'); err.hidden = true;
+    const put = (id, key) => {
+      const box = $(id); box.innerHTML = '';
+      if (!s.supported) { box.appendChild(el('span', 'muted small', 'Windows only for now')); return; }
+      box.appendChild(toggleEl(s[key], async (on) => {
+        err.hidden = true;
+        try { sd.status = await api('/screen/settings', { method: 'POST', body: JSON.stringify({ [key]: on, password: $('#sd-set-pw').value }) }); }
+        catch (x) { err.hidden = false; err.textContent = x.message; if (x.status === 403) $('#sd-set-pw').focus(); throw x; }
+      }));
+    };
+    put('#sd-set-rd', 'remoteDesktop'); put('#sd-set-cu', 'computerUse');
+  }
+
+  // ---- the permission card, when Claude asks for an app: Desktop's computer-use prompt ----
+  function dressComputerAccess(card, ev) {
+    const a = ev.computerAccess, apps = a.apps || [];
+    card.classList.add('computer-access');
+    const head = card.querySelector('.permission-head span:last-child');
+    head.textContent = '';
+    head.append('Allow Claude to use ', el('b', 'perm-tool', apps.join(', ')), '?');
+    const what = { read: 'View only: it shows in Claude\'s screenshots.', click: 'Click only: Claude can see it, click and scroll in it.', full: 'Full control: Claude can see it, click, and type into it.' }[a.tier] || a.label;
+    card.querySelector('.perm-summary').textContent = what + (a.reason ? '\n' + a.reason : '') + '\nFor the rest of this session.';
+    card.querySelector('.perm-details')?.remove();
+    const allow = card.querySelector('[data-act="allow"]'); if (allow) allow.textContent = 'Allow for this session';
+  }
+
   // The server only opens paths under a folder some session has worked in, so this cannot
   // wander off into the rest of the disk; it still shows anything Claude can see — dotfiles
   // included, which the old folder-at-a-time browser (and the "Open folder" picker, which
@@ -6476,6 +6819,7 @@
         case 'secret_request': showSecretCard(ev); break;
         case 'terminal_focus': showTerminalTab(ev.tabId); break;
         case 'browser_show': rvShow(ev.tab); break;
+        case 'screen_show': sdShow(ev); break;
         case 'session_status': { const srow = state.sessions.find((x) => x.id === sessionId); if (srow) srow.status = { status: ev.status, note: ev.note }; renderSessions(); break; }
         // start_session's own card (renderSessionTool) is drawn from the transcript's tool_use
         // block already; this just refreshes the child id/status lookup once it exists.
@@ -6730,6 +7074,7 @@
       try { await api('/permissions/' + ev.reqId, { method: 'POST', body: JSON.stringify({ behavior: act === 'deny' ? 'deny' : 'allow', always: act === 'always' }) }); }
       catch (e) { t.querySelector('.perm-result').textContent = e.message; t.querySelector('.perm-result').classList.remove('hidden'); }
     }));
+    if (ev.computerAccess) dressComputerAccess(t, ev);
     thread.appendChild(t);
   }
   function resolvePermissionCard(reqId, behavior, how) {
@@ -7676,7 +8021,7 @@
     h.addEventListener('dblclick', () => { apply(0); try { localStorage.removeItem(store); } catch {} });
   }
   resizable($('#sidebar'), '--sidebar-w', { min: 220, max: () => Math.min(600, window.innerWidth / 2), side: 'start' });
-  for (const [node, key] of [[tasksPanel, '--tasks-w'], [changesPanel, '--changes-w'], [pvPanel, '--preview-w'], [fxPanel, '--files-w'], [termPanel, '--terminal-w']]) resizable(node, key, { min: 300, max: () => window.innerWidth - 560, side: 'end' });
+  for (const [node, key] of [[tasksPanel, '--tasks-w'], [changesPanel, '--changes-w'], [pvPanel, '--preview-w'], [fxPanel, '--files-w'], [termPanel, '--terminal-w'], [sdPanel, '--screen-w']]) resizable(node, key, { min: 300, max: () => window.innerWidth - 560, side: 'end' });
 
   // ---------- everything this app can do, by name ----------
   // Ctrl/Cmd+K. Commands first, then the sessions themselves, so the same box both
@@ -7703,6 +8048,7 @@
       { name: 'Artifacts', group: 'Session', run: () => (artOpen ? closeArtifacts() : openArtifacts()) },
       { name: 'Files', group: 'Session', run: () => (filesOpen ? closeFiles() : openFiles()) },
       { name: 'Browser', group: 'Session', hint: 'Ctrl+Shift+B', run: () => (previewOpen ? closePreview() : openPreview()) },
+      { name: 'Remote desktop', group: 'Session', run: () => (sdOpen ? closeScreen() : openScreen('pc:1')) },
       { name: 'Terminal', group: 'Session', hint: 'Ctrl+`', run: () => toggleTerminal() },
       { name: 'Tasks', group: 'Session', run: () => (tasksOpen ? closeTasks() : openTasks()) },
       { name: 'Worktrees', group: 'Session', run: () => showWorktrees(state.cwd) },
