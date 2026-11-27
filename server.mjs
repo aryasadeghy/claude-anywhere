@@ -28,6 +28,7 @@ import * as artifacts from './lib/artifacts.mjs';
 import { answerElicit } from './lib/tools-sessions.mjs';
 import * as runsMod from './lib/runs.mjs';
 import * as limitQueue from './lib/limit-queue.mjs';
+import * as chrome from './lib/chrome.mjs';
 import * as rewindStore from './lib/rewind.mjs';
 const execFileP = promisify(execFile);
 import { tailSession, isWorkingElsewhere, WORKING_WINDOW_MS, sessionFile } from './lib/tail.mjs';
@@ -1554,7 +1555,7 @@ function sessionSettings(id) {
     }
   } catch {}
   // Ultracode and Fast mode are remembered per session too; Ultracode was saved and never read back.
-  return { model: saved.model || model || '', permissionMode: saved.permissionMode || mode || '', effort: saved.effort ?? '', ultracode: !!saved.ultracode, ...(saved.fast !== undefined ? { fast: !!saved.fast } : {}) };
+  return { model: saved.model || model || '', permissionMode: saved.permissionMode || mode || '', effort: saved.effort ?? '', ultracode: !!saved.ultracode, ...(saved.fast !== undefined ? { fast: !!saved.fast } : {}), chrome: chrome.wanted(id) };
 }
 // The newest model and mode in bytes [from, to) of a transcript, a few MB at a time from the
 // end, stopping once both are found - prompt lines (the mode) are rare in a long transcript,
@@ -1639,7 +1640,10 @@ app.post('/api/sessions/:id/prefs', (req, res) => {
   const p = readPrefs(); p.sessionPrefs = p.sessionPrefs || {};
   const cur = p.sessionPrefs[req.params.id] || {};
   for (const k of ['model', 'permissionMode', 'effort', 'ultracode', 'fast']) if (req.body?.[k] !== undefined) cur[k] = req.body[k];
+  const chromeBefore = chrome.wanted(req.params.id);
+  if (req.body?.chrome !== undefined) cur.chrome = !!req.body.chrome;
   p.sessionPrefs[req.params.id] = cur; writePrefs(p);
+  closeIfChromeChanged(req.params.id, chromeBefore);
   res.json(cur);
 });
 
@@ -2030,6 +2034,25 @@ app.post('/api/claude-code/update', (_req, res) => {
   try { res.json(claudeCode.update()); } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
 app.post('/api/claude-code/bundled', (_req, res) => res.json(claudeCode.useBundled()));
+
+// ---------- Claude in Chrome ----------
+// Claude driving the person's own Chrome (lib/chrome.mjs). On by default for no one: a preference of
+// this computer, with a switch of its own per session (a session's wins), read when Claude Code starts.
+chrome.setPolicy((id) => { const p = readPrefs(); const own = id ? (p.sessionPrefs || {})[id]?.chrome : undefined; return own !== undefined ? own : !!p.chrome; });
+// `--chrome` is a launch flag: a process resting between turns still runs without it (or with it), so it
+// goes and the next message starts one that follows the choice. A turn in progress finishes as it began.
+function closeIfChromeChanged(id, before) { const r = runs.get(id); if (r && r.rest && !r.done && chrome.wanted(id) !== before) r.close(); }
+app.get('/api/chrome', async (_req, res, next) => { try { res.json({ enabled: !!readPrefs().chrome, ...(await chrome.status()) }); } catch (e) { next(e); } });
+app.post('/api/chrome', (req, res) => {
+  const p = readPrefs(); const before = new Map([...runs.keys()].map((id) => [id, chrome.wanted(id)]));
+  p.chrome = !!req.body?.enabled; writePrefs(p);
+  for (const [id, was] of before) closeIfChromeChanged(id, was);
+  res.json({ enabled: p.chrome });
+});
+// Registers the native host the way a session with Chrome on does (the person pressed Connect).
+app.post('/api/chrome/connect', async (_req, res) => {
+  try { res.json({ enabled: !!readPrefs().chrome, ...(await chrome.connect()) }); } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+});
 
 // "Check again" in the App panel: the hourly cache is fine for a banner, less so for
 // someone standing there having just merged a pull request.

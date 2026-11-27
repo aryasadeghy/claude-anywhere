@@ -7,6 +7,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Claude in Chrome.** Settings › General has "Use your Chrome" (off by default) and a card that says whether Chrome,
+  Anthropic's extension and the connection to Claude Code are in place, with Get the extension, Connect (registers the
+  native host the way the CLI does) and Check again. A session's menu has its own switch. When on, runs start Claude
+  Code with `--chrome`, Claude is told when to use your Chrome and when the Browser pane, and its calls read in the
+  transcript as "Opened mail.example.com", "Took a screenshot of the page", "Read the page".
+
 ## [0.14.3] — 2026-11-27
 
 ### Fixed

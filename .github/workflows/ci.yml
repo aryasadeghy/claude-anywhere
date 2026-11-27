@@ -56,7 +56,7 @@ jobs:
       matrix:
         include:
           - part: browser, history, settings
-            suites: browser history claude-code browser-real tasks
+            suites: browser history claude-code browser-real tasks chrome
           - part: turns and the box
             suites: realtime queue controls composer queue-controls layout routines app-voice
           - part: files, terminal, conversation
