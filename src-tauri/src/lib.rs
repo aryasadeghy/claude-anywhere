@@ -832,6 +832,8 @@ pub fn run() {
         .run(|app, event| {
             if let RunEvent::Exit = event {
                 stop_server(app);
+                #[cfg(windows)]
+                install_on_quit(app);
             }
         });
 }
@@ -1287,6 +1289,67 @@ fn stop_server(app: &AppHandle) {
             }
         }
     }
+}
+
+// Quitting with a release already downloaded installs it, as Claude Desktop does. The
+// server leaves `updates/ready.json` beside the installer it finished downloading; this
+// only acts on it when the server is gone or idle, because update.ps1 ends every process
+// in the install folder and a turn still running in an adopted server would die with it.
+#[cfg(windows)]
+fn install_on_quit(app: &AppHandle) {
+    use std::os::windows::process::CommandExt;
+    let Some(state) = app.try_state::<ServerState>() else {
+        return;
+    };
+    let Some(cfg) = state.spawn.as_ref() else {
+        return;
+    };
+    let busy = ureq::get(&format!("http://127.0.0.1:{}/api/runs", state.port))
+        .set("Authorization", &format!("Bearer {}", state.token))
+        .timeout(Duration::from_secs(2))
+        .call()
+        .ok()
+        .and_then(|r| r.into_json::<serde_json::Value>().ok())
+        .map(|v| v.as_array().map(|a| !a.is_empty()).unwrap_or(false))
+        .unwrap_or(false);
+    if busy {
+        return;
+    }
+    let updates = cfg.data_dir.join("data").join("updates");
+    let Some(ready) = fs::read_to_string(updates.join("ready.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+    else {
+        return;
+    };
+    let file = ready["file"].as_str().unwrap_or_default().to_string();
+    let version = ready["version"].as_str().unwrap_or_default();
+    let script = cfg.root.join("scripts").join("update.ps1");
+    // The same version again means a stale note from an install that already happened.
+    if file.is_empty()
+        || version == env!("CARGO_PKG_VERSION")
+        || !Path::new(&file).exists()
+        || !script.exists()
+    {
+        return;
+    }
+    let exe = std::env::current_exe()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let log = updates.join("install-on-quit.log");
+    let _ = Command::new("powershell.exe")
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+        .arg(&script)
+        .args(["-Installer", &file, "-Exe", &exe, "-Log"])
+        .arg(&log)
+        .args(["-NoRelaunch", "-Ready"])
+        .arg(updates.join("ready.json"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW: it has to outlive this process.
+        .creation_flags(0x0000_0008 | 0x0000_0200 | 0x0800_0000)
+        .spawn();
 }
 
 // ---------- window, tray, dialogs ----------

@@ -7,6 +7,56 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Relaunch to update, in the title bar, on every device.** A newer release is downloaded in the
+  background (resumable, size-checked, never run half-written) and a persistent button replaces the
+  dismissible banner. Its popover shows both versions and the notes, and offers Relaunch now
+  (Relaunch Claude? / Relaunch anyway when chats are working) or Relaunch when Claude is done, which
+  waits for no chat to be busy and can be cancelled.
+- **Quitting the app installs a downloaded update** (Windows).
+- **A server running from a git checkout updates too**: fast-forward to the release tag on main,
+  `npm install` when dependencies moved, restart; refused with a reason when off main, dirty or diverged.
+- **Claude in Chrome.** Settings › General has "Use your Chrome" (off by default) and a card that says whether Chrome,
+  Anthropic's extension and the connection to Claude Code are in place, with Get the extension, Connect (registers the
+  native host the way the CLI does) and Check again. A session's menu has its own switch. When on, runs start Claude
+  Code with `--chrome`, Claude is told when to use your Chrome and when the Browser pane, and its calls read in the
+  transcript as "Opened mail.example.com", "Took a screenshot of the page", "Read the page".
+- **Notifications on any device.** Settings › Notifications turns on Web Push for a browser or phone
+  (Chrome on a Mac, Android, Safari on an iPhone once the app is on the Home Screen): a push arrives
+  when a task finishes, when Claude has a question or needs your approval, and when a background task
+  ends - not on the device you are looking at. A click opens that session. Push needs https or
+  localhost, and the setting says so on plain http; a hidden tab there still gets the in-page
+  notification. The encryption (RFC 8291) and VAPID signing use `node:crypto`; no new dependency.
+  There is a "Send a test notification" button.
+- **An instant reply to a message sent while Claude works.** Desktop's aside: a small fast model answers
+  in a line or two, under your message, while the work carries on; Claude reads the message at its next
+  step and is told what the aside said. Nothing is shown if it fails or takes more than 8 seconds.
+  Settings › General › Quick replies while Claude works turns it off.
+- **Keyboard shortcuts** (Ctrl+/ or ⌘/, the command palette, the account menu): every shortcut the app
+  has, grouped and searchable.
+- **Stop on the Servers card** ends a dev server and what it started, found by its port (netstat on
+  Windows, lsof elsewhere), after asking. The app's own ports are refused. The card now lists servers on
+  a Mac or Linux machine too.
+- **Remote desktop, when you need it.** A Remote desktop pane (the pane buttons, the session menu, or
+  Ctrl+K) shows this PC's screen and drives its mouse and keyboard - from the PC itself or a phone,
+  where a tap is a click, two fingers scroll and a button brings up the keyboard. Several displays
+  each have their own entry; pictures come only when something changed, lighter when the link is
+  slow. Nothing runs until the pane opens, and closing it stops. It starts off: "Allow remote
+  desktop" (in the pane, or Settings > Remote access) turns it on, and from another device that asks
+  for the app password. Ctrl+Alt+Del cannot be sent, and the pane says so. Windows only for now.
+- **A banner on the PC while it is controlled.** "This PC is being controlled from claude-anywhere",
+  on top of everything, with a Stop that ends every remote view and Claude's control at once.
+- **Claude can use this PC (computer use).** With "Let Claude use this PC" on (off until you turn it
+  on), Claude has Desktop's computer-use tools: screenshot, zoom, clicks, drag, scroll, type, key,
+  open_application, list_apps, switch_display, wait. It asks per app with Desktop's tiers - View
+  only, Click only, Full control - through the normal permission card, and the answer holds for the
+  session; apps it was not given are painted over in its screenshots before they leave the PC.
+  A Stop in the chat or on the banner ends its control immediately.
+- **The Android emulator.** Where the Android SDK is on the PC, Claude can list virtual devices, boot
+  one, look at it, tap, swipe, type, press keys, install an APK and launch an app (android_control),
+  and the same pane shows the emulator. Without an SDK the pane says how to get one.
+
 ## [0.14.3] — 2026-11-27
 
 ### Fixed

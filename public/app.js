@@ -167,7 +167,8 @@
     if (pane === 'about') paintAbout();
     if (pane === 'account') loadAccountPane();
     if (pane === 'computers') openComputers();
-    if (pane === 'remote') paintRemote();
+    if (pane === 'remote') { paintRemote(); paintScreenSettings(); }
+    if (pane === 'notifications') paintNotifications();
     if (pane === 'connectors') { openConnectors(); paintVersion(); }
   }
   settingsModal.querySelectorAll('.set-tab').forEach((t) => t.addEventListener('click', () => openSettings(t.dataset.pane)));
@@ -420,6 +421,8 @@
     m.appendChild(item('Settings…', '', false, () => { m.classList.add('hidden'); openSettings('general'); }, { icon: "<svg viewBox=\"0 0 20 20\" width=\"15\" height=\"15\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.4\"><circle cx=\"10\" cy=\"10\" r=\"2.7\"/><path d=\"M10 1.9l1.1 2a6 6 0 0 1 1.7.7l2.2-.5 1.4 2.4-1.5 1.7a6 6 0 0 1 0 1.6l1.5 1.7-1.4 2.4-2.2-.5a6 6 0 0 1-1.7.7l-1.1 2h-2.8l-1.1-2a6 6 0 0 1-1.7-.7l-2.2.5-1.4-2.4 1.5-1.7a6 6 0 0 1 0-1.6L3.4 6.5l1.4-2.4 2.2.5a6 6 0 0 1 1.7-.7l1.1-2z\" stroke-linejoin=\"round\"/></svg>" }));
     m.appendChild(item('Which computer…', ($('#sidebar-host').textContent || '').split(' · ').slice(0, 2).join(' · '), false, () => { m.classList.add('hidden'); openSettings('computers'); }, { icon: "<svg viewBox=\"0 0 20 20\" width=\"15\" height=\"15\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\"><rect x=\"4\" y=\"4\" width=\"12\" height=\"8\" rx=\"1.4\"/><path d=\"M2.5 15h15\" stroke-linecap=\"round\"/></svg>" }));
     m.appendChild(item('Connectors & plugins…', '', false, () => { m.classList.add('hidden'); openSettings('connectors'); }, { icon: "<svg viewBox=\"0 0 20 20\" width=\"15\" height=\"15\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\"><path d=\"M7.5 3v4M12.5 3v4M5 7.5h10v2a5 5 0 0 1-5 5 5 5 0 0 1-5-5z\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/><path d=\"M10 14.5V18\" stroke-linecap=\"round\"/></svg>" }));
+    m.appendChild(item('Keyboard shortcuts', isMac ? '⌘/' : 'Ctrl+/', false, () => { m.classList.add('hidden'); openShortcuts(); }, { icon: "<svg viewBox=\"0 0 20 20\" width=\"15\" height=\"15\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\"><rect x=\"2.5\" y=\"5\" width=\"15\" height=\"10\" rx=\"1.6\"/><path d=\"M5.5 8h1M8.5 8h1M11.5 8h1M14 8h.5M6 12h8\" stroke-linecap=\"round\"/></svg>" }));
+    m.appendChild(item('Notifications…', '', false, () => { m.classList.add('hidden'); openSettings('notifications'); }, { icon: "<svg viewBox=\"0 0 20 20\" width=\"15\" height=\"15\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\"><path d=\"M5 14V9a5 5 0 0 1 10 0v5l1.5 1.5h-13z\" stroke-linejoin=\"round\"/><path d=\"M8.5 17.5a1.6 1.6 0 0 0 3 0\" stroke-linecap=\"round\"/></svg>" }));
     m.appendChild(el('div', 'menu-sep'));
     m.appendChild(item('Switch Claude account…', '', false, () => { m.classList.add('hidden'); openSettings('account'); }, { icon: "<svg viewBox=\"0 0 20 20\" width=\"15\" height=\"15\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\"><circle cx=\"10\" cy=\"7\" r=\"3\"/><path d=\"M3.8 16.5a6.4 6.4 0 0 1 12.4 0\" stroke-linecap=\"round\"/></svg>" }));
     m.appendChild(item('Keep this computer awake', (AWAKE.find((x) => x[0] === awakeMode) || AWAKE[0])[1], false, () => { m.classList.add('hidden'); setAwake(AWAKE[(AWAKE.findIndex((x) => x[0] === awakeMode) + 1) % AWAKE.length][0]); }, { icon: "<svg viewBox=\"0 0 20 20\" width=\"15\" height=\"15\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\"><path d=\"M2.4 10S5.2 5.6 10 5.6 17.6 10 17.6 10 14.8 14.4 10 14.4 2.4 10 2.4 10z\" stroke-linejoin=\"round\"/><circle cx=\"10\" cy=\"10\" r=\"2.1\"/></svg>" }));
@@ -442,7 +445,8 @@
       ? 'You have ' + v.version + (v.commit ? ' · ' + v.commit : '') + (v.update?.newer ? ' — ' + v.update.latest + ' is out' : ' — up to date')
       : 'Claude Anywhere updates itself from GitHub.';
     claudeCodeRow();
-    paintConvSettings();
+    paintChrome();
+    paintConvSettings(); paintAside();
     await paintOutputStyleDefault();
     paintEnvironmentsList();
   }
@@ -518,6 +522,65 @@
       try { paintClaudeCode(await ccApi(s.newer ? '/update' : '/check', { method: 'POST', body: '{}' })); }
       catch (e) { btn.disabled = false; btn.textContent = 'Try again'; desc.textContent = e.message; }
     };
+  }
+  // ---------- Claude in Chrome: Claude's tools in your own Chrome, and what this computer has ready ----------
+  // Three pieces have to be in place on the computer that runs Claude: a browser, Anthropic's extension in
+  // it, and the native host that links the extension to Claude Code (lib/chrome.mjs). The card says which
+  // are, and Connect registers the host - the one piece this app can do for you.
+  let chromeReason = ''; // why Chrome cannot be used under the account in use now, when it cannot
+  let chromeOn = false; // whether the open session starts Claude Code with Chrome (its own switch, else the setting)
+  const chromeApi = (p = '', opts) => api('/chrome' + p, opts).catch((e) => { if (e.status === 404) return null; throw e; });
+  function chromeMenuRow() {
+    const row = el('div', 'menu-item menu-switch'); row.title = 'Claude can use the tabs and sign-ins of your own Chrome';
+    row.appendChild(el('span', 'menu-label', 'Use your Chrome'));
+    row.appendChild(el('span', 'desc', 'Takes effect when Claude Code next starts for this session.'));
+    const sw = toggleEl(chromeOn, async (on) => { chromeOn = on; await api(`/sessions/${state.current}/prefs`, { method: 'POST', body: JSON.stringify({ chrome: on }) }); });
+    sw.setAttribute('aria-label', 'Use your Chrome'); row.appendChild(sw);
+    if (chromeReason) { row.classList.add('chrome-blocked'); row.querySelector('.desc').textContent = chromeReason; }
+    return row;
+  }
+  const CHROME_SAYS = {
+    unsupported: 'Claude in Chrome does not work where this computer runs Claude (under WSL).',
+    'no-browser': 'Chrome is not installed on this computer.',
+    'no-extension': 'The Claude extension is not in Chrome yet.',
+    'no-host': 'Chrome is not connected to Claude Code yet.',
+    stale: 'Chrome is connected to a Claude Code that is no longer there. Connect again.',
+    ready: 'Ready. Claude can use Chrome in new sessions.',
+  };
+  async function paintChrome() {
+    const card = $('#set-chrome-card'), sw = $('#set-chrome-switch'); if (!card) return;
+    let s;
+    try { s = await chromeApi(); } catch (e) { card.textContent = e.message; return; }
+    card.innerHTML = ''; sw.innerHTML = '';
+    if (!s) { card.textContent = 'Restart server to use Chrome from here.'; return; }
+    chromeOn = state.current ? chromeOn : s.enabled;
+    const t = toggleEl(s.enabled, async (on) => { await api('/chrome', { method: 'POST', body: JSON.stringify({ enabled: on }) }); });
+    t.setAttribute('aria-label', 'Use your Chrome (Claude in Chrome)'); sw.appendChild(t);
+    const here = s.browsers.filter((b) => b.found);
+    const line = (ok, label, detail) => { const r = el('div', 'chrome-line ' + (ok ? 'ok' : 'todo')); r.appendChild(el('span', 'chrome-dot')); r.appendChild(el('span', 'chrome-label', label)); if (detail) r.appendChild(el('span', 'chrome-detail', detail)); card.appendChild(r); };
+    line(here.length > 0, 'Chrome', here.length ? here.map((b) => b.name).join(', ') + ' on this computer' : 'Not found');
+    const ext = s.browsers.find((b) => b.extension);
+    line(!!ext, 'Claude extension', ext ? ext.name + (ext.profiles.length > 1 ? ' · ' + ext.profiles.length + ' profiles' : '') : 'Not installed');
+    const reg = s.browsers.find((b) => b.registered && b.found);
+    const dead = reg && !reg.targetExists;
+    line(s.host === 'ok', 'Connected to Claude Code', s.host === 'ok' ? reg.name : dead ? 'Points at a Claude Code that is gone' : s.host === 'stale' ? 'Needs repair' : 'Not connected');
+    chromeReason = s.account?.reason || '';
+    line(s.account?.ok !== false, 'Signed in for Chrome', s.account?.ok !== false ? "This computer's Claude login" : 'Not with this account');
+    if (!s.account?.ok) {
+      const why = el('div', 'chrome-says chrome-why', s.account.reason); card.appendChild(why);
+      const sw2 = el('button', 'btn btn-primary', 'Switch to This computer'); sw2.type = 'button';
+      sw2.addEventListener('click', async () => { sw2.disabled = true; try { await api('/accounts/active', { method: 'POST', body: JSON.stringify({ which: 'local' }) }); } catch (e) { why.textContent = e.message; } paintChrome(); });
+      card.appendChild(sw2);
+    } else card.appendChild(el('div', 'chrome-says', CHROME_SAYS[s.state] || ''));
+    const bar = el('div', 'chrome-actions');
+    const btn = (text, fn, primary) => { const b = el('button', 'btn ' + (primary ? 'btn-primary' : 'btn-ghost'), text); b.type = 'button'; b.addEventListener('click', fn); bar.appendChild(b); return b; };
+    if (s.state !== 'unsupported' && s.state !== 'no-browser') {
+      if (!s.extension) btn('Get the extension', () => openExternal(s.storeUrl), s.state === 'no-extension');
+      if (s.host !== 'ok') { const c = btn('Connect', async () => { c.disabled = true; c.textContent = 'Connecting…'; try { await chromeApi('/connect', { method: 'POST', body: '{}' }); } catch (e) { card.appendChild(el('div', 'note error', e.message)); } paintChrome(); }, s.extension); }
+    }
+    const again = btn('Check again', async () => { again.disabled = true; again.textContent = 'Checking…'; await paintChrome(); });
+    if (s.host === 'ok' || s.extension) bar.appendChild(el('span', 'chrome-hint', 'Chrome reads a new connection when it starts: restart it once if the extension does not answer.'));
+    card.appendChild(bar);
   }
   async function paintAbout() {
     const box = $('#set-about'); box.innerHTML = '';
@@ -1802,6 +1865,8 @@
     state.effort = s.effort || '';
     state.ultracode = !!s.ultracode;
     if (s.fast !== undefined) state.fast = !!s.fast;
+    if (s.chrome !== undefined) chromeOn = !!s.chrome;
+    chromeReason = s.chromeReason || '';
     renderModelChip(); renderModeChip(); renderEffortChip();
   }
   function restoreDeviceDefaults() {
@@ -2008,10 +2073,13 @@
     m.appendChild(item('Artifacts', 'Pages and documents Claude made, with their versions', artOpen, () => { m.classList.add('hidden'); openArtifacts(); }));
     m.appendChild(item('Browser', 'Dev servers and the project\'s pages and PDFs, here and on your phone', false, () => { m.classList.add('hidden'); openPreview(); }));
     m.appendChild(item('Terminal', 'PowerShell or your shell, right here', false, () => { m.classList.add('hidden'); toggleTerminal(); }, { hint: 'Ctrl+`' }));
+    m.appendChild(item('Remote desktop', 'This PC\'s screen, mouse and keyboard, when you need them', sdOpen && sd.src.startsWith('pc'), () => { m.classList.add('hidden'); openScreen('pc:1'); }));
+    m.appendChild(item('Android emulator', 'An emulator on this PC, to watch and use', sdOpen && sd.src.startsWith('android'), () => { m.classList.add('hidden'); openScreen('android:' + (sd.droid?.devices?.find((d) => d.state === 'device')?.serial || '')); }));
     // The rail itself is desktop-width only, but its cards (as a sheet) reach the phone from here.
     m.appendChild(item('Session rail', '', railOpen, () => { m.classList.add('hidden'); toggleRail(); }));
     // Session chapters: MarkChapter, or a message pinned from its own menu.
     m.appendChild(item('Chapters', chapters.length ? String(chapters.length) : 'None yet', false, (e) => { e.stopPropagation(); renderChaptersMenu(m); }));
+    m.appendChild(chromeMenuRow());
     m.appendChild(item('Transcript view', TRANSCRIPT_VIEWS.find((v) => v[0] === state.transcriptView)?.[1] || 'Normal', false, (e) => { e.stopPropagation(); renderTranscriptMenu(m); }));
     m.appendChild(item('Output style', schOutputStyleCurrent ? styleLabel(schOutputStyleCurrent) : 'Default', false, (e) => { e.stopPropagation(); renderOutputStyleMenu(m); }));
 
@@ -2175,23 +2243,6 @@
     return false;
   }
 
-  // Ask that computer to install it on itself — the half you cannot do by tapping
-  // Download, because the file belongs on a machine you are not sitting at.
-  async function installThere(hostName, btn) {
-    const log = $('#app-log'); log.classList.remove('hidden'); log.classList.remove('old');
-    log.textContent = 'Asking ' + hostName + ' to install it…';
-    if (btn) { btn.disabled = true; btn.textContent = 'Installing…'; }
-    try { await api('/update/install', { method: 'POST', body: JSON.stringify({}) }); }
-    catch (e) { log.textContent = e.message; if (btn) { btn.disabled = false; btn.textContent = 'Update ' + hostName; } return; }
-    // The window it is replacing may be this one; the log survives either way.
-    const poll = setInterval(async () => {
-      let j; try { j = await api('/update/install/log'); } catch { log.textContent += '\n(that computer is restarting…)'; return; }
-      log.textContent = j.text || 'Starting…';
-      log.scrollTop = log.scrollHeight;
-      if (j.done) { clearInterval(poll); if (btn) { btn.disabled = false; btn.textContent = 'Update ' + hostName; } setTimeout(() => location.reload(), 4000); }
-    }, 2000);
-  }
-
   // What this build is, and whether GitHub has a newer one. A released app has no
   // checkout to ask, so the version and the commit come from the shell that was built.
   function paintUpdate(v, checking) {
@@ -2207,12 +2258,12 @@
       const here = onThisComputer();
       // That computer: it can fetch and install its own file, which is the only way to
       // update a machine you are not sitting at.
-      if (u.newer && v.platform === 'win32') {
-        const name = v.host || 'that computer';
+      if (u.newer && updateAvailable()) {
+        // The same state as the title bar's button: this panel only points at it.
         const b = el('button', 'link-btn small strong'); b.type = 'button';
-        b.textContent = 'Update ' + name;
-        b.title = name + ' downloads it, closes the window, installs, and opens it again';
-        b.addEventListener('click', () => installThere(name, b));
+        b.textContent = updateButtonLabel(true);
+        b.title = (v.host || 'That computer') + ' downloads it in the background, then closes the window, installs, and opens it again';
+        b.addEventListener('click', () => { ctModal.classList.add('hidden'); openUpdatePop(); });
         box.appendChild(b);
       } else if (u.newer && u.download) {
         const b = el('button', 'link-btn small' + (here ? ' strong' : '')); b.type = 'button';
@@ -2336,27 +2387,21 @@
     const deviceOld = deviceApp && newerThanMine(u.latest, deviceApp.version);
     // A published release wins over the two development ones: a release is the app
     // everybody has, the others only mean this checkout is ahead of what is running.
-    const key = u.newer || deviceOld ? 'rel:' + u.latest : (v.shellStale && v.devBuild !== false ? 'shell:' + v.shellChanged.join(',') : '') + (v.stale ? 'srv:' + v.changed.join(',') : '');
+    const key = deviceOld ? 'rel:' + u.latest : (v.shellStale && v.devBuild !== false ? 'shell:' + v.shellChanged.join(',') : '') + (v.stale ? 'srv:' + v.changed.join(',') : '');
     if (!key || key === updateSnoozed) { bar.classList.add('hidden'); return; }
     bar.classList.remove('hidden');
     $('#ub-action').disabled = false; // the restart branch below disables it, and the banner outlives that reason
-    if (u.newer || deviceOld) {
+    if (deviceOld) {
       const mine = devicePlatform();
       const forMe = mine && u.downloads?.[mine];
       const here = onThisComputer();
       $('#ub-text').textContent = 'Claude Anywhere ' + u.latest + ' is available';
       $('#ub-detail').textContent = [
         deviceApp ? 'this app is ' + deviceApp.version : u.current && 'you have ' + u.current,
-        u.newer && !here && (v.host || 'that computer') + ' runs ' + (u.current || '?'),
         u.publishedAt && 'published ' + ago(u.publishedAt),
       ].filter(Boolean).join(' · ');
-      // The app in your hands comes first when it is the old one; otherwise the offer is
-      // to update the computer you are driving, which you cannot do by downloading here.
-      if (u.newer && v.platform === 'win32') {
-        const name = v.host || 'that computer';
-        $('#ub-action').textContent = 'Update ' + name;
-        $('#ub-action').onclick = () => { bar.classList.add('hidden'); openConnectors(); paintVersion(); installThere(name, null); };
-      } else if (deviceOld && forMe) {
+      // Only the app in your hands is old here; this computer's own update is the title bar's button.
+      if (forMe) {
         $('#ub-action').textContent = 'Download';
         $('#ub-action').onclick = () => openExternal(forMe.url);
       } else {
@@ -2379,6 +2424,126 @@
     $('#ub-close').onclick = () => { updateSnoozed = key; bar.classList.add('hidden'); };
   }
   setInterval(checkForUpdate, 30000); setTimeout(checkForUpdate, 3000);
+
+  // ---------- updates: "Relaunch to update" in the title bar ----------
+  // The server downloads a newer release by itself (lib/updater.mjs); this shows where that
+  // stands and is the one place that installs it. Not dismissible: Desktop's isn't, and
+  // three banners people closed is how a PC ended up a month behind.
+  let upd = null, updTimer = null, updConfirm = false, updPopOpen = false;
+  const updateAvailable = () => !!upd?.available;
+  const pct = (d) => (d?.total ? Math.min(99, Math.floor((d.got / d.total) * 100)) : 0);
+  const chats = (n) => n + (n === 1 ? ' chat' : ' chats');
+  function updateButtonLabel(plain) {
+    if (!upd?.available) return 'Relaunch to update';
+    if (upd.download?.state === 'downloading') return 'Downloading update… ' + pct(upd.download) + '%';
+    if (upd.waiting) return 'Waiting for ' + chats(upd.busy || 0) + '…';
+    return plain || upd.ready || upd.mode === 'installer' ? 'Relaunch to update' : 'Update available';
+  }
+  function paintUpdateBtn() {
+    const b = $('#update-btn');
+    b.classList.toggle('hidden', !upd?.available);
+    if (!upd?.available) return;
+    const downloading = upd.download?.state === 'downloading';
+    b.classList.toggle('busy', downloading || upd.waiting);
+    b.querySelector('.ub-long').textContent = updateButtonLabel();
+    b.querySelector('.ub-short').textContent = downloading ? pct(upd.download) + '%' : 'Update';
+    b.title = 'Update available to v' + upd.latest + '. You are currently on v' + upd.current + '.';
+  }
+  async function refreshUpdate() {
+    clearTimeout(updTimer);
+    try { upd = await api('/update/state'); } catch { /* the server may be restarting; keep what we know */ }
+    paintUpdateBtn();
+    if (updPopOpen) paintUpdatePop();
+    // Quick while something is moving, slow otherwise.
+    const moving = upd?.available && (upd.waiting || upd.download?.state === 'downloading' || (upd.action?.kind && !upd.action.done));
+    updTimer = setTimeout(refreshUpdate, moving || updPopOpen ? 1500 : 20000);
+  }
+  function closeUpdatePop() { updPopOpen = false; updConfirm = false; const p = $('#update-pop'); if (p) p.remove(); }
+  function openUpdatePop() {
+    if (!upd?.available) return;
+    if (updPopOpen) return closeUpdatePop();
+    updPopOpen = true; updConfirm = false;
+    const pop = el('div', 'update-pop'); pop.id = 'update-pop'; pop.setAttribute('role', 'dialog');
+    document.body.appendChild(pop);
+    paintUpdatePop();
+    setTimeout(() => document.addEventListener('pointerdown', outsideUpdatePop, true), 0);
+    refreshUpdate();
+  }
+  function outsideUpdatePop(e) {
+    const p = $('#update-pop');
+    if (!p) return document.removeEventListener('pointerdown', outsideUpdatePop, true);
+    if (p.contains(e.target) || $('#update-btn').contains(e.target)) return;
+    document.removeEventListener('pointerdown', outsideUpdatePop, true); closeUpdatePop();
+  }
+  function placeUpdatePop(pop) {
+    const r = $('#update-btn').getBoundingClientRect();
+    const w = Math.min(340, innerWidth - 20);
+    pop.style.top = Math.round(r.bottom + 8) + 'px';
+    pop.style.left = Math.max(10, Math.min(innerWidth - w - 10, r.right - w)) + 'px';
+  }
+  function paintUpdatePop() {
+    const pop = $('#update-pop'); if (!pop) return;
+    if (!upd?.available) return closeUpdatePop();
+    pop.innerHTML = '';
+    const act = upd.action || {};
+    const d = upd.download || {};
+    const running = act.kind && !act.done && !act.error;
+    const confirming = updConfirm && !upd.waiting && !running;
+    pop.appendChild(el('h4', '', confirming ? 'Relaunch Claude?' : 'Update available to v' + upd.latest + '.'));
+    pop.appendChild(el('div', 'up-sub', 'You are currently on v' + upd.current + '.'));
+    if (d.state === 'downloading') {
+      const bar = el('div', 'up-bar'); const i = el('i'); i.style.width = pct(d) + '%'; bar.appendChild(i); pop.appendChild(bar);
+      pop.appendChild(el('div', 'up-sub', 'Downloading in the background · ' + (d.total ? (d.got / 1048576).toFixed(1) + ' of ' + (d.total / 1048576).toFixed(1) + ' MB' : pct(d) + '%')));
+    } else if (d.state === 'error') pop.appendChild(el('div', 'up-warn', 'The download stopped: ' + d.error + ' It tries again in a few minutes.'));
+    if (upd.notes?.length) { const ul = el('ul'); upd.notes.forEach((n) => ul.appendChild(el('li', '', n))); pop.appendChild(ul); }
+    if (upd.url) { const l = el('button', 'up-link', 'Release notes'); l.type = 'button'; l.addEventListener('click', () => openExternal(upd.url)); pop.appendChild(l); }
+    if (upd.blocked) pop.appendChild(el('div', 'up-warn', upd.blocked));
+    if (act.error) pop.appendChild(el('div', 'up-warn', act.error));
+    else if (act.text && (running || act.done)) pop.appendChild(el('div', 'up-warn', act.text));
+    if (upd.waiting) pop.appendChild(el('div', 'up-warn', 'Waiting for ' + chats(upd.busy || 0) + ' to finish. It relaunches the moment nothing is working.'));
+    if (confirming) pop.appendChild(el('div', 'up-warn', (upd.busy === 1 ? '1 chat is' : (upd.busy || 'Some') + ' chats are') + ' still working. Relaunching stops ' + (upd.busy === 1 ? 'it' : 'them') + '.'));
+    const actions = el('div', 'up-actions'); pop.appendChild(actions);
+    const btn = (label, cls, fn, off) => { const b = el('button', cls, label); b.type = 'button'; b.disabled = !!off; b.addEventListener('click', fn); actions.appendChild(b); };
+    if (running) { /* nothing to press while it happens */ }
+    else if (upd.waiting) btn('Cancel', '', () => sendUpdate('cancel'));
+    else if (confirming) {
+      btn('Relaunch anyway', 'primary', () => sendUpdate('now', true));
+      btn('Cancel', '', () => { updConfirm = false; paintUpdatePop(); });
+    } else {
+      const off = !upd.ready;
+      btn('Relaunch now', 'primary', () => { if (upd.busy) { updConfirm = true; paintUpdatePop(); } else sendUpdate('now'); }, off);
+      btn('Relaunch when Claude is done', '', () => sendUpdate('idle'), off);
+    }
+    placeUpdatePop(pop);
+  }
+  async function sendUpdate(when, force) {
+    try {
+      upd = await api('/update/install', { method: 'POST', body: JSON.stringify({ when, force: !!force }) });
+    } catch (e) {
+      if (/Claude is working/.test(e.message)) { updConfirm = true; await refreshUpdate(); return; }
+      upd = { ...upd, action: { kind: 'x', text: '', error: e.message, done: true } };
+    }
+    updConfirm = false;
+    paintUpdateBtn(); paintUpdatePop();
+    if (when === 'now' && upd.action?.kind && !upd.action.error) followRelaunch();
+  }
+  // The window or the server goes away and comes back as the new version; follow it and reload.
+  let relaunchPoll = null;
+  function followRelaunch() {
+    if (relaunchPoll) return;
+    const t0 = lastVersion?.serverStartedAt;
+    let n = 0;
+    relaunchPoll = setInterval(async () => {
+      if (++n > 120) { clearInterval(relaunchPoll); relaunchPoll = null; return; }
+      try {
+        const r = await fetch('/api/version', { headers: { Authorization: 'Bearer ' + state.token }, cache: 'no-store' });
+        if (r.ok) { const v = await r.json(); if (t0 && v.serverStartedAt !== t0) { clearInterval(relaunchPoll); location.reload(); } }
+      } catch {}
+    }, 2000);
+  }
+  $('#update-btn').addEventListener('click', openUpdatePop);
+  window.addEventListener('resize', () => { const p = $('#update-pop'); if (p) placeUpdatePop(p); });
+  setTimeout(refreshUpdate, 2500);
   // Desktop keeps connectors in the composer's + menu; so do we, and the header stays clean.
   menuFor('#attach-btn', '#attach-menu', (m) => {
     m.innerHTML = '';
@@ -2515,6 +2680,7 @@
       case 'TodoWrite': return ['Updated the task list', ''];
       case 'Skill': return ['Used a skill', first(i.skill)];
     }
+    const chromeStep = window.chromeLabel?.(name, i); if (chromeStep) return chromeStep;
     const mcp = /^mcp__(.+?)__(.+)$/.exec(name || '');
     if (mcp) return ['Used', mcp[1].replace(/^claude_ai_/, '').replace(/_/g, ' ') + ': ' + mcp[2]];
     return [name, toolSummary(name, i)];
@@ -2528,7 +2694,7 @@
   function groupLabel(names, inputs = [], outcome = {}) {
     const order = []; const c = {}; const failed = {}; const stopped = {}; const one = {};
     names.forEach((n, i) => {
-      const k = TOOL_KIND[n] || 'tool'; // a connector's SendUserFile is "used a tool", as Desktop counts it
+      const k = TOOL_KIND[n] || (/^mcp__claude-in-chrome__/.test(n) ? 'chrome' : 'tool'); // a connector's SendUserFile is "used a tool", as Desktop counts it
       if (!c[k]) { c[k] = 0; failed[k] = 0; stopped[k] = 0; order.push(k); one[k] = i; }
       c[k]++;
       if (outcome[i] === 'failed') failed[k]++; else if (outcome[i] === 'stopped') stopped[k]++;
@@ -2551,7 +2717,10 @@
         case 'search': return 'Searched ' + plural(n, 'time', 'times');
         case 'agent': return 'Ran ' + plural(n, 'agent', 'agents');
         case 'sent': return 'Sent';
+        case 'chrome': { const l = soleCall && window.chromeLabel?.(names[0], inp); return l ? (l[0] + ' ' + l[1]).trim() : n === 1 ? 'Used Chrome' : 'Used Chrome ' + plural(n, 'time', 'times'); }
         case 'finished': return n === 1 ? 'Finished a background command' : 'Finished ' + plural(n, 'background command', 'background commands');
+        case 'computer': return 'Used your computer';
+        case 'device': return 'Used the device';
         default: return n === 1 ? 'Used a tool' : 'Used ' + plural(n, 'tool', 'tools');
       }
     };
@@ -4268,6 +4437,9 @@
         const open = el('button', 'link-btn small', 'Open'); open.type = 'button';
         open.addEventListener('click', async () => { await openPreview(); go(pv.active || addTab(), { kind: 'server', port: p.port, path: '/' }); });
         row.appendChild(open);
+        const stopBtn = el('button', 'link-btn small danger rail-stop', 'Stop'); stopBtn.type = 'button'; stopBtn.title = 'Stop this server and what it started';
+        stopBtn.addEventListener('click', () => stopServer(p, row));
+        row.appendChild(stopBtn);
         c.appendChild(row);
       }
     }));
@@ -4953,7 +5125,346 @@
     if (pv.active !== t || !t.frame) activate(t);
   }
 
-  // ---------- Files: a tree beside tabs, fuzzy find, edit in place, comments, Office previews ----------
+  // ---------- screen: this PC's remote desktop and the Android emulator, in one pane ----------
+  // lib/screen.mjs streams a display of the PC running the server, lib/android.mjs an emulator's
+  // screen: pictures down a websocket, pointer and keys back up, as the Browser pane does with its
+  // Chrome. Nothing runs on the PC until the pane opens, and closing it stops the pictures. The
+  // person asked for AnyDesk when they need it, not a desktop that is always being watched.
+  var sdOpen = false; // var: the other panes close this one through the observer below
+  const sd = { ws: null, src: 'pc:1', size: { w: 0, h: 0 }, status: null, droid: null, displays: [], touch: rvCoarse, stopped: false, seq: 0 };
+  const sdApple = /Mac|iPhone|iPad|iPod/.test(navigator.platform || '') || /iPhone|iPad/.test(navigator.userAgent);
+  // A group of computer-use steps reads as Desktop's does: "Used your computer", "Used the device".
+  for (const n of ['request_access', 'screenshot', 'zoom', 'left_click', 'right_click', 'middle_click', 'double_click', 'triple_click', 'mouse_move', 'left_click_drag', 'scroll', 'type', 'key', 'open_application', 'list_apps', 'switch_display', 'cursor_position', 'wait']) TOOL_KIND['mcp__claude-anywhere__' + n] = 'computer';
+  TOOL_KIND['mcp__claude-anywhere__android_control'] = 'device';
+  const SD_ICON = '<svg viewBox="0 0 20 20" width="17" height="17"><rect x="2.5" y="3.5" width="15" height="10" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M7 16.5h6M10 13.5v3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
+  const sdPanel = el('aside', 'tasks-panel sd-panel hidden'); sdPanel.id = 'sd-panel'; sdPanel.setAttribute('aria-label', 'Remote desktop');
+  sdPanel.innerHTML = `<div class="tp-head sd-head">
+      <span class="tp-title" id="sd-title">Remote desktop</span>
+      <select id="sd-source" class="sd-source" aria-label="What to show"></select>
+      <span id="sd-live" class="sd-live hidden">Live</span>
+      <span class="sb-spacer"></span>
+      <button id="sd-touch" class="icon-btn small" type="button" title="Touch mode: tap to click, two fingers to scroll" aria-label="Touch mode" aria-pressed="false"><svg viewBox="0 0 20 20" width="15" height="15"><path d="M8 10V4.5a1.5 1.5 0 0 1 3 0V9l3.6.7a1.8 1.8 0 0 1 1.4 2l-.6 4a1.5 1.5 0 0 1-1.5 1.3H9.3a1.5 1.5 0 0 1-1.2-.6L5 12.3a1.3 1.3 0 0 1 1.9-1.7z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button>
+      <button id="sd-kbd" class="icon-btn small" type="button" title="Keyboard" aria-label="Keyboard"><svg viewBox="0 0 20 20" width="15" height="15"><rect x="2.5" y="5" width="15" height="10" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5.5 8h1M8.5 8h1M11.5 8h1M14 8h.5M5.5 10.5h1M8.5 10.5h3M13.5 10.5h1M7 12.8h6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></button>
+      <button id="sd-keys" class="icon-btn small" type="button" title="Keys" aria-label="Keys"><svg viewBox="0 0 20 20" width="15" height="15"><circle cx="4" cy="10" r="1.4" fill="currentColor"/><circle cx="10" cy="10" r="1.4" fill="currentColor"/><circle cx="16" cy="10" r="1.4" fill="currentColor"/></svg></button>
+      <div id="sd-keys-menu" class="menu menu-top menu-end hidden"></div>
+      <button id="sd-close" class="icon-btn small" type="button" title="Close" aria-label="Close"><svg viewBox="0 0 20 20" width="15" height="15"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+    </div>
+    <div id="sd-note" class="pv-note muted small hidden"></div>
+    <div id="sd-stage" class="sd-stage"><img class="sd-img" alt="" draggable="false"><textarea class="rv-kbd sd-input" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" aria-label="Type on the remote screen"></textarea><div class="sd-card hidden"></div></div>`;
+  $('#files-panel').after(sdPanel);
+  const sdStage = $('#sd-stage'), sdImg = sdPanel.querySelector('.sd-img'), sdKbd = sdPanel.querySelector('.sd-input'), sdCard = sdPanel.querySelector('.sd-card'), sdNoteEl = $('#sd-note');
+  let sdNoteTimer = null;
+  const sdNote = (t) => { sdNoteEl.textContent = t; sdNoteEl.classList.remove('hidden'); clearTimeout(sdNoteTimer); sdNoteTimer = setTimeout(() => sdNoteEl.classList.add('hidden'), 6000); };
+  const sdPaneBtn = el('button', 'icon-btn'); sdPaneBtn.id = 'pane-screen-btn'; sdPaneBtn.type = 'button'; sdPaneBtn.title = 'Remote desktop'; sdPaneBtn.setAttribute('aria-label', 'Remote desktop'); sdPaneBtn.innerHTML = SD_ICON;
+  $('#pane-btns').appendChild(sdPaneBtn);
+  sdPaneBtn.addEventListener('click', () => (sdOpen ? closeScreen() : openScreen()));
+  // Another pane opening takes the place this one had.
+  new MutationObserver(() => { if (sdOpen && [...document.querySelectorAll('.tasks-panel')].some((p) => p !== sdPanel && !p.classList.contains('hidden') && !p.classList.contains('mini') && !p.classList.contains('rail-panel'))) closeScreen(); })
+    .observe(app, { subtree: true, attributes: true, attributeFilter: ['class'] });
+
+  async function openScreen(src) {
+    closeArtifacts();
+    if (tasksOpen) closeTasks(); if (previewOpen) closePreview(); if (filesOpen) closeFiles(); if (changesOpen) closeChanges(); if (terminalOpen) closeTerminal(); if (btwOpen) closeBtwPanel();
+    sdOpen = true; sdPanel.classList.remove('hidden'); app.classList.add('panel-open'); sdPaneBtn.classList.add('on');
+    if (src) sd.src = src;
+    sd.stopped = false;
+    await sdRefresh();
+    sdConnect();
+  }
+  function closeScreen() {
+    if (!sdOpen) return;
+    sdOpen = false; sdPanel.classList.add('hidden'); sdPaneBtn.classList.remove('on');
+    // Closed because another pane opened: that one is beside the chat now, and keeps its room.
+    if (![...document.querySelectorAll('.tasks-panel')].some((p) => !p.classList.contains('hidden') && !p.classList.contains('rail-panel') && !p.classList.contains('mini'))) app.classList.remove('panel-open');
+    sdDisconnect(); $('#sd-keys-menu').classList.add('hidden');
+  }
+  $('#sd-close').addEventListener('click', closeScreen);
+  // Claude attached to an emulator: the pane comes forward on it, as the Browser does for its tab.
+  function sdShow(ev) {
+    if (ev.source !== 'android') return;
+    const want = 'android:' + ev.serial;
+    if (sdOpen && sd.src === want) return;
+    openScreen(want);
+  }
+
+  async function sdRefresh() {
+    const [s, a] = await Promise.all([api('/screen/status').catch(() => null), api('/android/status').catch(() => null)]);
+    sd.status = s; sd.droid = a;
+    sdSources();
+  }
+  function sdSources() {
+    const sel = $('#sd-source'); sel.innerHTML = '';
+    const add = (value, label) => { const o = el('option', null, label); o.value = value; sel.appendChild(o); };
+    if (sd.displays.length) for (const d of sd.displays) add('pc:' + d.id, sd.displays.length > 1 ? 'This PC · ' + d.label : 'This PC');
+    else add('pc:1', 'This PC');
+    const devs = sd.droid?.devices?.filter((d) => d.state === 'device') || [];
+    for (const d of devs) add('android:' + d.serial, 'Android · ' + (d.avd || d.serial));
+    for (const avd of sd.droid?.avds || []) if (!devs.some((d) => d.avd === avd)) add('boot:' + avd, 'Android · start ' + avd);
+    if (!devs.length) add('android:', 'Android emulator');
+    if (![...sel.options].some((o) => o.value === sd.src)) sd.src = sd.src.startsWith('android') && devs[0] ? 'android:' + devs[0].serial : sd.src.startsWith('android') ? 'android:' : 'pc:1';
+    sel.value = sd.src;
+    $('#sd-title').textContent = sd.src.startsWith('pc') ? 'Remote desktop' : 'Android emulator';
+    paintSdButtons();
+  }
+  $('#sd-source').addEventListener('change', async (e) => {
+    const v = e.target.value;
+    if (v.startsWith('boot:')) return sdBoot(v.slice(5));
+    const samePc = v.startsWith('pc:') && sd.src.startsWith('pc:') && sd.ws;
+    sd.src = v; sdSources();
+    if (samePc) { sd.ws.send(JSON.stringify({ t: 'display', id: Number(v.slice(3)) })); return; }
+    sdConnect();
+  });
+  async function sdBoot(avd) {
+    sdDisconnect(); sdCardShow('Starting ' + avd + '…', 'Android takes a minute or two to boot the first time. Its window opens on the PC too.');
+    try { const r = await api('/android/boot', { method: 'POST', body: JSON.stringify({ avd }) }); sd.src = 'android:' + r.device.serial; } catch (x) { sdCardShow('Could not start ' + avd, x.message); return; }
+    await sdRefresh(); sdConnect();
+  }
+  function paintSdButtons() {
+    const t = $('#sd-touch'); t.classList.toggle('on', sd.touch); t.setAttribute('aria-pressed', String(sd.touch));
+  }
+  $('#sd-touch').addEventListener('click', () => { sd.touch = !sd.touch; paintSdButtons(); });
+  $('#sd-kbd').addEventListener('click', () => sdKbd.focus({ preventScroll: true }));
+
+  // What stands in the stage when there is no picture: off, not here, how to get an SDK.
+  function sdCardShow(title, body, actions) {
+    sdCard.innerHTML = ''; sdCard.classList.remove('hidden'); sdStage.classList.remove('live'); $('#sd-live').classList.add('hidden');
+    sdCard.appendChild(el('div', 'sd-card-title', title));
+    if (body) sdCard.appendChild(el('p', 'sd-card-body', body));
+    if (actions) sdCard.appendChild(actions);
+  }
+  function sdOffCard() {
+    const box = el('div', 'sd-card-actions');
+    let pw = null;
+    if (sd.status?.needsPassword) { pw = el('input', 'sd-pw'); pw.type = 'password'; pw.placeholder = 'App password'; pw.autocomplete = 'current-password'; box.appendChild(pw); }
+    const b = el('button', 'btn btn-primary', 'Allow remote desktop'); b.type = 'button';
+    const err = el('p', 'login-error'); err.hidden = true;
+    b.addEventListener('click', async () => {
+      b.disabled = true; err.hidden = true;
+      try { sd.status = await api('/screen/settings', { method: 'POST', body: JSON.stringify({ remoteDesktop: true, password: pw?.value || '' }) }); sdConnect(); }
+      catch (x) { err.hidden = false; err.textContent = x.message; b.disabled = false; }
+    });
+    pw?.addEventListener('keydown', (e) => { if (e.key === 'Enter') b.click(); });
+    box.appendChild(b); box.appendChild(err);
+    sdCardShow('Remote desktop is off', `Turn it on to see ${state.host || 'this PC'}'s screen here and use its mouse and keyboard, from this window or your phone. It runs only while this pane is open, and while it does, a banner on the PC says so — its Stop ends it at once.` + (sd.status?.needsPassword ? ' From another device, this asks for the app password.' : ''), box);
+  }
+
+  function sdDisconnect() {
+    const ws = sd.ws; sd.ws = null; sd.seq++;
+    if (ws) { ws.onclose = null; try { ws.close(); } catch {} }
+    sdStage.classList.remove('live'); $('#sd-live').classList.add('hidden');
+    const prev = sdImg.src; sdImg.removeAttribute('src'); if (prev.startsWith('blob:')) URL.revokeObjectURL(prev);
+  }
+  function sdConnect() {
+    sdDisconnect();
+    if (!sdOpen) return;
+    const android = sd.src.startsWith('android');
+    if (android && !sd.droid?.sdk) return sdCardShow('No Android SDK on this computer', sd.droid?.message || 'Install Android Studio and make a virtual device in its Device Manager, then open this again.');
+    if (android && sd.src === 'android:') {
+      const avds = sd.droid?.avds || [];
+      if (!avds.length) return sdCardShow('No virtual device yet', 'Make one in Android Studio\'s Device Manager, then open this again.');
+      const box = el('div', 'sd-card-actions');
+      for (const avd of avds) { const b = el('button', 'btn btn-ghost', 'Start ' + avd); b.type = 'button'; b.addEventListener('click', () => sdBoot(avd)); box.appendChild(b); }
+      return sdCardShow('No emulator is running', 'Start one of your virtual devices. Its window opens on the PC too.', box);
+    }
+    if (!android && sd.status && !sd.status.supported) return sdCardShow('Windows only for now', 'Remote desktop works when claude-anywhere runs on a Windows PC.');
+    if (!android && sd.status && !sd.status.remoteDesktop) return sdOffCard();
+    sdCardShow('Connecting…', '');
+    const seq = sd.seq;
+    const q = new URLSearchParams({ token: state.token || '', ...(android ? { serial: sd.src.slice(8) } : {}) });
+    const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + (android ? '/api/android/ws?' : '/api/screen/ws?') + q);
+    ws.binaryType = 'blob';
+    sd.ws = ws; sd.size = { w: 0, h: 0 };
+    ws.onopen = () => sdSize();
+    ws.onmessage = (e) => {
+      if (seq !== sd.seq) return;
+      if (typeof e.data !== 'string') {
+        // The previous picture's URL goes once the next is on screen: freed early, the pane flashes empty.
+        const next = URL.createObjectURL(e.data), prev = sdImg.src;
+        sdImg.onload = () => { if (prev.startsWith('blob:')) URL.revokeObjectURL(prev); };
+        sdImg.src = next;
+        if (!sdStage.classList.contains('live')) { sdStage.classList.add('live'); sdCard.classList.add('hidden'); $('#sd-live').classList.remove('hidden'); }
+        return;
+      }
+      let m; try { m = JSON.parse(e.data); } catch { return; }
+      if (m.t === 'displays') {
+        sd.displays = m.list || [];
+        // A new connection starts on the main display; the one picked before is asked for again.
+        const want = Number(sd.src.slice(3));
+        if (want && want !== m.id && sd.displays.some((d) => d.id === want)) sdSend({ t: 'display', id: want });
+        sdSources();
+      }
+      else if (m.t === 'size') { sd.size = { w: m.w, h: m.h }; sdStage.dataset.size = m.w + 'x' + m.h; }
+      else if (m.t === 'off') { if (sd.status) sd.status.remoteDesktop = false; sdOffCard(); }
+      else if (m.t === 'stopped') { sd.stopped = true; const b = el('button', 'btn btn-ghost', 'Connect again'); b.type = 'button'; b.addEventListener('click', sdConnect); const box = el('div', 'sd-card-actions'); box.appendChild(b); sdCardShow('Stopped on the PC', m.text || 'Someone at the PC pressed Stop on its banner.', box); }
+      else if (m.t === 'nosdk') sdCardShow('No Android SDK on this computer', m.text);
+      else if (m.t === 'error') sdCardShow('Could not connect', m.text);
+      else if (m.t === 'note') sdNote(m.text);
+    };
+    ws.onclose = () => { if (seq !== sd.seq || !sdOpen) return; if (!sdCard.classList.contains('hidden') && !/Connecting/.test(sdCard.textContent)) return; const b = el('button', 'btn btn-ghost', 'Connect again'); b.type = 'button'; b.addEventListener('click', sdConnect); const box = el('div', 'sd-card-actions'); box.appendChild(b); sdCardShow('Disconnected', 'The connection to the PC closed.', box); };
+  }
+  const sdSend = (m) => { if (sd.ws?.readyState === 1) sd.ws.send(JSON.stringify(m)); };
+  // The size the pane draws at, in device pixels: the PC sends nothing bigger.
+  function sdSize() {
+    const w = sdStage.clientWidth, h = sdStage.clientHeight;
+    if (!w || !h || document.visibilityState === 'hidden') return sdSend({ t: 'pause' });
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    sdSend({ t: 'size', w, h, pw: Math.round(w * dpr), ph: Math.round(h * dpr) });
+  }
+  new ResizeObserver(() => sdSize()).observe(sdStage);
+  document.addEventListener('visibilitychange', () => { if (sdOpen) sdSize(); });
+
+  // Where on the remote screen a point of the pane is: the picture is fitted, letterboxed.
+  const sdPt = (e) => {
+    const r = sdStage.getBoundingClientRect(), W = sd.size.w || r.width, H = sd.size.h || r.height;
+    const s = Math.min(r.width / W, r.height / H) || 1;
+    return { x: Math.round((e.clientX - r.left - (r.width - W * s) / 2) / s), y: Math.round((e.clientY - r.top - (r.height - H * s) / 2) / s), s };
+  };
+  const sdBtn = (b) => (b === 2 ? 'right' : b === 1 ? 'middle' : 'left');
+  // Touch mode: a tap is a click, a held finger a right-click, a finger that moves drags, and two
+  // fingers scroll. Off, a finger is the mouse itself.
+  const fingers = new Map();
+  let tg = null, moveRaf = 0, moveEv = null;
+  sdStage.addEventListener('pointerdown', (e) => {
+    if (e.target === sdKbd || !sdStage.classList.contains('live')) return;
+    e.preventDefault();
+    try { sdStage.setPointerCapture(e.pointerId); } catch {}
+    const p = sdPt(e);
+    if (e.pointerType === 'touch' && sd.touch && sd.src.startsWith('pc')) {
+      fingers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (fingers.size === 2) { if (tg?.dragging) sdSend({ t: 'mouse', type: 'up', button: 'left', ...sdPt(e) }); clearTimeout(tg?.hold); tg = { scroll: true, y: avgY(), x: avgX() }; return; }
+      if (fingers.size > 2) return;
+      tg = { x0: e.clientX, y0: e.clientY, p, at: Date.now(), moved: false, dragging: false };
+      tg.hold = setTimeout(() => { if (tg && !tg.moved && !tg.scroll) { tg.done = true; sdSend({ t: 'mouse', type: 'click', button: 'right', ...p }); if (navigator.vibrate) navigator.vibrate(10); } }, 600);
+      return;
+    }
+    if (e.pointerType !== 'touch') sdKbd.focus({ preventScroll: true });
+    sdSend({ t: 'mouse', type: 'down', button: sdBtn(e.button), ...p });
+  });
+  const avgY = () => [...fingers.values()].reduce((a, f) => a + f.y, 0) / fingers.size;
+  const avgX = () => [...fingers.values()].reduce((a, f) => a + f.x, 0) / fingers.size;
+  sdStage.addEventListener('pointermove', (e) => {
+    if (!sdStage.classList.contains('live')) return;
+    if (fingers.has(e.pointerId)) {
+      fingers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (!tg) return;
+      if (tg.scroll) {
+        if (fingers.size < 2) return;
+        const y = avgY(), x = avgX(), s = sdPt(e).s, p = sdPt({ clientX: x, clientY: y });
+        // Fingers going up push the page up: the wheel turns down.
+        const dy = (tg.y - y) / s, dx = (tg.x - x) / s;
+        if (Math.abs(dy) + Math.abs(dx) > 30) { sdSend({ t: 'wheel', x: p.x, y: p.y, dx, dy }); tg.y = y; tg.x = x; }
+        return;
+      }
+      if (!tg.moved && Math.hypot(e.clientX - tg.x0, e.clientY - tg.y0) > 10) { tg.moved = true; clearTimeout(tg.hold); tg.dragging = true; sdSend({ t: 'mouse', type: 'down', button: 'left', ...tg.p }); }
+      if (tg.dragging) { moveEv = e; if (!moveRaf) moveRaf = requestAnimationFrame(() => { moveRaf = 0; if (moveEv) sdSend({ t: 'mouse', type: 'move', ...sdPt(moveEv) }); }); }
+      return;
+    }
+    if (sd.src.startsWith('android')) return; // a phone screen has no pointer between touches
+    moveEv = e;
+    if (!moveRaf) moveRaf = requestAnimationFrame(() => { moveRaf = 0; if (moveEv) sdSend({ t: 'mouse', type: 'move', ...sdPt(moveEv) }); });
+  });
+  const sdUp = (e) => {
+    if (fingers.has(e.pointerId)) {
+      fingers.delete(e.pointerId);
+      if (!tg) return;
+      if (tg.scroll) { if (!fingers.size) tg = null; return; }
+      clearTimeout(tg.hold);
+      if (tg.dragging) sdSend({ t: 'mouse', type: 'up', button: 'left', ...sdPt(e) });
+      else if (!tg.done && e.type === 'pointerup') sdSend({ t: 'mouse', type: 'click', button: 'left', ...tg.p });
+      tg = null; return;
+    }
+    if (!sdStage.classList.contains('live')) return;
+    sdSend({ t: 'mouse', type: 'up', button: sdBtn(e.button), ...sdPt(e) });
+  };
+  sdStage.addEventListener('pointerup', sdUp); sdStage.addEventListener('pointercancel', sdUp);
+  sdStage.addEventListener('contextmenu', (e) => e.preventDefault()); // the PC's own right-click, not the page's
+  sdStage.addEventListener('wheel', (e) => {
+    if (!sdStage.classList.contains('live')) return;
+    e.preventDefault();
+    const k = e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? sdStage.clientHeight : 1, p = sdPt(e);
+    sdSend({ t: 'wheel', x: p.x, y: p.y, dx: e.deltaX * k, dy: e.deltaY * k });
+  }, { passive: false });
+
+  // Keys: where on the keyboard (code) for shortcuts, the characters themselves for typing. On a
+  // Mac or an iPhone, Cmd is the PC's Ctrl - Cmd+C copies there because Ctrl+C does here.
+  let sdComposing = false;
+  const sdKey = (e, type) => {
+    let code = e.code, ctrl = e.ctrlKey, meta = e.metaKey;
+    if (sdApple && /^Meta/.test(code)) code = code.replace('Meta', 'Control');
+    if (sdApple && meta) { ctrl = true; meta = false; }
+    const text = type === 'down' && e.key.length === 1 && !ctrl && !e.altKey && !meta ? e.key : '';
+    sdSend({ t: 'key', type, key: e.key, code, keyCode: e.keyCode, text, ctrl, alt: e.altKey, meta });
+  };
+  sdKbd.addEventListener('keydown', (e) => {
+    if (e.isComposing || sdComposing || e.key === 'Process' || e.key === 'Unidentified' || e.keyCode === 229) return;
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && /^[bk]$/i.test(e.key)) return; // the app's own pane shortcuts
+    if ((e.ctrlKey || e.metaKey) && /^v$/i.test(e.key)) return; // the paste event brings the text
+    e.preventDefault(); e.stopPropagation();
+    sdKey(e, 'down');
+  });
+  sdKbd.addEventListener('keyup', (e) => { if (e.key === 'Process' || e.key === 'Unidentified' || e.keyCode === 229) return; e.preventDefault(); e.stopPropagation(); sdKey(e, 'up'); });
+  // A phone's keyboard says what it typed through beforeinput, not keydown.
+  sdKbd.addEventListener('beforeinput', (e) => {
+    if (e.isComposing || e.inputType === 'insertCompositionText') return;
+    const press = (key, code, keyCode) => { sdSend({ t: 'key', type: 'down', key, code, keyCode }); sdSend({ t: 'key', type: 'up', key, code, keyCode }); };
+    if (e.inputType === 'insertText' || e.inputType === 'insertReplacementText') { e.preventDefault(); const s = e.data ?? e.dataTransfer?.getData('text/plain') ?? ''; if (s) sdSend({ t: 'text', text: s }); }
+    else if (e.inputType === 'insertLineBreak' || e.inputType === 'insertParagraph') { e.preventDefault(); press('Enter', 'Enter', 13); }
+    else if (e.inputType === 'deleteContentBackward') { e.preventDefault(); press('Backspace', 'Backspace', 8); }
+    else if (e.inputType === 'deleteContentForward') { e.preventDefault(); press('Delete', 'Delete', 46); }
+  });
+  sdKbd.addEventListener('compositionstart', () => { sdComposing = true; });
+  sdKbd.addEventListener('compositionend', (e) => { sdComposing = false; if (e.data) sdSend({ t: 'text', text: e.data }); sdKbd.value = ''; });
+  sdKbd.addEventListener('input', () => { if (!sdComposing) sdKbd.value = ''; });
+  sdKbd.addEventListener('paste', (e) => { e.preventDefault(); const s = e.clipboardData?.getData('text/plain'); if (s) sdSend({ t: 'text', text: s }); });
+
+  // The keys a browser keeps for itself, and the ones only a phone's buttons have.
+  menuFor('#sd-keys', '#sd-keys-menu', (m) => {
+    m.innerHTML = '';
+    const sp = (label, name, desc) => m.appendChild(item(label, desc || '', false, () => { m.classList.add('hidden'); sdSend({ t: 'special', name }); }));
+    if (sd.src.startsWith('android')) { sp('Back', 'back'); sp('Home', 'home'); sp('Recent apps', 'recents'); sp('Power', 'power'); sp('Volume up', 'volume_up'); sp('Volume down', 'volume_down'); return; }
+    sp('Windows key', 'win'); sp('Alt+Tab', 'alttab'); sp('Task Manager', 'taskmgr', 'Ctrl+Shift+Esc'); sp('Show desktop', 'showdesktop', 'Windows+D');
+    const cad = item('Ctrl+Alt+Del', 'Not possible from here', false, () => { m.classList.add('hidden'); sdNote(sd.status?.cad || 'Ctrl+Alt+Del cannot be sent: Windows takes it only from a keyboard at the PC itself.'); });
+    cad.classList.add('sd-cad'); m.appendChild(el('div', 'menu-sep')); m.appendChild(cad);
+  });
+
+  // ---- Settings › Remote access: the two switches, off until someone turns them on ----
+  const sdSet = el('div', 'ra-section sd-settings');
+  sdSet.innerHTML = `<div class="set-name">This PC's screen</div>
+    <div class="set-row"><div class="set-info"><div class="set-name">Allow remote desktop</div><div class="set-desc">See this PC's screen and use its mouse and keyboard from the Remote desktop pane — on this computer or your phone. It runs only while the pane is open, and a banner on the PC with a Stop says so.</div></div><div id="sd-set-rd"></div></div>
+    <div class="set-row"><div class="set-info"><div class="set-name">Let Claude use this PC</div><div class="set-desc">Computer use: Claude can take screenshots and use the mouse and keyboard. It asks before it touches each app — View only, Click only or Full control — and sees nothing of the apps you did not allow. Applies to sessions started after you turn it on.</div></div><div id="sd-set-cu"></div></div>
+    <input id="sd-set-pw" class="hidden" type="password" placeholder="App password, to turn these on from this device" autocomplete="current-password" />
+    <p id="sd-set-error" class="login-error" hidden></p>`;
+  $('.set-pane[data-pane="remote"]').appendChild(sdSet);
+  async function paintScreenSettings() {
+    let s; try { s = await api('/screen/status'); } catch { return; }
+    sd.status = s;
+    $('#sd-set-pw').classList.toggle('hidden', !s.needsPassword);
+    const err = $('#sd-set-error'); err.hidden = true;
+    const put = (id, key) => {
+      const box = $(id); box.innerHTML = '';
+      if (!s.supported) { box.appendChild(el('span', 'muted small', 'Windows only for now')); return; }
+      box.appendChild(toggleEl(s[key], async (on) => {
+        err.hidden = true;
+        try { sd.status = await api('/screen/settings', { method: 'POST', body: JSON.stringify({ [key]: on, password: $('#sd-set-pw').value }) }); }
+        catch (x) { err.hidden = false; err.textContent = x.message; if (x.status === 403) $('#sd-set-pw').focus(); throw x; }
+      }));
+    };
+    put('#sd-set-rd', 'remoteDesktop'); put('#sd-set-cu', 'computerUse');
+  }
+
+  // ---- the permission card, when Claude asks for an app: Desktop's computer-use prompt ----
+  function dressComputerAccess(card, ev) {
+    const a = ev.computerAccess, apps = a.apps || [];
+    card.classList.add('computer-access');
+    const head = card.querySelector('.permission-head span:last-child');
+    head.textContent = '';
+    head.append('Allow Claude to use ', el('b', 'perm-tool', apps.join(', ')), '?');
+    const what = { read: 'View only: it shows in Claude\'s screenshots.', click: 'Click only: Claude can see it, click and scroll in it.', full: 'Full control: Claude can see it, click, and type into it.' }[a.tier] || a.label;
+    card.querySelector('.perm-summary').textContent = what + (a.reason ? '\n' + a.reason : '') + '\nFor the rest of this session.';
+    card.querySelector('.perm-details')?.remove();
+    const allow = card.querySelector('[data-act="allow"]'); if (allow) allow.textContent = 'Allow for this session';
+  }
+
   // The server only opens paths under a folder some session has worked in, so this cannot
   // wander off into the rest of the disk; it still shows anything Claude can see — dotfiles
   // included, which the old folder-at-a-time browser (and the "Open folder" picker, which
@@ -6263,6 +6774,7 @@
         }
         // Drag-to-reorder: the ids keep their bubbles, only the order changes.
         case 'reordered': reorderBubbles(ev.ids || []); break;
+        case 'aside': showAside(ev); break;
         case 'init':
           mode = 'run'; setRunning(true);
           if (ev.controls) { if (ev.controls.permissionMode) state.mode = ev.controls.permissionMode; if (ev.controls.model) state.model = ev.controls.model; state.effort = ev.controls.effort || ''; if (ev.controls.ultracode !== undefined) state.ultracode = !!ev.controls.ultracode; if (ev.controls.fast !== undefined) state.fast = !!ev.controls.fast; renderModeChip(); renderModelChip(); renderEffortChip(); }
@@ -6307,6 +6819,7 @@
         case 'secret_request': showSecretCard(ev); break;
         case 'terminal_focus': showTerminalTab(ev.tabId); break;
         case 'browser_show': rvShow(ev.tab); break;
+        case 'screen_show': sdShow(ev); break;
         case 'session_status': { const srow = state.sessions.find((x) => x.id === sessionId); if (srow) srow.status = { status: ev.status, note: ev.note }; renderSessions(); break; }
         // start_session's own card (renderSessionTool) is drawn from the transcript's tool_use
         // block already; this just refreshes the child id/status lookup once it exists.
@@ -6561,6 +7074,7 @@
       try { await api('/permissions/' + ev.reqId, { method: 'POST', body: JSON.stringify({ behavior: act === 'deny' ? 'deny' : 'allow', always: act === 'always' }) }); }
       catch (e) { t.querySelector('.perm-result').textContent = e.message; t.querySelector('.perm-result').classList.remove('hidden'); }
     }));
+    if (ev.computerAccess) dressComputerAccess(t, ev);
     thread.appendChild(t);
   }
   function resolvePermissionCard(reqId, behavior, how) {
@@ -7507,7 +8021,7 @@
     h.addEventListener('dblclick', () => { apply(0); try { localStorage.removeItem(store); } catch {} });
   }
   resizable($('#sidebar'), '--sidebar-w', { min: 220, max: () => Math.min(600, window.innerWidth / 2), side: 'start' });
-  for (const [node, key] of [[tasksPanel, '--tasks-w'], [changesPanel, '--changes-w'], [pvPanel, '--preview-w'], [fxPanel, '--files-w'], [termPanel, '--terminal-w']]) resizable(node, key, { min: 300, max: () => window.innerWidth - 560, side: 'end' });
+  for (const [node, key] of [[tasksPanel, '--tasks-w'], [changesPanel, '--changes-w'], [pvPanel, '--preview-w'], [fxPanel, '--files-w'], [termPanel, '--terminal-w'], [sdPanel, '--screen-w']]) resizable(node, key, { min: 300, max: () => window.innerWidth - 560, side: 'end' });
 
   // ---------- everything this app can do, by name ----------
   // Ctrl/Cmd+K. Commands first, then the sessions themselves, so the same box both
@@ -7523,6 +8037,7 @@
       { name: 'Search sessions', hint: 'Ctrl+F', run: () => { const sb = $('#sidebar'); if (!sb.classList.contains('searching')) $('#search-btn').click(); else $('#search-input').focus(); app.classList.add('sidebar-open'); } },
       { name: 'Search inside transcripts', hint: '', run: () => { const sb = $('#sidebar'); if (!sb.classList.contains('searching')) $('#search-btn').click(); $('#search-inside').checked = true; $('#search-inside').dispatchEvent(new Event('change')); $('#search-input').focus(); app.classList.add('sidebar-open'); } },
       { name: 'Toggle sidebar', hint: 'Ctrl+B', run: () => app.classList.toggle('sidebar-open') },
+      { name: 'Keyboard shortcuts', hint: 'Ctrl+/', run: () => openShortcuts() },
     ];
     for (const [id, name] of GROUPS.map((g) => [g[0], g[1]])) out.push({ name: 'Group sessions by ' + name.toLowerCase(), group: 'View', on: state.view.group === id, run: () => setView({ group: id }) });
     for (const [id, name] of SORTS.map((g) => [g[0], g[1]])) out.push({ name: 'Sort sessions by ' + name.toLowerCase(), group: 'View', on: state.view.sort === id, run: () => setView({ sort: id }) });
@@ -7533,6 +8048,7 @@
       { name: 'Artifacts', group: 'Session', run: () => (artOpen ? closeArtifacts() : openArtifacts()) },
       { name: 'Files', group: 'Session', run: () => (filesOpen ? closeFiles() : openFiles()) },
       { name: 'Browser', group: 'Session', hint: 'Ctrl+Shift+B', run: () => (previewOpen ? closePreview() : openPreview()) },
+      { name: 'Remote desktop', group: 'Session', run: () => (sdOpen ? closeScreen() : openScreen('pc:1')) },
       { name: 'Terminal', group: 'Session', hint: 'Ctrl+`', run: () => toggleTerminal() },
       { name: 'Tasks', group: 'Session', run: () => (tasksOpen ? closeTasks() : openTasks()) },
       { name: 'Worktrees', group: 'Session', run: () => showWorktrees(state.cwd) },
@@ -7622,6 +8138,208 @@
 
     else if (e.code === 'Backquote') { e.preventDefault(); toggleTerminal(); } // Ctrl+` : VS Code's and Desktop's own terminal shortcut
   });
+
+  // ---------- notify: notifications on any device, the aside, keyboard shortcuts, stopping a server ----------
+  // The desktop shell notifies by itself (spawn_notifier in the Rust shell). Everywhere else a
+  // device subscribes to Web Push from Settings > Notifications: the service worker (sw.js)
+  // shows what the server sends, and a click opens that session. A tab that is open but hidden
+  // on a device with no subscription is told through the in-page Notification API instead.
+  const inShell = !!window.__TAURI__;
+  const standalone = window.matchMedia?.('(display-mode: standalone)').matches || navigator.standalone === true;
+  const iosBrowser = /iPhone|iPad|iPod/.test(navigator.userAgent) && !standalone; // Safari only offers push to a web app on the Home Screen
+  const pushReady = () => isSecureContext && 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+  const b64uBytes = (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
+  let nfSub = null, nfPage = false, nfInfo = { devices: [], aside: true }, nfSource = null;
+  const nfRegistration = () => navigator.serviceWorker.register('/sw.js').then(() => navigator.serviceWorker.ready);
+  async function nfRefresh() {
+    try { nfInfo = { ...nfInfo, ...(await api('/push')) }; } catch {}
+    nfSub = null;
+    if (pushReady()) { try { nfSub = await (await nfRegistration()).pushManager.getSubscription(); } catch {} }
+    // A subscription the server has forgotten (its data was cleared) is no subscription.
+    if (nfSub && !nfInfo.devices.some((d) => d.endpoint === nfSub.endpoint)) { try { await api('/push/subscribe', { method: 'POST', body: JSON.stringify({ subscription: nfSub.toJSON() }) }); nfInfo = { ...nfInfo, ...(await api('/push')) }; } catch {} }
+    nfPage = !nfSub && localStorage.getItem('cr.notifyPage') === '1' && 'Notification' in window && Notification.permission === 'granted';
+    nfSourceSync();
+  }
+  // The device being looked at is not buzzed: the page says so every few seconds while it is in front.
+  const nfLooking = () => document.visibilityState === 'visible' && document.hasFocus();
+  let nfBeat = 0;
+  function nfReport(force) {
+    if (!nfSub || embedded) return;
+    const on = nfLooking();
+    if (!on && !nfBeat && !force) return;
+    nfBeat = on ? Date.now() : 0;
+    api('/push/focus', { method: 'POST', body: JSON.stringify({ endpoint: nfSub.endpoint, focused: on }) }).catch(() => {});
+  }
+  setInterval(() => nfReport(false), 5000);
+  for (const ev of ['focus', 'blur', 'visibilitychange']) window.addEventListener(ev, () => nfReport(true));
+  // Page-only mode: the shell's own event stream, shown as notifications while this tab is hidden.
+  function nfSourceSync() {
+    if (nfPage && !nfSource && !embedded) {
+      nfSource = new EventSource('/api/notify?token=' + encodeURIComponent(state.token || ''));
+      nfSource.onmessage = (m) => {
+        if (nfLooking()) return;
+        let ev; try { ev = JSON.parse(m.data); } catch { return; }
+        const w = ev.t === 'permission' ? { title: /AskUserQuestion$/.test(ev.tool || '') ? 'Claude has a question' : 'Claude needs your approval', body: ev.summary || '' } : ev.t === 'turn_done' ? { title: ev.isError ? 'Claude hit an error' : 'Task complete', body: ev.text || '' } : ev.t === 'task_done' ? { title: 'Background task ' + (ev.status === 'completed' ? 'finished' : ev.status), body: ev.summary || '' } : null;
+        if (!w) return;
+        const n = new Notification(w.title, { body: w.body, tag: 'session-' + (ev.sessionId || ''), icon: '/icon-192.png' });
+        n.onclick = () => { window.focus(); if (ev.sessionId) location.hash = '#/s/' + ev.sessionId; n.close(); };
+      };
+    } else if (!nfPage && nfSource) { nfSource.close(); nfSource = null; }
+  }
+  async function nfEnable() {
+    if (!('Notification' in window)) throw new Error('This browser cannot show notifications.');
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') throw new Error('Notifications are blocked. Allow them in your browser or system settings, then try again.');
+    if (pushReady() && nfInfo.key) {
+      const reg = await nfRegistration();
+      const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uBytes(nfInfo.key) });
+      await api('/push/subscribe', { method: 'POST', body: JSON.stringify({ subscription: sub.toJSON() }) });
+    } else localStorage.setItem('cr.notifyPage', '1');
+    await nfRefresh();
+    nfReport(true); // in front right now: the first push is not for this device
+  }
+  async function nfDisable() {
+    if (nfSub) { const ep = nfSub.endpoint; await nfSub.unsubscribe().catch(() => {}); await api('/push/unsubscribe', { method: 'POST', body: JSON.stringify({ endpoint: ep }) }); }
+    localStorage.removeItem('cr.notifyPage');
+    await nfRefresh();
+  }
+  // A click on a notification, with the app already open, says which session to show.
+  if ('serviceWorker' in navigator) navigator.serviceWorker.addEventListener('message', (e) => { if (e.data?.t === 'open' && e.data.url) { const h = String(e.data.url).split('#')[1]; if (h) location.hash = '#' + h; } });
+
+  async function paintNotifications() {
+    await nfRefresh();
+    const on = !!(nfSub || nfPage), blocked = 'Notification' in window && Notification.permission === 'denied';
+    const name = $('#nf-name'), desc = $('#nf-desc'), wrap = $('#nf-toggle'), tests = $('#nf-test-row'), list = $('#nf-devices');
+    wrap.innerHTML = ''; list.innerHTML = '';
+    let why = '';
+    if (inShell) why = 'This window already tells you through your system notifications. Open the app in a browser on another device to get them there.';
+    else if (iosBrowser) why = 'On an iPhone or iPad, notifications work once the app is on your Home Screen: tap Share, then Add to Home Screen, and open it from there.';
+    else if (!('Notification' in window)) why = 'This browser cannot show notifications.';
+    else if (!isSecureContext) why = 'Notifications need a secure address: https, or localhost on this computer. Open the app through https (tailscale serve gives it one) to turn them on here.';
+    name.textContent = blocked ? 'Notifications blocked' : on ? 'Notifications enabled' : 'Notifications';
+    desc.textContent = why || (blocked ? 'Enable notifications in your browser settings to get updates when tasks complete.' : on ? 'You’ll receive notifications when your tasks need attention.' : 'Get notified when your tasks complete so you don’t have to keep checking back.');
+    if (!why && !blocked) {
+      wrap.appendChild(toggleEl(on, async (next) => { try { await (next ? nfEnable() : nfDisable()); } finally { paintNotifications(); } }));
+    }
+    $('#nf-error').hidden = true;
+    tests.classList.toggle('hidden', !on);
+    $('#nf-test-result').textContent = '';
+    for (const d of nfInfo.devices) {
+      const row = el('div', 'ct-row'), info = el('div', 'ct-info');
+      info.appendChild(el('div', 'ct-name', d.name + (nfSub && nfSub.endpoint === d.endpoint ? ' · this device' : '')));
+      info.appendChild(el('div', 'ct-desc', 'Subscribed ' + new Date(d.since).toLocaleDateString()));
+      row.appendChild(info);
+      if (!(nfSub && nfSub.endpoint === d.endpoint)) { const rm = el('button', 'btn btn-ghost small danger', 'Remove'); rm.type = 'button'; rm.addEventListener('click', async () => { await api('/push/unsubscribe', { method: 'POST', body: JSON.stringify({ endpoint: d.endpoint }) }); paintNotifications(); }); row.appendChild(rm); }
+      list.appendChild(row);
+    }
+  }
+  // The aside's own switch, in General: Claude's instant reply to a message sent mid-turn.
+  async function paintAside() {
+    try { nfInfo = { ...nfInfo, ...(await api('/push')) }; } catch {}
+    const aw = $('#set-aside'); aw.innerHTML = '';
+    aw.appendChild(toggleEl(nfInfo.aside, async (next) => { await api('/aside', { method: 'POST', body: JSON.stringify({ enabled: next }) }); nfInfo.aside = next; }));
+  }
+  $('#nf-test').addEventListener('click', async () => {
+    const out = $('#nf-test-result'); out.textContent = 'Sending…';
+    try {
+      if (nfSub) { const r = await api('/push/test', { method: 'POST', body: JSON.stringify({ endpoint: nfSub.endpoint }) }); out.textContent = r.ok ? 'Sent. It should appear in a moment.' : 'The push service did not take it.'; }
+      else { new Notification('Notifications are on', { body: 'This is what a finished task will look like.', icon: '/icon-192.png' }); out.textContent = 'Sent.'; }
+    } catch (e) { out.textContent = e.message; }
+  });
+  async function notifyStart() {
+    if (embedded || inShell) return;
+    await nfRefresh();
+    nfReport(true);
+  }
+
+  // The aside, drawn under the message it answers: a short reply from a small model, written
+  // while the real work carries on. It lives inside the bubble, so a queued message that is moved
+  // (the stack of dashed bubbles) takes its aside with it.
+  function showAside(ev) {
+    const b = bubbleFor({ id: ev.id }); if (!b || b.querySelector('.aside')) return;
+    const a = el('div', 'aside'); a.title = 'A quick reply from Claude while it works. Claude reads your message itself at its next step.';
+    a.appendChild(el('span', 'aside-label', 'Quick reply'));
+    a.appendChild(el('span', 'aside-text', ev.text));
+    (b.querySelector('.msg-body') || b).appendChild(a);
+    autoscroll();
+  }
+
+  // Every shortcut the page has. Written from the keydown handlers above: a key that is not
+  // handled somewhere in this file is not listed.
+  const SHORTCUTS = [
+    ['General', [
+      ['Mod+K', 'Open the command palette'], ['Mod+/', 'Show keyboard shortcuts'], ['Mod+N', 'New session'], ['Mod+B', 'Show or hide the sidebar'],
+      ['Mod+F', 'Find in this session (search sessions when none is open)'], ['Mod+Shift+F', 'Search sessions, while a session is open'],
+      ['Mod+Shift+B', 'Open or close the Browser'], ['Mod+`', 'Open or close the terminal'], ['Mod+U', 'Attach files to the message'],
+    ]],
+    ['Message box', [
+      ['Enter', 'Send the message (on a phone, a new line)'], ['Shift+Enter', 'New line'],
+      ['Mod+Enter', 'While Claude works: queue the message for after the turn'], ['Esc', 'While Claude works: stop'], ['Esc Esc', 'Rewind to your last message (when Claude is idle)'],
+      ['Shift+Tab', 'Switch between permission modes'], ['/', 'At the start: slash commands'], ['@', 'Mention a file'], ['!', 'At the start: run a shell command'],
+      ['↑ ↓', 'Choose in the / and @ list'], ['Enter or Tab', 'Pick the highlighted command or file'],
+    ]],
+    ['Questions and menus', [
+      ['1 to 9', 'Pick that option on a question from Claude'], ['1 to 5', 'Pick a permission mode, while its menu is open'], ['Esc', 'Close a menu or dialog'],
+    ]],
+    ['Sessions list', [
+      ['Mod+Click', 'Add a session to the selection'], ['Shift+Click', 'Select a range of sessions'], ['Delete', 'Delete the selected sessions'], ['Esc', 'Clear the selection'],
+    ]],
+    ['Find and palette', [
+      ['Enter', 'Next match'], ['Shift+Enter', 'Previous match'], ['↑ ↓', 'Move through the command palette'], ['Enter', 'Run the highlighted command'],
+    ]],
+    ['Files', [['Mod+S', 'Save the open file'], ['Mod+F', 'Find in the open file'], ['Tab', 'Insert a tab in the editor']]],
+    ['Effort slider', [['← →', 'Lower or raise the effort (↑ ↓ too)'], ['Home End', 'Lowest or highest']]],
+  ];
+  const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+  const keyWords = (s) => s.split(' ').map((part) => part.split('+').map((k) => (k === 'Mod' ? (isMac ? '⌘' : 'Ctrl') : k === 'Shift' && isMac ? '⇧' : k)));
+  const scModal = el('div', 'modal hidden'); scModal.id = 'shortcuts-modal';
+  scModal.innerHTML = '<div class="modal-card sc-card" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts"><div class="sc-head"><h3 class="set-title">Keyboard shortcuts</h3><button class="icon-btn sc-close" type="button" aria-label="Close"><svg viewBox="0 0 20 20" width="16" height="16"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div><input id="sc-search" type="search" placeholder="Search shortcuts" aria-label="Search shortcuts" autocomplete="off" /><div id="sc-count" class="muted small" aria-live="polite"></div><div id="sc-list" class="sc-list"></div></div>';
+  document.body.appendChild(scModal);
+  const scList = scModal.querySelector('#sc-list'), scSearch = scModal.querySelector('#sc-search');
+  function paintShortcuts() {
+    const q = scSearch.value.trim().toLowerCase();
+    scList.innerHTML = '';
+    let n = 0;
+    for (const [group, rows] of SHORTCUTS) {
+      const hit = rows.filter(([keys, what]) => !q || (group + ' ' + what + ' ' + keyWords(keys).map((p) => p.join('+')).join(' ')).toLowerCase().includes(q));
+      if (!hit.length) continue;
+      const sec = el('section', 'sc-group'); sec.appendChild(el('h4', 'sc-group-name', group));
+      for (const [keys, what] of hit) {
+        const row = el('div', 'sc-row'); row.appendChild(el('span', 'sc-what', what));
+        const k = el('span', 'sc-keys');
+        keyWords(keys).forEach((combo, i) => {
+          if (i) k.appendChild(document.createTextNode(' '));
+          combo.forEach((one, j) => { if (/^(or|to)$/.test(one)) { k.appendChild(el('span', 'sc-or', one)); return; } if (j) k.appendChild(el('span', 'sc-plus', '+')); k.appendChild(el('kbd', '', one)); });
+        });
+        row.appendChild(k); sec.appendChild(row); n++;
+      }
+      scList.appendChild(sec);
+    }
+    if (!n) scList.appendChild(el('div', 'palette-empty', 'No matching shortcuts'));
+    scModal.querySelector('#sc-count').textContent = q ? n + (n === 1 ? ' shortcut found' : ' shortcuts found') : '';
+  }
+  let scReturn = null;
+  function openShortcuts() { scReturn = document.activeElement; scSearch.value = ''; paintShortcuts(); scModal.classList.remove('hidden'); scSearch.focus(); }
+  function closeShortcuts() { scModal.classList.add('hidden'); try { scReturn?.focus?.(); } catch {} }
+  scSearch.addEventListener('input', paintShortcuts);
+  scModal.querySelector('.sc-close').addEventListener('click', closeShortcuts);
+  scModal.addEventListener('mousedown', (e) => { if (e.target === scModal) closeShortcuts(); });
+  // Capture phase: Esc here must close this panel and nothing underneath it (Esc also stops a turn).
+  document.addEventListener('keydown', (e) => {
+    if (!scModal.classList.contains('hidden') && e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeShortcuts(); return; }
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === '/' || e.code === 'Slash') && !$('#app').classList.contains('hidden')) { e.preventDefault(); e.stopPropagation(); scModal.classList.contains('hidden') ? openShortcuts() : closeShortcuts(); }
+  }, true);
+
+  // The Servers card's Stop. The server finds the listener by port and stops it with what it
+  // started, and refuses a port this app uses itself.
+  async function stopServer(p, row) {
+    const what = (p.label || p.process || 'The process') + (p.pid ? ' (process ' + p.pid + ')' : '');
+    if (!confirm('Stop the server on localhost:' + p.port + '?\n\n' + what + ' and anything it started will be closed. Anything using it will stop working.')) return;
+    const btn = row.querySelector('.rail-stop'); if (btn) { btn.disabled = true; btn.textContent = 'Stopping…'; }
+    try { await api('/preview/stop', { method: 'POST', body: JSON.stringify({ port: p.port, pid: p.pid }) }); }
+    catch (e) { alert(e.message); }
+    await loadPorts(); paintRail();
+  }
 
   // ---------- routing ----------
   // Opening a session fetches and renders its whole transcript, seconds for a big one.
@@ -7795,6 +8513,7 @@
     await Promise.all([loadSessions(), loadProjects(), loadAwake(), loadModels(), loadConvSettings(), loadEnvironments(), loadSections()]);
     if (!embedded && localStorage.getItem('cr.rail') === '1') openRail(); // remembered across restarts, like every other pane
     route();
+    notifyStart();
     // First time on this device: ask which account to use (local or token).
     let chosen = false; try { chosen = !!localStorage.getItem('cr.accountChosen'); } catch {}
     if (!chosen && !me.hasToken) openAccounts();

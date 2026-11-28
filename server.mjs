@@ -28,12 +28,13 @@ import * as artifacts from './lib/artifacts.mjs';
 import { answerElicit } from './lib/tools-sessions.mjs';
 import * as runsMod from './lib/runs.mjs';
 import * as limitQueue from './lib/limit-queue.mjs';
+import * as chrome from './lib/chrome.mjs';
 import * as rewindStore from './lib/rewind.mjs';
 const execFileP = promisify(execFile);
 import { tailSession, isWorkingElsewhere, WORKING_WINDOW_MS, sessionFile } from './lib/tail.mjs';
 import { transcriptMentions, initShown, markShown, wasShown } from './lib/mentioned.mjs';
 import { cliProcessFor } from './lib/cli-sessions.mjs';
-import { parsePreviewUrl, portFromReferer, proxyRequest, proxyUpgrade, listLocalPorts, proxyAtRoot, upgradeAtRoot, listenOn, injectBridge } from './lib/preview.mjs';
+import { parsePreviewUrl, portFromReferer, proxyRequest, proxyUpgrade, listLocalPorts, forgetPorts, proxyAtRoot, upgradeAtRoot, listenOn, injectBridge } from './lib/preview.mjs';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { searchTranscripts } from './lib/search.mjs';
 import * as worktrees from './lib/worktrees.mjs';
@@ -45,6 +46,7 @@ import * as routines from './lib/routines.mjs';
 import * as outputStyles from './lib/output-styles.mjs';
 import * as environments from './lib/environments.mjs';
 import * as update from './lib/update.mjs';
+import { createUpdater } from './lib/updater.mjs';
 import * as models from './lib/models.mjs';
 import * as commandsMod from './lib/commands.mjs';
 import * as filesearch from './lib/filesearch.mjs';
@@ -52,7 +54,12 @@ import * as shell from './lib/shell.mjs';
 import * as claudeCode from './lib/claude-code.mjs';
 import * as access from './lib/access.mjs';
 import * as terminal from './lib/terminal.mjs';
+import * as push from './lib/push.mjs';
+import * as aside from './lib/aside.mjs';
+import { stopPort } from './lib/ports.mjs';
 import * as browser from './lib/browser.mjs';
+import * as screen from './lib/screen.mjs';
+import * as android from './lib/android.mjs';
 import { getAuth, activeAccount, setActive, setToken, clearToken, setProvider, clearProvider, classifyToken, envFor, localSource, verifyEnv, candidateEnv, candidateProviderEnv } from './lib/auth.mjs';
 import { findByName, searchContents, officePreview, writeFileChecked } from './lib/files.mjs';
 import { sessionOutputs } from './lib/outputs.mjs';
@@ -342,6 +349,32 @@ app.get('/api/browser/tabs/:id/screenshot', async (req, res) => {
   try { res.json({ dataUrl: 'data:image/jpeg;base64,' + (await browser.screenshot(tab, { quality: 85 })), title: tab.title, url: tab.url }); } catch (e) { res.status(500).json({ error: e.message }); }
 });
 app.delete('/api/browser/tabs/:id', async (req, res) => res.json({ ok: await browser.closeTab(req.params.id) }));
+
+// ---------- this PC's screen: remote desktop, computer use, the Android emulator ----------
+// lib/screen.mjs and lib/android.mjs; Claude's side is lib/tools-computer.mjs. Two switches, both
+// off until someone turns them on. Turning one on from another device asks for the app password,
+// as changing the password does: a stolen device token must not be enough to watch and drive
+// this computer. Turning one off never asks.
+screen.configure({ dataDir: path.join(DATA_DIR, 'screen') });
+const screenStatus = (req) => ({ supported: screen.supported(), ...screen.getSettings(), needsPassword: access.passwordRequired() && !access.isLocal(req) && !access.isAppKey(bearer(req)), controlledBy: screen.controlledBy(), android: !!android.sdk(), cad: screen.CAD });
+app.get('/api/screen/status', (req, res) => res.json(screenStatus(req)));
+app.post('/api/screen/settings', (req, res) => {
+  const want = { remoteDesktop: req.body?.remoteDesktop, computerUse: req.body?.computerUse };
+  if (Object.values(want).includes(true)) {
+    if (!screen.supported()) return res.status(400).json({ error: screen.NOT_HERE });
+    if (access.passwordRequired() && !access.isLocal(req) && !access.isAppKey(bearer(req))) {
+      const ip = access.clientIp(req), wait = access.locked(ip);
+      if (wait) return res.status(429).json({ error: 'Too many wrong passwords. Try again in ' + waitWords(wait) + '.' });
+      // 403, not 401: the page signs itself out on a 401, and this device is still signed in.
+      if (!req.body?.password) return res.status(403).json({ error: 'Enter the app password to turn this on from another device.', needsPassword: true });
+      if (!access.checkPassword(String(req.body.password))) { access.failed(ip); return res.status(403).json({ error: 'That is not the app password.', needsPassword: true }); }
+      access.succeeded(ip);
+    }
+  }
+  res.json({ ...screenStatus(req), ...screen.setSettings(want) });
+});
+app.get('/api/android/status', async (_req, res) => { try { res.json(await android.status()); } catch (e) { res.status(500).json({ error: e.message }); } });
+app.post('/api/android/boot', async (req, res) => { try { res.json({ device: await android.boot(String(req.body?.avd || '')) }); } catch (e) { res.status(400).json({ error: e.message }); } });
 
 // Who a given account ('local' = this computer's `claude login`, 'token' = the pasted
 // token) is, as reported by the CLI itself. Nothing secret leaves this function.
@@ -1554,7 +1587,7 @@ function sessionSettings(id) {
     }
   } catch {}
   // Ultracode and Fast mode are remembered per session too; Ultracode was saved and never read back.
-  return { model: saved.model || model || '', permissionMode: saved.permissionMode || mode || '', effort: saved.effort ?? '', ultracode: !!saved.ultracode, ...(saved.fast !== undefined ? { fast: !!saved.fast } : {}) };
+  return { model: saved.model || model || '', permissionMode: saved.permissionMode || mode || '', effort: saved.effort ?? '', ultracode: !!saved.ultracode, ...(saved.fast !== undefined ? { fast: !!saved.fast } : {}), chrome: chrome.wanted(id), chromeReason: chrome.accountReason() };
 }
 // The newest model and mode in bytes [from, to) of a transcript, a few MB at a time from the
 // end, stopping once both are found - prompt lines (the mode) are rare in a long transcript,
@@ -1639,7 +1672,10 @@ app.post('/api/sessions/:id/prefs', (req, res) => {
   const p = readPrefs(); p.sessionPrefs = p.sessionPrefs || {};
   const cur = p.sessionPrefs[req.params.id] || {};
   for (const k of ['model', 'permissionMode', 'effort', 'ultracode', 'fast']) if (req.body?.[k] !== undefined) cur[k] = req.body[k];
+  const chromeBefore = chrome.wanted(req.params.id);
+  if (req.body?.chrome !== undefined) cur.chrome = !!req.body.chrome;
   p.sessionPrefs[req.params.id] = cur; writePrefs(p);
+  closeIfChromeChanged(req.params.id, chromeBefore);
   res.json(cur);
 });
 
@@ -1694,7 +1730,13 @@ app.post('/api/sessions/:id/send', async (req, res, next) => {
     // hand the message over, it runs right after (Desktop behaviour), without starting it again.
     // Ctrl/Cmd+Enter in the composer: hold it until the turn running now truly ends, rather
     // than fold it into that turn at the next tool boundary like plain Enter does.
-    if (isLive(id)) { const qid = runs.get(id).enqueue(prompt, images, cid || undefined, { defer: !!req.body?.defer }); if (qid) return res.json({ queued: true, id: qid, sessionId: id }); }
+    if (isLive(id)) {
+      const run = runs.get(id), working = run.busy(), defer = !!req.body?.defer;
+      const qid = run.enqueue(prompt, images, cid || undefined, { defer });
+      // Sent while Claude works: a small model answers it at once (lib/aside.mjs) while the message itself goes in as ever.
+      if (qid && working && !defer && prompt && readPrefs().aside !== false) aside.answer(run, { id: qid, text: prompt }).catch(() => {});
+      if (qid) return res.json({ queued: true, id: qid, sessionId: id });
+    }
     const info = await getSessionInfo(id);
     if (!info) return res.status(404).json({ error: 'Session not found' });
     const { model, permissionMode, effort, ultracode, fast } = req.body || {};
@@ -1866,10 +1908,38 @@ app.post('/api/permissions/:reqId', (req, res) => {
 app.get('/api/notify', (req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
   const send = (t) => (payload) => res.write(`data: ${JSON.stringify({ t, ...payload })}\n\n`);
-  const onPerm = send('permission'), onDone = send('turn_done'), onResolved = send('permission_resolved');
-  bus.on('permission', onPerm); bus.on('turn_done', onDone); bus.on('permission_resolved', onResolved);
+  const onPerm = send('permission'), onDone = send('turn_done'), onResolved = send('permission_resolved'), onTask = send('task_done');
+  bus.on('permission', onPerm); bus.on('turn_done', onDone); bus.on('permission_resolved', onResolved); bus.on('task_done', onTask);
   const ping = setInterval(() => res.write(': ping\n\n'), 20000);
-  req.on('close', () => { clearInterval(ping); bus.off('permission', onPerm); bus.off('turn_done', onDone); bus.off('permission_resolved', onResolved); });
+  req.on('close', () => { clearInterval(ping); bus.off('permission', onPerm); bus.off('turn_done', onDone); bus.off('permission_resolved', onResolved); bus.off('task_done', onTask); });
+});
+
+// ---------- notifications on any device, the aside, stopping a server ----------
+// The desktop shell notifies from the stream above; browsers and phones subscribe to Web Push
+// (lib/push.mjs, lib/webpush.mjs). A page in front reports it every few seconds, so the device
+// being looked at is not buzzed.
+push.init(DATA_DIR, { titleOf: async (id) => { const i = await getSessionInfo(id).catch(() => null); return { title: i?.customTitle || i?.summary || '' }; } });
+const pushable = (sessionId) => !sessionId || !net.isSideChat(sessionId);
+bus.on('permission', ({ sessionId, tool, summary }) => { if (pushable(sessionId)) push.notify('permission', { sessionId, tool, summary }).catch(() => {}); });
+bus.on('turn_done', ({ sessionId, text, isError }) => { if (pushable(sessionId)) push.notify('turn', { sessionId, text, isError }).catch(() => {}); });
+bus.on('task_done', ({ sessionId, status, summary }) => { if (pushable(sessionId)) push.notify('task', { sessionId, status, summary }).catch(() => {}); });
+app.get('/api/push', (_req, res) => res.json({ key: push.publicKey(), devices: push.devices(), aside: readPrefs().aside !== false }));
+app.post('/api/push/subscribe', (req, res) => push.subscribe(req.body?.subscription, deviceName(req)) ? res.json({ ok: true }) : res.status(400).json({ error: 'That is not a push subscription.' }));
+app.post('/api/push/unsubscribe', (req, res) => res.json({ ok: push.unsubscribe(String(req.body?.endpoint || '')) }));
+app.post('/api/push/focus', (req, res) => { push.reportFocus(String(req.body?.endpoint || ''), !!req.body?.focused); res.json({ ok: true }); });
+app.post('/api/push/test', async (req, res) => {
+  const endpoint = String(req.body?.endpoint || '');
+  if (!push.has(endpoint)) return res.status(404).json({ error: 'This device is not subscribed.' });
+  const r = await push.notify('test', { only: endpoint });
+  res.json({ ok: r.sent > 0, ...r });
+});
+// Settings > Notifications: Claude's instant reply to a message sent while it works.
+app.post('/api/aside', (req, res) => { const p = readPrefs(); p.aside = !!req.body?.enabled; writePrefs(p); res.json({ aside: p.aside }); });
+// The Servers card's Stop: the process listening on that port and what it started, nothing else.
+app.post('/api/preview/stop', async (req, res) => {
+  const r = await stopPort(req.body?.port, { expectPid: Number(req.body?.pid) || 0, refuse: ownPorts });
+  forgetPorts();
+  res.status(r.ok ? 200 : 400).json(r);
 });
 
 // Images that Claude's answers point at on this PC (a screenshot it saved, a generated
@@ -2031,6 +2101,26 @@ app.post('/api/claude-code/update', (_req, res) => {
 });
 app.post('/api/claude-code/bundled', (_req, res) => res.json(claudeCode.useBundled()));
 
+// ---------- Claude in Chrome ----------
+// Claude driving the person's own Chrome (lib/chrome.mjs). On by default for no one: a preference of
+// this computer, with a switch of its own per session (a session's wins), read when Claude Code starts.
+chrome.setAccount(() => activeAccount());
+chrome.setPolicy((id) => { const p = readPrefs(); const own = id ? (p.sessionPrefs || {})[id]?.chrome : undefined; return own !== undefined ? own : !!p.chrome; });
+// `--chrome` is a launch flag: a process resting between turns still runs without it (or with it), so it
+// goes and the next message starts one that follows the choice. A turn in progress finishes as it began.
+function closeIfChromeChanged(id, before) { const r = runs.get(id); if (r && r.rest && !r.done && chrome.wanted(id) !== before) r.close(); }
+app.get('/api/chrome', async (_req, res, next) => { try { res.json({ enabled: !!readPrefs().chrome, ...(await chrome.status()) }); } catch (e) { next(e); } });
+app.post('/api/chrome', (req, res) => {
+  const p = readPrefs(); const before = new Map([...runs.keys()].map((id) => [id, chrome.wanted(id)]));
+  p.chrome = !!req.body?.enabled; writePrefs(p);
+  for (const [id, was] of before) closeIfChromeChanged(id, was);
+  res.json({ enabled: p.chrome });
+});
+// Registers the native host the way a session with Chrome on does (the person pressed Connect).
+app.post('/api/chrome/connect', async (_req, res) => {
+  try { res.json({ enabled: !!readPrefs().chrome, ...(await chrome.connect()) }); } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+});
+
 // "Check again" in the App panel: the hourly cache is fine for a banner, less so for
 // someone standing there having just merged a pull request.
 app.post('/api/update/check', async (_req, res) => {
@@ -2042,51 +2132,38 @@ app.post('/api/update/check', async (_req, res) => {
 // file; this is the other half, the one you cannot do by tapping Download.
 const UPDATE_LOG = path.join(DATA_DIR, 'update.log');
 const stampLine = (m) => '[' + new Date().toTimeString().slice(0, 8) + '] ' + m + '\n';
-let installing = false;
-app.post('/api/update/install', async (_req, res) => {
-  if (installing) return res.status(409).json({ error: 'Already installing.' });
-  const u = update.status({ repo: REPO, version: appVersion, platform: process.platform });
-  if (!u?.newer) return res.status(400).json({ error: 'There is nothing newer to install on this computer.' });
-  if (process.platform !== 'win32') return res.status(400).json({ error: 'Installing from here is a Windows thing for now. On this computer, open ' + (u.download?.name || 'the release') + ' yourself.' });
-  const script = path.join(here, 'scripts', 'update.ps1');
-  if (!fs.existsSync(script)) return res.status(400).json({ error: 'scripts/update.ps1 is missing' });
-  if (!u.download?.url) return res.status(400).json({ error: 'That release has no installer for this computer.' });
-  if (liveCount()) return res.status(409).json({ error: 'Claude is working. The app has to close to be replaced, so finish the turn first.' });
-
-  installing = true;
+// ---------- updates: download in the background, relaunch from the title bar ----------
+// The download happens as soon as a release is announced (lib/updater.mjs), so by the time
+// anyone presses "Relaunch to update" the installer is already here. This is only the two
+// ways the process gets replaced.
+const launchInstaller = (file) => {
   fs.mkdirSync(DATA_DIR, { recursive: true });
-  const mb = (n) => (n >= 10485760 ? Math.round(n / 1048576) + ' MB' : (n / 1048576).toFixed(1) + ' MB');
-  fs.writeFileSync(UPDATE_LOG, stampLine('downloading ' + u.download.name + ' (' + mb(u.download.size) + ')'));
-  res.json({ ok: true, log: UPDATE_LOG, asset: u.download.name });
-
-  // The download is here rather than in the script so its progress can be reported,
-  // and so a half-written installer is never run.
-  const target = path.join(os.tmpdir(), u.download.name);
-  try {
-    const r = await fetch(u.download.url, { redirect: 'follow', headers: { 'User-Agent': 'claude-anywhere' } });
-    if (!r.ok) throw new Error('GitHub answered ' + r.status);
-    const total = Number(r.headers.get('content-length')) || u.download.size || 0;
-    let got = 0, lastSaid = 0;
-    const out = fs.createWriteStream(target);
-    for await (const chunk of r.body) {
-      out.write(chunk);
-      got += chunk.length;
-      const pct = total ? Math.round((got / total) * 100) : 0;
-      if (pct >= lastSaid + 10) { lastSaid = pct; fs.appendFileSync(UPDATE_LOG, stampLine(pct + '%')); }
-    }
-    out.end();
-    await new Promise((done, fail) => { out.on('finish', done); out.on('error', fail); });
-    fs.appendFileSync(UPDATE_LOG, stampLine('downloaded; closing the window to install'));
-    // Same two Windows traps as the rebuild: a detached PowerShell with no console
-    // exits at once, and an attached one dies with whatever started it.
-    const q = (v) => "'" + String(v).replace(/'/g, "''") + "'";
-    const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Installer', target, '-Exe', envOf('APP_EXE') || '', '-Log', UPDATE_LOG];
-    const launcher = `Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList ${args.map(q).join(',')}`;
-    spawn('powershell.exe', ['-NoProfile', '-Command', launcher], { stdio: 'ignore', windowsHide: true }).unref();
-  } catch (e) {
-    fs.appendFileSync(UPDATE_LOG, stampLine('could not download it: ' + (e.message || e)) + stampLine('done'));
-    installing = false;
-  }
+  fs.writeFileSync(UPDATE_LOG, stampLine('downloaded; closing the window to install'));
+  // Same two Windows traps as the rebuild: a detached PowerShell with no console
+  // exits at once, and an attached one dies with whatever started it.
+  const q = (v) => "'" + String(v).replace(/'/g, "''") + "'";
+  const script = path.join(here, 'scripts', 'update.ps1');
+  const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Installer', file, '-Exe', envOf('APP_EXE') || '', '-Log', UPDATE_LOG, '-Ready', path.join(DATA_DIR, 'updates', 'ready.json')];
+  const launcher = `Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList ${args.map(q).join(',')}`;
+  // Tests point CLAUDE_ANYWHERE_UPDATE_DRY_RUN at nothing: the button must be provable without replacing the app that is running it.
+  if (process.env.CLAUDE_ANYWHERE_UPDATE_DRY_RUN) { fs.appendFileSync(UPDATE_LOG, stampLine('dry run: would start ' + path.basename(file)) + stampLine('done')); return; }
+  spawn('powershell.exe', ['-NoProfile', '-Command', launcher], { stdio: 'ignore', windowsHide: true }).unref();
+};
+const updater = createUpdater({
+  dataDir: DATA_DIR, dir: here,
+  status: () => update.status({ repo: REPO, version: appVersion, platform: process.platform }),
+  busy: liveCount,
+  canInstall: (process.platform === 'win32' && fs.existsSync(path.join(here, 'scripts', 'update.ps1'))) || !!process.env.CLAUDE_ANYWHERE_UPDATE_DRY_RUN,
+  launchInstaller,
+  restartServer: () => { if (!envOf('PARENT_PID')) return false; restartNow(); return true; },
+});
+setTimeout(() => updater.sync().catch(() => {}), 4000);
+setInterval(() => updater.sync().catch(() => {}), 60000).unref();
+app.get('/api/update/state', (_req, res) => { updater.sync().catch(() => {}); res.json(updater.state()); });
+app.post('/api/update/install', async (req, res) => {
+  const when = ['idle', 'cancel'].includes(req.body?.when) ? req.body.when : 'now';
+  try { res.json(await updater.request(when, !!req.body?.force)); }
+  catch (e) { res.status(e.status || 500).json({ error: e.message, busy: e.busy || 0 }); }
 });
 app.get('/api/update/install/log', (_req, res) => {
   let text = '', at = 0;
@@ -2200,6 +2277,11 @@ export function startServer({ host = HOST, port = PORT } = {}) {
           const q = new URL(req.url, 'http://x').searchParams;
           if ((!access.remoteAllowed() && !access.isLocal(req)) || !knownToken(q.get('token') || '')) return socket.destroy();
           return terminal.handleUpgrade(req, socket, head, { sessionId: q.get('session') || '', tabId: q.get('tab') || '' });
+        }
+        if (/^\/api\/(screen|android)\/ws$/.test((req.url || '').split('?')[0])) {
+          const q = new URL(req.url, 'http://x').searchParams;
+          if ((!access.remoteAllowed() && !access.isLocal(req)) || !knownToken(q.get('token') || '')) return socket.destroy();
+          return req.url.startsWith('/api/screen/') ? screen.handleUpgrade(req, socket, head) : android.handleUpgrade(req, socket, head, { serial: q.get('serial') || '' });
         }
         const hit = parsePreviewUrl((req.url || '').split('?')[0]);
         if (!hit) return;
